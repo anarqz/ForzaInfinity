@@ -11,11 +11,19 @@
 //! Lookup order for a response spec:
 //!   a. the first matching rule in `responses/routes.json`;
 //!   b. Forza RPC (`X-ClassName` + `X-Method`):
-//!      `responses/forza/<Class>/<Method>.json`, then `forza/<Class>/_default.json`,
-//!      then `responses/forza/_default.json`;
+//!      `responses/<ns>/<Class>/<Method>.json`, then a built-in handler (forza.rs), then
+//!      `<ns>/<Class>/_default.json`, then `responses/<ns>/_default.json`
+//!      (`<ns>` is `forza` for Forza.WebServices.* and `xls` for Xls.WebServices.*);
 //!   c. other hosts: `responses/hosts/<host>/_default.json`;
 //!   d. `responses/_default.json`;
 //!   e. built-in 404.
+//!
+//! Forza RPC bodies are `bin/xtsw` (xtsw.rs). The request is decoded into the capture as JSON,
+//! and a spec can answer with `"xtsw": { <_Results as JSON> }` (merged over the built-in
+//! handler, missing fields = zero) or `"xtsw_error": { "code": n, "message": "..." }`.
+
+mod forza;
+mod xtsw;
 
 use std::{
     collections::BTreeMap,
@@ -41,6 +49,14 @@ struct App {
     root: PathBuf,
     capture: Mutex<File>,
     counter: AtomicU64,
+    schema: xtsw::Schema,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct XtswError {
+    code: u32,
+    #[serde(default)]
+    message: String,
 }
 
 /// How to answer one request. Every field is optional.
@@ -59,6 +75,10 @@ struct ResponseSpec {
     body_file: Option<String>,
     /// Artificial latency, for timeout experiments.
     delay_ms: Option<u64>,
+    /// Forza RPC: `_Results` as JSON, encoded with the schema (merged over a built-in handler).
+    xtsw: Option<Value>,
+    /// Forza RPC: answer with an Xls error (client sees HRESULT 0x80510000 | code).
+    xtsw_error: Option<XtswError>,
 }
 
 /// One rule in responses/routes.json. Patterns use `*` and `?`.
@@ -95,8 +115,18 @@ struct Target {
     host: String,
     path: String,
     query: String,
+    /// X-ClassName without the assembly: "Forza.WebServices.User".
     forza_class: Option<String>,
     forza_method: Option<String>,
+}
+
+impl Target {
+    /// Directory under responses/: ("forza", "User") or ("xls", "User").
+    fn forza_dir(&self) -> Option<(&'static str, &str)> {
+        let class = self.forza_class.as_deref()?;
+        let short = class.rsplit('.').next().unwrap_or(class);
+        Some((if class.starts_with("Xls.") { "xls" } else { "forza" }, short))
+    }
 }
 
 fn main() {
@@ -131,7 +161,9 @@ fn main() {
     println!("  responses: {}", root.join("responses").display());
     println!("  capture:   {}", capture_path.display());
 
-    let app = Arc::new(App { root, capture: Mutex::new(capture), counter: AtomicU64::new(0) });
+    let schema = xtsw::Schema::load_embedded();
+    println!("  schema:    {} classes, {} types", schema.services.len(), schema.types.len());
+    let app = Arc::new(App { root, capture: Mutex::new(capture), counter: AtomicU64::new(0), schema });
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -234,12 +266,28 @@ fn read_chunked(reader: &mut BufReader<TcpStream>) -> std::io::Result<Vec<u8>> {
 fn handle(app: &App, request: &Request) -> Vec<u8> {
     let seq = app.counter.fetch_add(1, Ordering::Relaxed) + 1;
     let target = resolve_target(request);
-    let (spec, source) = find_spec(&app.root, &request.method, &target);
+    let (spec, mut source, specific) = find_spec(&app.root, &request.method, &target);
     let delay = spec.as_ref().and_then(|s| s.delay_ms);
-    let (status, out_headers, out_body) = build_body(spec, &source);
 
-    let label = match (&target.forza_class, &target.forza_method) {
-        (Some(c), Some(m)) => format!("{c}.{m}"),
+    let mut request_xtsw = None;
+    let mut response_xtsw = None;
+    let (status, out_headers, out_body) = match forza_answer(app, &target, request, spec.as_ref(), specific) {
+        Some(answer) => {
+            request_xtsw = Some(answer.request);
+            response_xtsw = answer.response;
+            if let Some(s) = answer.source {
+                source = Some(s);
+            }
+            match answer.reply {
+                Some(reply) => reply,
+                None => build_body(spec, &source),
+            }
+        }
+        None => build_body(spec, &source),
+    };
+
+    let label = match (&target.forza_dir(), &target.forza_method) {
+        (Some((_, c)), Some(m)) => format!("{c}.{m}"),
         _ => format!("{}{}", target.host, target.path),
     };
     println!(
@@ -265,10 +313,12 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
         "request_headers": headers_json(&request.headers),
         "request_body_b64": B64.encode(&request.body),
         "request_body_text": std::str::from_utf8(&request.body).ok().filter(|t| !t.is_empty()),
+        "request_xtsw": request_xtsw,
         "response_source": source,
         "response_status": status,
         "response_headers": out_headers,
         "response_body_b64": B64.encode(&out_body),
+        "response_xtsw": response_xtsw,
     });
     if let Ok(mut line) = serde_json::to_vec(&record) {
         line.push(b'\n');
@@ -305,6 +355,84 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
     response
 }
 
+struct ForzaAnswer {
+    /// Decoded `_Parameters` (or `{"error": ...}`), for the capture.
+    request: Value,
+    /// `_Results` we encoded, or the Xls error we sent.
+    response: Option<Value>,
+    source: Option<String>,
+    /// None: fall back to the spec's raw body.
+    reply: Option<(u16, BTreeMap<String, String>, Vec<u8>)>,
+}
+
+/// Decodes a Forza RPC and, when there is something to encode (a built-in handler, or a spec
+/// with `xtsw` / `xtsw_error`), builds the `bin/xtsw` reply.
+fn forza_answer(
+    app: &App,
+    target: &Target,
+    request: &Request,
+    spec: Option<&ResponseSpec>,
+    specific: bool,
+) -> Option<ForzaAnswer> {
+    let class = target.forza_class.as_deref()?;
+    let method = target.forza_method.as_deref()?;
+    let def = app.schema.method(class, method);
+    let params = match def.and_then(|d| d.params.as_deref()) {
+        Some(ty) => app.schema.decode(ty, &request.body).unwrap_or_else(|e| json!({ "error": e })),
+        None if def.is_none() => json!({ "error": "method not in schema.json" }),
+        None => Value::Null,
+    };
+    let mut answer = ForzaAnswer { request: params, response: None, source: None, reply: None };
+
+    let spec_encodes = spec.is_some_and(|s| s.xtsw.is_some() || s.xtsw_error.is_some());
+    // A method-specific spec file wins over the built-in handler; a fallback _default does not.
+    let builtin = if specific && !spec_encodes {
+        None
+    } else {
+        forza::handle(&app.root, class, method, &answer.request)
+    };
+    if builtin.is_none() && !spec_encodes {
+        return Some(answer);
+    }
+    let spec = if specific || builtin.is_none() { spec } else { None };
+    if builtin.is_some() && spec.is_none() {
+        answer.source = Some(format!("builtin:{class}.{method}"));
+    }
+
+    let mut headers = spec.map(|s| s.headers.clone()).unwrap_or_default();
+    headers.entry("Content-Type".into()).or_insert_with(|| "bin/xtsw".into());
+    let status = spec.and_then(|s| s.status).unwrap_or(200);
+
+    if let Some(err) = spec.and_then(|s| s.xtsw_error.as_ref()) {
+        answer.response = Some(json!({ "xtsw_error": err }));
+        answer.reply = Some((status, headers, xtsw::error_envelope(err.code, &err.message)));
+        return Some(answer);
+    }
+
+    let mut results = builtin.unwrap_or_else(|| json!({}));
+    if let Some(over) = spec.and_then(|s| s.xtsw.as_ref()) {
+        forza::merge(&mut results, over);
+    }
+    let encoded = match def.and_then(|d| d.results.as_deref()) {
+        Some(ty) => app.schema.encode(ty, &results),
+        None => Ok(Vec::new()), // no _Results type: the header alone
+    };
+    match encoded {
+        Ok(bytes) => {
+            answer.response = Some(results);
+            answer.reply = Some((status, headers, xtsw::ok_envelope(&bytes)));
+        }
+        Err(e) => {
+            eprintln!("{class}.{method}: cannot encode reply: {e}");
+            answer.response = Some(json!({ "encode_error": e, "results": results }));
+            let mut h = BTreeMap::new();
+            h.insert("Content-Type".into(), "text/plain".into());
+            answer.reply = Some((500, h, format!("fh2-server: {e}").into_bytes()));
+        }
+    }
+    Some(answer)
+}
+
 fn resolve_target(request: &Request) -> Target {
     let original_url = request
         .header("x-fh2-original-url")
@@ -319,16 +447,15 @@ fn resolve_target(request: &Request) -> Target {
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
     let (path, query) = (path.to_owned(), query.to_owned());
 
-    let forza_class = request.header("x-classname").map(|c| {
-        // "Forza.WebServices.Gifting, Forza.WebServices" -> "Gifting"
-        let name = c.split(',').next().unwrap_or(c).trim();
-        name.rsplit('.').next().unwrap_or(name).to_owned()
-    });
+    // "Forza.WebServices.Gifting, Forza.WebServices" -> "Forza.WebServices.Gifting"
+    let forza_class = request.header("x-classname").map(|c| c.split(',').next().unwrap_or(c).trim().to_owned());
     let forza_method = request.header("x-method").map(|m| m.trim().to_owned());
     Target { original_url, host, path, query, forza_class, forza_method }
 }
 
-fn find_spec(root: &Path, method: &str, t: &Target) -> (Option<ResponseSpec>, Option<String>) {
+/// Returns (spec, its path under responses/, whether it is specific to this request:
+/// a routes.json rule or responses/<ns>/<Class>/<Method>.json).
+fn find_spec(root: &Path, method: &str, t: &Target) -> (Option<ResponseSpec>, Option<String>, bool) {
     let responses = root.join("responses");
 
     if let Ok(text) = fs::read_to_string(responses.join("routes.json")) {
@@ -339,11 +466,11 @@ fn find_spec(root: &Path, method: &str, t: &Target) -> (Option<ResponseSpec>, Op
                         continue;
                     }
                     if let Some(spec) = rule.response {
-                        return (Some(spec), Some(format!("routes.json#{index}")));
+                        return (Some(spec), Some(format!("routes.json#{index}")), true);
                     }
                     if let Some(file) = rule.file {
                         if let Some(spec) = load_spec(&responses.join(&file)) {
-                            return (Some(spec), Some(file));
+                            return (Some(spec), Some(file), true);
                         }
                     }
                 }
@@ -353,24 +480,26 @@ fn find_spec(root: &Path, method: &str, t: &Target) -> (Option<ResponseSpec>, Op
     }
 
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let (Some(class), Some(xmethod)) = (&t.forza_class, &t.forza_method) {
-        let dir = responses.join("forza").join(safe(class));
+    let mut specific = 0;
+    if let (Some((ns, class)), Some(xmethod)) = (t.forza_dir(), &t.forza_method) {
+        let dir = responses.join(ns).join(safe(class));
         candidates.push(dir.join(format!("{}.json", safe(xmethod))));
+        specific = 1;
         candidates.push(dir.join("_default.json"));
-        candidates.push(responses.join("forza").join("_default.json"));
+        candidates.push(responses.join(ns).join("_default.json"));
     }
     if !t.host.is_empty() {
         candidates.push(responses.join("hosts").join(safe(&t.host)).join("_default.json"));
     }
     candidates.push(responses.join("_default.json"));
 
-    for path in candidates {
+    for (index, path) in candidates.into_iter().enumerate() {
         if let Some(spec) = load_spec(&path) {
             let rel = path.strip_prefix(&responses).unwrap_or(&path).to_string_lossy().replace('\\', "/");
-            return (Some(spec), Some(rel));
+            return (Some(spec), Some(rel), index < specific);
         }
     }
-    (None, None)
+    (None, None, false)
 }
 
 fn rule_matches(rule: &Rule, method: &str, t: &Target) -> bool {
