@@ -15,7 +15,7 @@
   "0x10": "datetime",
   "0x11": "bool",
   "0x12": "guid",
-  "0x13": "i64time",
+  "0x13": "f64",
   "0x14": "blob"
  },
  "services": {
@@ -2912,7 +2912,7 @@
     },
     {
      "name": "score",
-     "kind": "i64time",
+     "kind": "f64",
      "offset": 88,
      "size": 8
     },
@@ -16038,7 +16038,7 @@
     },
     {
      "name": "finalScore",
-     "kind": "i64time",
+     "kind": "f64",
      "offset": 8,
      "size": 8
     },
@@ -16788,13 +16788,13 @@
     },
     {
      "name": "Average",
-     "kind": "i64time",
+     "kind": "f64",
      "offset": 8,
      "size": 8
     },
     {
      "name": "StandardDeviation",
-     "kind": "i64time",
+     "kind": "f64",
      "offset": 16,
      "size": 8
     }
@@ -17231,7 +17231,7 @@
     },
     {
      "name": "score",
-     "kind": "i64time",
+     "kind": "f64",
      "offset": 88,
      "size": 8
     },
@@ -17328,7 +17328,7 @@
    "fields": [
     {
      "name": "score",
-     "kind": "i64time",
+     "kind": "f64",
      "offset": 0,
      "size": 8
     },
@@ -17358,7 +17358,7 @@
     },
     {
      "name": "score",
-     "kind": "i64time",
+     "kind": "f64",
      "offset": 8,
      "size": 8
     },
@@ -18137,7 +18137,7 @@
     },
     {
      "name": "score",
-     "kind": "i64time",
+     "kind": "f64",
      "offset": 480,
      "size": 8
     },
