@@ -1,0 +1,5 @@
+[
+  { "host": "profile.xboxlive.com", "path": "/users/*/profile/settings*",
+    "response": { "status": 200, "json": { "profileUsers": [] } } },
+  { "class": "User", "xmethod": "Login*", "file": "forza/User/Login.json" }
+]

@@ -1,0 +1,5 @@
+{
+  "status": 200,
+  "headers": { "Content-Type": "application/json" },
+  "json": { "note": "Copy to <Method>.json once the real response format is known from a capture" }
+}

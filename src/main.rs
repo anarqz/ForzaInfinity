@@ -1,0 +1,500 @@
+//! FH2Online test server (std only: no tokio, no windows-sys, builds with any
+//! Rust toolchain, including x86_64-pc-windows-gnu without dlltool).
+//!
+//! The azimuth-tls.dll hook (Mode=Proxy) rewrites every game request to
+//! `http://<listen>/<original host>/<original path>` and adds
+//! `X-Fh2-Original-Url` / `X-Fh2-Request-Id`. This server:
+//!   1. logs every request (and the answer it gave) to `captures/*.jsonl`;
+//!   2. answers from files under `responses/` (re-read on every request, so
+//!      you can edit them while the game is running).
+//!
+//! Lookup order for a response spec:
+//!   a. the first matching rule in `responses/routes.json`;
+//!   b. Forza RPC (`X-ClassName` + `X-Method`):
+//!      `responses/forza/<Class>/<Method>.json`, then `forza/<Class>/_default.json`,
+//!      then `responses/forza/_default.json`;
+//!   c. other hosts: `responses/hosts/<host>/_default.json`;
+//!   d. `responses/_default.json`;
+//!   e. built-in 404.
+
+use std::{
+    collections::BTreeMap,
+    fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader, Read, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+const MAX_BODY: usize = 64 << 20;
+
+struct App {
+    root: PathBuf,
+    capture: Mutex<File>,
+    counter: AtomicU64,
+}
+
+/// How to answer one request. Every field is optional.
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(default)]
+struct ResponseSpec {
+    status: Option<u16>,
+    headers: BTreeMap<String, String>,
+    /// Body as UTF-8 text.
+    body: Option<String>,
+    /// Body as JSON (serialized compactly; sets Content-Type if missing).
+    json: Option<Value>,
+    /// Body as base64 (for binary payloads copied from a capture).
+    body_b64: Option<String>,
+    /// Body from a file, relative to the spec file.
+    body_file: Option<String>,
+    /// Artificial latency, for timeout experiments.
+    delay_ms: Option<u64>,
+}
+
+/// One rule in responses/routes.json. Patterns use `*` and `?`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Rule {
+    host: Option<String>,
+    method: Option<String>,
+    path: Option<String>,
+    class: Option<String>,
+    xmethod: Option<String>,
+    /// Spec file relative to responses/ ...
+    file: Option<String>,
+    /// ... or an inline spec.
+    response: Option<ResponseSpec>,
+}
+
+struct Request {
+    method: String,
+    path_and_query: String,
+    /// Header names lower-cased, in arrival order.
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl Request {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+    }
+}
+
+struct Target {
+    original_url: String,
+    host: String,
+    path: String,
+    query: String,
+    forza_class: Option<String>,
+    forza_method: Option<String>,
+}
+
+fn main() {
+    let mut listen: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+    let mut root = std::env::current_dir().unwrap();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--listen" => listen = args.next().expect("--listen ADDR").parse().expect("bad address"),
+            "--root" => root = PathBuf::from(args.next().expect("--root DIR")),
+            "-h" | "--help" => {
+                println!("fh2-server [--listen 127.0.0.1:8081] [--root DIR]");
+                return;
+            }
+            other => {
+                eprintln!("unknown argument {other}");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    fs::create_dir_all(root.join("captures")).unwrap();
+    fs::create_dir_all(root.join("responses")).unwrap();
+    let capture_path = root.join("captures").join(format!("server-{}.jsonl", unix_ms()));
+    let capture = OpenOptions::new().create(true).append(true).open(&capture_path).unwrap();
+    let listener = TcpListener::bind(listen).unwrap_or_else(|e| {
+        eprintln!("cannot listen on {listen}: {e}");
+        std::process::exit(1);
+    });
+
+    println!("FH2Online test server on http://{listen}");
+    println!("  responses: {}", root.join("responses").display());
+    println!("  capture:   {}", capture_path.display());
+
+    let app = Arc::new(App { root, capture: Mutex::new(capture), counter: AtomicU64::new(0) });
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let app = Arc::clone(&app);
+                thread::spawn(move || {
+                    if let Err(e) = serve_connection(&app, stream) {
+                        eprintln!("connection: {e}");
+                    }
+                });
+            }
+            Err(e) => eprintln!("accept: {e}"),
+        }
+    }
+}
+
+fn serve_connection(app: &App, stream: TcpStream) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+    let mut writer = stream.try_clone()?;
+    let mut reader = BufReader::new(stream);
+    // Keep-alive: serve requests until the client closes the connection.
+    while let Some(request) = read_request(&mut reader)? {
+        let keep_alive = !request.header("connection").is_some_and(|v| v.eq_ignore_ascii_case("close"));
+        let bytes = handle(app, &request);
+        writer.write_all(&bytes)?;
+        writer.flush()?;
+        if !keep_alive {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn read_request(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Request>> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    let mut parts = line.trim_end().splitn(3, ' ');
+    let method = parts.next().unwrap_or("").to_owned();
+    let path_and_query = parts.next().unwrap_or("/").to_owned();
+    if method.is_empty() {
+        return Ok(None);
+    }
+    let mut headers = Vec::new();
+    loop {
+        let mut h = String::new();
+        if reader.read_line(&mut h)? == 0 {
+            return Ok(None);
+        }
+        let h = h.trim_end_matches(['\r', '\n']);
+        if h.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = h.split_once(':') {
+            headers.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
+        }
+    }
+    let mut request = Request { method, path_and_query, headers, body: Vec::new() };
+    if request.header("transfer-encoding").is_some_and(|v| v.to_ascii_lowercase().contains("chunked")) {
+        request.body = read_chunked(reader)?;
+    } else if let Some(length) = request.header("content-length").and_then(|v| v.parse::<usize>().ok()) {
+        if length > MAX_BODY {
+            return Err(std::io::Error::other("request body too large"));
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body)?;
+        request.body = body;
+    }
+    Ok(Some(request))
+}
+
+fn read_chunked(reader: &mut BufReader<TcpStream>) -> std::io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let mut size_line = String::new();
+        reader.read_line(&mut size_line)?;
+        let size = usize::from_str_radix(size_line.trim().split(';').next().unwrap_or("0"), 16)
+            .map_err(|_| std::io::Error::other("bad chunk size"))?;
+        if size == 0 {
+            // Trailers until the blank line.
+            loop {
+                let mut t = String::new();
+                if reader.read_line(&mut t)? == 0 || t.trim().is_empty() {
+                    break;
+                }
+            }
+            return Ok(body);
+        }
+        if body.len() + size > MAX_BODY {
+            return Err(std::io::Error::other("request body too large"));
+        }
+        let start = body.len();
+        body.resize(start + size, 0);
+        reader.read_exact(&mut body[start..])?;
+        let mut crlf = [0u8; 2];
+        reader.read_exact(&mut crlf)?;
+    }
+}
+
+fn handle(app: &App, request: &Request) -> Vec<u8> {
+    let seq = app.counter.fetch_add(1, Ordering::Relaxed) + 1;
+    let target = resolve_target(request);
+    let (spec, source) = find_spec(&app.root, &request.method, &target);
+    let delay = spec.as_ref().and_then(|s| s.delay_ms);
+    let (status, out_headers, out_body) = build_body(spec, &source);
+
+    let label = match (&target.forza_class, &target.forza_method) {
+        (Some(c), Some(m)) => format!("{c}.{m}"),
+        _ => format!("{}{}", target.host, target.path),
+    };
+    println!(
+        "#{seq:<4} {:<5} {:<60} {:>6} bytes -> {} via {}",
+        request.method,
+        truncate(&label, 60),
+        request.body.len(),
+        status,
+        source.as_deref().unwrap_or("builtin")
+    );
+
+    let record = json!({
+        "seq": seq,
+        "time_ms": unix_ms(),
+        "client_request_id": request.header("x-fh2-request-id"),
+        "method": request.method,
+        "original_url": target.original_url,
+        "host": target.host,
+        "path": target.path,
+        "query": target.query,
+        "forza_class": target.forza_class,
+        "forza_method": target.forza_method,
+        "request_headers": headers_json(&request.headers),
+        "request_body_b64": B64.encode(&request.body),
+        "request_body_text": std::str::from_utf8(&request.body).ok().filter(|t| !t.is_empty()),
+        "response_source": source,
+        "response_status": status,
+        "response_headers": out_headers,
+        "response_body_b64": B64.encode(&out_body),
+    });
+    if let Ok(mut line) = serde_json::to_vec(&record) {
+        line.push(b'\n');
+        if let Ok(mut file) = app.capture.lock() {
+            let _ = file.write_all(&line);
+            let _ = file.flush();
+        }
+    }
+
+    if let Some(ms) = delay {
+        thread::sleep(Duration::from_millis(ms));
+    }
+
+    let mut response = format!("HTTP/1.1 {status} {}\r\n", reason(status)).into_bytes();
+    for (name, value) in &out_headers {
+        let lower = name.to_ascii_lowercase();
+        if lower == "content-length" || lower == "connection" || lower == "transfer-encoding" {
+            continue;
+        }
+        if name.contains(['\r', '\n']) || value.contains(['\r', '\n']) {
+            continue;
+        }
+        response.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    response.extend_from_slice(
+        format!(
+            "X-Fh2-Response-Source: {}\r\nContent-Length: {}\r\n\r\n",
+            source.as_deref().unwrap_or("builtin"),
+            out_body.len()
+        )
+        .as_bytes(),
+    );
+    response.extend_from_slice(&out_body);
+    response
+}
+
+fn resolve_target(request: &Request) -> Target {
+    let original_url = request
+        .header("x-fh2-original-url")
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("https:/{}", request.path_and_query)); // path is /<host>/<rest>
+    let without_scheme = original_url.split_once("://").map(|(_, r)| r).unwrap_or(&original_url);
+    let (host_part, rest) = match without_scheme.find('/') {
+        Some(i) => (&without_scheme[..i], &without_scheme[i..]),
+        None => (without_scheme, "/"),
+    };
+    let host = host_part.split(':').next().unwrap_or("").to_ascii_lowercase();
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (path, query) = (path.to_owned(), query.to_owned());
+
+    let forza_class = request.header("x-classname").map(|c| {
+        // "Forza.WebServices.Gifting, Forza.WebServices" -> "Gifting"
+        let name = c.split(',').next().unwrap_or(c).trim();
+        name.rsplit('.').next().unwrap_or(name).to_owned()
+    });
+    let forza_method = request.header("x-method").map(|m| m.trim().to_owned());
+    Target { original_url, host, path, query, forza_class, forza_method }
+}
+
+fn find_spec(root: &Path, method: &str, t: &Target) -> (Option<ResponseSpec>, Option<String>) {
+    let responses = root.join("responses");
+
+    if let Ok(text) = fs::read_to_string(responses.join("routes.json")) {
+        match serde_json::from_str::<Vec<Rule>>(&text) {
+            Ok(rules) => {
+                for (index, rule) in rules.into_iter().enumerate() {
+                    if !rule_matches(&rule, method, t) {
+                        continue;
+                    }
+                    if let Some(spec) = rule.response {
+                        return (Some(spec), Some(format!("routes.json#{index}")));
+                    }
+                    if let Some(file) = rule.file {
+                        if let Some(spec) = load_spec(&responses.join(&file)) {
+                            return (Some(spec), Some(file));
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("routes.json: {e}"),
+        }
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let (Some(class), Some(xmethod)) = (&t.forza_class, &t.forza_method) {
+        let dir = responses.join("forza").join(safe(class));
+        candidates.push(dir.join(format!("{}.json", safe(xmethod))));
+        candidates.push(dir.join("_default.json"));
+        candidates.push(responses.join("forza").join("_default.json"));
+    }
+    if !t.host.is_empty() {
+        candidates.push(responses.join("hosts").join(safe(&t.host)).join("_default.json"));
+    }
+    candidates.push(responses.join("_default.json"));
+
+    for path in candidates {
+        if let Some(spec) = load_spec(&path) {
+            let rel = path.strip_prefix(&responses).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            return (Some(spec), Some(rel));
+        }
+    }
+    (None, None)
+}
+
+fn rule_matches(rule: &Rule, method: &str, t: &Target) -> bool {
+    let eq = |pattern: &Option<String>, value: Option<&str>| match pattern {
+        None => true,
+        Some(p) => value.is_some_and(|v| glob(&p.to_ascii_lowercase(), &v.to_ascii_lowercase())),
+    };
+    eq(&rule.host, Some(&t.host))
+        && eq(&rule.method, Some(method))
+        && eq(&rule.path, Some(&t.path))
+        && eq(&rule.class, t.forza_class.as_deref())
+        && eq(&rule.xmethod, t.forza_method.as_deref())
+}
+
+/// `*` matches any run of characters (including '/'), `?` one character.
+fn glob(pattern: &str, text: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+fn load_spec(path: &Path) -> Option<ResponseSpec> {
+    let text = fs::read_to_string(path).ok()?;
+    match serde_json::from_str::<ResponseSpec>(&text) {
+        Ok(mut spec) => {
+            if let Some(file) = &spec.body_file {
+                let base = path.parent().unwrap_or(Path::new("."));
+                spec.body_file = Some(base.join(file).to_string_lossy().into_owned());
+            }
+            Some(spec)
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", path.display());
+            None
+        }
+    }
+}
+
+fn build_body(spec: Option<ResponseSpec>, source: &Option<String>) -> (u16, BTreeMap<String, String>, Vec<u8>) {
+    let spec = spec.unwrap_or_else(|| ResponseSpec { status: Some(404), ..Default::default() });
+    let mut headers = spec.headers.clone();
+    let body: Vec<u8> = if let Some(v) = &spec.json {
+        if !headers.keys().any(|k| k.eq_ignore_ascii_case("content-type")) {
+            headers.insert("Content-Type".into(), "application/json".into());
+        }
+        serde_json::to_vec(v).unwrap_or_default()
+    } else if let Some(b) = &spec.body_b64 {
+        B64.decode(b.trim()).unwrap_or_else(|e| {
+            eprintln!("{}: bad body_b64: {e}", source.as_deref().unwrap_or("?"));
+            Vec::new()
+        })
+    } else if let Some(f) = &spec.body_file {
+        fs::read(f).unwrap_or_else(|e| {
+            eprintln!("{f}: {e}");
+            Vec::new()
+        })
+    } else {
+        spec.body.clone().unwrap_or_default().into_bytes()
+    };
+    (spec.status.unwrap_or(200), headers, body)
+}
+
+fn reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "Status",
+    }
+}
+
+fn headers_json(headers: &[(String, String)]) -> Value {
+    let mut map = serde_json::Map::new();
+    for (name, value) in headers {
+        let v = Value::String(value.clone());
+        match map.get_mut(name) {
+            Some(Value::Array(list)) => list.push(v),
+            Some(existing) => *existing = Value::Array(vec![existing.take(), v]),
+            None => {
+                map.insert(name.clone(), v);
+            }
+        }
+    }
+    Value::Object(map)
+}
+
+/// Keep file names portable: anything outside [A-Za-z0-9._-] becomes '_'.
+fn safe(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .collect();
+    if s.is_empty() || s.chars().all(|c| c == '.') { "_".into() } else { s }
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n { s.to_owned() } else { s.chars().take(n - 1).collect::<String>() + "…" }
+}
+
+fn unix_ms() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+}
