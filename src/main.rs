@@ -21,8 +21,16 @@
 //! Forza RPC bodies are `bin/xtsw` (xtsw.rs). The request is decoded into the capture as JSON,
 //! and a spec can answer with `"xtsw": { <_Results as JSON> }` (merged over the built-in
 //! handler, missing fields = zero) or `"xtsw_error": { "code": n, "message": "..." }`.
+//!
+//! Player data lives in SQLite (db.rs, `data/fh2online.sqlite`). Requests that do not come from
+//! the hook (no `X-Fh2-Original-Url`) to `/api/*`, `/ws` and `/ui/*` are the manager: a JSON
+//! API, a WebSocket feed and the built web UI (api.rs, live.rs, ../web).
 
+mod api;
+mod db;
 mod forza;
+mod gamedb;
+mod live;
 mod xtsw;
 
 use std::{
@@ -50,6 +58,11 @@ struct App {
     capture: Mutex<File>,
     counter: AtomicU64,
     schema: xtsw::Schema,
+    store: db::Store,
+    catalog: gamedb::Catalog,
+    hub: live::Hub,
+    /// Built web UI (web/dist), served at /ui/.
+    web: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -132,13 +145,21 @@ impl Target {
 fn main() {
     let mut listen: SocketAddr = "127.0.0.1:8081".parse().unwrap();
     let mut root = std::env::current_dir().unwrap();
+    let mut gamedb_path = None;
+    let mut web = None;
+    let mut db_path = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--listen" => listen = args.next().expect("--listen ADDR").parse().expect("bad address"),
             "--root" => root = PathBuf::from(args.next().expect("--root DIR")),
+            "--gamedb" => gamedb_path = Some(PathBuf::from(args.next().expect("--gamedb FILE"))),
+            "--web" => web = Some(PathBuf::from(args.next().expect("--web DIR"))),
+            "--db" => db_path = Some(PathBuf::from(args.next().expect("--db FILE"))),
             "-h" | "--help" => {
-                println!("fh2-server [--listen 127.0.0.1:8081] [--root DIR]");
+                println!(
+                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist]"
+                );
                 return;
             }
             other => {
@@ -163,7 +184,37 @@ fn main() {
 
     let schema = xtsw::Schema::load_embedded();
     println!("  schema:    {} classes, {} types", schema.services.len(), schema.types.len());
-    let app = Arc::new(App { root, capture: Mutex::new(capture), counter: AtomicU64::new(0), schema });
+
+    let db_path = db_path.unwrap_or_else(|| root.join("data").join("fh2online.sqlite"));
+    let store = db::Store::open(&db_path).unwrap_or_else(|e| {
+        eprintln!("cannot open the database: {e}");
+        std::process::exit(1);
+    });
+    println!("  database:  {}", db_path.display());
+
+    // Default: the game folder next to FH2Online (FH2\ForzaHorizon2).
+    let gamedb_path = gamedb_path
+        .unwrap_or_else(|| root.join("../../ForzaHorizon2/Mount/media/stripped/gamedbRC.slt"));
+    let catalog = gamedb::Catalog::load(&gamedb_path).unwrap_or_else(|e| {
+        eprintln!("  gamedb:    not loaded ({e}); cars will show as ids");
+        gamedb::Catalog::default()
+    });
+    if !catalog.cars.is_empty() {
+        println!("  gamedb:    {} cars, {} tracks", catalog.cars.len(), catalog.tracks.len());
+    }
+    let web = web.unwrap_or_else(|| root.join("../web/dist"));
+    println!("  manager:   http://{listen}/ui/  (api /api, live /ws)");
+
+    let app = Arc::new(App {
+        root,
+        capture: Mutex::new(capture),
+        counter: AtomicU64::new(0),
+        schema,
+        store,
+        catalog,
+        hub: live::Hub::default(),
+        web,
+    });
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -186,6 +237,22 @@ fn serve_connection(app: &App, stream: TcpStream) -> std::io::Result<()> {
     // Keep-alive: serve requests until the client closes the connection.
     while let Some(request) = read_request(&mut reader)? {
         let keep_alive = !request.header("connection").is_some_and(|v| v.eq_ignore_ascii_case("close"));
+        if api::is_local(&request) {
+            match api::handle(app, &request) {
+                api::Outcome::Reply(bytes) => {
+                    writer.write_all(&bytes)?;
+                    writer.flush()?;
+                }
+                api::Outcome::Upgrade(key) => {
+                    let hello = api::hello(app);
+                    return app.hub.serve(writer, &key, &hello);
+                }
+            }
+            if !keep_alive {
+                break;
+            }
+            continue;
+        }
         let bytes = handle(app, &request);
         writer.write_all(&bytes)?;
         writer.flush()?;
@@ -268,10 +335,16 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
     let target = resolve_target(request);
     let (spec, mut source, specific) = find_spec(&app.root, &request.method, &target);
     let delay = spec.as_ref().and_then(|s| s.delay_ms);
+    let ctx = forza::Ctx {
+        store: &app.store,
+        catalog: &app.catalog,
+        xuid: request_xuid(request),
+        events: Default::default(),
+    };
 
     let mut request_xtsw = None;
     let mut response_xtsw = None;
-    let (status, out_headers, out_body) = match forza_answer(app, &target, request, spec.as_ref(), specific) {
+    let (status, out_headers, out_body) = match forza_answer(app, &ctx, &target, request, spec.as_ref(), specific) {
         Some(answer) => {
             request_xtsw = Some(answer.request);
             response_xtsw = answer.response;
@@ -283,7 +356,15 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
                 None => build_body(spec, &source),
             }
         }
-        None => build_body(spec, &source),
+        None => match (specific, forza::live_service(&ctx, &target.host, &target.path, &request.body)) {
+            (false, Some(reply)) => {
+                source = Some(format!("builtin:{}", target.host));
+                let mut headers = BTreeMap::new();
+                headers.insert("Content-Type".into(), "application/json; charset=utf-8".into());
+                (200, headers, serde_json::to_vec(&reply).unwrap_or_default())
+            }
+            _ => build_body(spec, &source),
+        },
     };
 
     let label = match (&target.forza_dir(), &target.forza_method) {
@@ -328,6 +409,20 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
         }
     }
 
+    // Live feed for the manager UI: every game request (not stored), then the handler's events.
+    app.hub.broadcast(&json!({
+        "type": "request",
+        "seq": seq,
+        "time": unix_ms(),
+        "xuid": ctx.xuid.to_string(),
+        "label": label,
+        "status": status,
+        "source": source,
+    }));
+    for event in ctx.events.take() {
+        app.hub.broadcast(&json!({ "type": "event", "event": event }));
+    }
+
     if let Some(ms) = delay {
         thread::sleep(Duration::from_millis(ms));
     }
@@ -369,6 +464,7 @@ struct ForzaAnswer {
 /// with `xtsw` / `xtsw_error`), builds the `bin/xtsw` reply.
 fn forza_answer(
     app: &App,
+    ctx: &forza::Ctx,
     target: &Target,
     request: &Request,
     spec: Option<&ResponseSpec>,
@@ -386,10 +482,12 @@ fn forza_answer(
 
     let spec_encodes = spec.is_some_and(|s| s.xtsw.is_some() || s.xtsw_error.is_some());
     // A method-specific spec file wins over the built-in handler; a fallback _default does not.
-    let builtin = if specific && !spec_encodes {
+    // Handlers write to the database: never feed them a body that failed to decode.
+    let decoded = answer.request.get("error").is_none();
+    let builtin = if (specific && !spec_encodes) || !decoded {
         None
     } else {
-        forza::handle(&app.root, class, method, &answer.request)
+        forza::handle(ctx, class, method, &answer.request)
     };
     if builtin.is_none() && !spec_encodes {
         return Some(answer);
@@ -624,6 +722,21 @@ fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_owned() } else { s.chars().take(n - 1).collect::<String>() + "…" }
 }
 
-fn unix_ms() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+fn unix_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// The player behind a request: X-UserId ("0x9000000000000") on Forza RPCs. Xbox Live calls
+/// carry only the token, so they get 0.
+fn request_xuid(request: &Request) -> u64 {
+    request
+        .header("x-userid")
+        .and_then(|v| {
+            let v = v.trim();
+            match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+                Some(hex) => u64::from_str_radix(hex, 16).ok(),
+                None => v.parse().ok(),
+            }
+        })
+        .unwrap_or(0)
 }

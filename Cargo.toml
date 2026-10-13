@@ -7,3 +7,8 @@ edition = "2024"
 base64 = "0.23.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
+# SQLite compiled from source (bundled). On the GNU toolchain the C part is
+# built with `zig cc`, see .cargo/config.toml.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# WebSocket handshake (Sec-WebSocket-Accept). Pure Rust, no dependencies.
+sha1_smol = "1.0"

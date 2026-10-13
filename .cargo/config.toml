@@ -1,0 +1,9 @@
+# The GNU toolchain has no C compiler, and rusqlite's bundled SQLite needs one.
+# zig ships clang: use it for C. cc-rs would add --target=x86_64-pc-windows-gnu,
+# which zig cannot parse, so its default flags are off and -O2 is given here.
+# Change the zig path if it lives somewhere else.
+[env]
+CC_x86_64_pc_windows_gnu = "C:/Users/alcmo/Downloads/Ghidra/zig/zig.exe cc -target x86_64-windows-gnu"
+AR_x86_64_pc_windows_gnu = "C:/Users/alcmo/Downloads/Ghidra/zig/zig.exe ar"
+CRATE_CC_NO_DEFAULTS = "1"
+CFLAGS_x86_64_pc_windows_gnu = "-O2"
