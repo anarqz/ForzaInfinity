@@ -1,0 +1,9 @@
+{
+  "_comment": "Renomeie para Logon.json para mexer na resposta do Logon. O 'xtsw' e mesclado sobre a resposta do handler embutido (forza.rs); campos ausentes ficam como estao. Para simular falha, use \"xtsw_error\": {\"code\": 5, \"message\": \"...\"}.",
+  "xtsw": {
+    "responseData": {
+      "isProfileValid": true,
+      "userData": { "clubTag": "FH2" }
+    }
+  }
+}

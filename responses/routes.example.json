@@ -1,5 +1,8 @@
 [
   { "host": "profile.xboxlive.com", "path": "/users/*/profile/settings*",
     "response": { "status": 200, "json": { "profileUsers": [] } } },
-  { "class": "User", "xmethod": "Login*", "file": "forza/User/Login.json" }
+  { "class": "Forza.WebServices.User", "xmethod": "GetVipState",
+    "response": { "xtsw": { "isVip": true } } },
+  { "class": "Forza.WebServices.Storefront", "xmethod": "*",
+    "response": { "xtsw_error": { "code": 1, "message": "storefront offline" } } }
 ]
