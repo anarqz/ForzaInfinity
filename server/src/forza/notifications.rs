@@ -113,6 +113,16 @@ pub fn handle(ctx: &Ctx, method: &str, params: &Value) -> Option<Value> {
 
 /// "Your rival beat your time": after `xuid` posted `score`, tell each friend whose best on the
 /// same event is now worse.
+/// Where "Ir para" in Meus Rivais takes the player (FUN_140d6b6b0): category 1 = Panama
+/// (Storm Island), 4 = monthly rivals; otherwise timeTrialId != -1 = that showcase, -1 = the
+/// festival route (trackId) with car select. Returns (category, timeTrialId).
+pub fn challenge_target(board: i64, event: i64) -> (i64, i64) {
+    match board {
+        6 => (0, event), // showcase: the event is the showcase id
+        _ => (0, -1),    // a festival route race
+    }
+}
+
 pub fn rivals_beaten(ctx: &Ctx, score_type: i64, data: &Value) {
     let me = ctx.xuid;
     let score = data["score"].as_f64().unwrap_or(0.0);
@@ -141,7 +151,7 @@ pub fn rivals_beaten(ctx: &Ctx, score_type: i64, data: &Value) {
             "senderClubRole": club.as_ref().map(|c| c.1).unwrap_or(0),
             "senderFlags": 0,
             "sentTime": super::iso_utc(crate::unix_ms()),
-            "timeTrialId": event,
+            "timeTrialId": challenge_target(board, event).1,
             "carId": data["carId"].as_i64().unwrap_or(-1),
             "carClassId": data["carClassId"].as_i64().unwrap_or(0),
             "localizedTimeTrialName": track_name,
@@ -149,7 +159,7 @@ pub fn rivals_beaten(ctx: &Ctx, score_type: i64, data: &Value) {
             "trackId": track,
             "score": score,
             "scoreType": score_type,
-            "category": board,
+            "category": challenge_target(board, event).0,
         });
         ctx.store.notify(row.xuid, crate::db::notifications::TIME_BEATEN, params);
         ctx.event_for(

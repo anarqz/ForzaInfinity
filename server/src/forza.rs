@@ -17,6 +17,7 @@ use crate::{db::Store, gamedb::Catalog};
 
 mod clubs;
 mod notifications;
+pub use notifications::challenge_target;
 
 /// The Car Club keywords (id, category, text) the server offers.
 pub fn club_keywords() -> &'static [(i64, i64, &'static str)] {
@@ -249,6 +250,14 @@ pub fn live_service(ctx: &Ctx, req: &LiveRequest) -> Option<Value> {
             })
             .collect();
         return Some(json!({ "totalCount": people.len(), "people": people }));
+    }
+    // The Xbox text filter, asked before the game posts text (club notice board, messages):
+    // everything passes. resultCode 0 = Success.
+    if host == "client-strings.xboxlive.com" && path.ends_with("/strings/validate") {
+        let body: Value = serde_json::from_slice(req.body).unwrap_or(Value::Null);
+        let n = body["stringstoVerify"].as_array().map(Vec::len).unwrap_or(0);
+        let results: Vec<Value> = (0..n).map(|_| json!({ "resultCode": "0", "offendingString": "" })).collect();
+        return Some(json!({ "verifyStringResult": results }));
     }
     // Rich presence (RP_SPLASH, RP_FREEROAM, ...): the game posts it every few seconds.
     if host == "userpresence.xboxlive.com" && path.ends_with("/devices/current/titles/current") {
