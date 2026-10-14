@@ -86,6 +86,26 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
             "reconcileActiveNotifications": false, "activeNotificationIds": [],
         }),
         (false, "DailyCreditBonus", "GetPayout") => json!({ "dailyPayout": {} }),
+        // The game's own offline values, read from ForzaEconomyModule in the running game by
+        // the hook's economy probe (FH2_ExtraOptions.log, 2026-10-13). UseServerValues is 1 in
+        // the module, so whatever is sent here replaces them: keep them identical. Change them
+        // in responses/forza/User/GetEconomySettings.json ("xtsw") to tune the economy.
+        (false, "User", "GetEconomySettings") => json!({
+            "settings": {
+                "creditDestinationBonus": 30000,
+                "creditDestinationFalloff": 2000,
+                "xpPerKmOffline": 800,
+                "xpPerKmOnline": 640,
+                "creditPerKm": 960,
+                "minimumFinishLineXp": 0,
+                "tombolaPrizeScale": 1.0,
+                "promoBonusScale": 1.0,
+                // no ForzaEconomyModule property reads it (online car-meet wager races)
+                "wagerRaceCost": 0,
+                "enableTokens": false,
+                "enableXboxMusic": false,
+            }
+        }),
         // Transactional (X-TransactionId): credits granted by the service. Nothing to grant yet.
         (false, "User", "RetrieveOnlineCredits") => json!({ "credit": 0 }),
         (true, "Transaction", "Reconcile") => reconcile(ctx, params),
