@@ -25,7 +25,26 @@ pub const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS devices (
         token_hash TEXT PRIMARY KEY, xuid INTEGER NOT NULL, created INTEGER NOT NULL,
         last_seen INTEGER NOT NULL);
-    CREATE INDEX IF NOT EXISTS devices_xuid ON devices (xuid);";
+    CREATE INDEX IF NOT EXISTS devices_xuid ON devices (xuid);
+    CREATE TABLE IF NOT EXISTS web_keys (
+        xuid INTEGER PRIMARY KEY, key_hash TEXT NOT NULL, created INTEGER NOT NULL);";
+
+/// Web key alphabet: no 0/O or 1/I, so it can be read off a TV and typed.
+const WEB_KEY_ALPHABET: &[u8; 32] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+/// "K7QM-4XPA-9RT2": 12 random characters (60 bits) for logging in to the site with
+/// name#12345. Separate from the device token, which never leaves the game.
+pub fn new_web_key() -> String {
+    let mut bytes = [0u8; 12];
+    os_random(&mut bytes);
+    let chars: Vec<char> = bytes.iter().map(|b| WEB_KEY_ALPHABET[(b & 31) as usize] as char).collect();
+    chars.chunks(4).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join("-")
+}
+
+/// Canonical form for comparing: upper case, no dashes or spaces, O->0 is not needed (no 0).
+fn web_key_canonical(key: &str) -> String {
+    key.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect()
+}
 
 pub struct Account {
     pub xuid: u64,
@@ -185,6 +204,30 @@ impl Store {
         Some(account)
     }
 
+    /// A new web key for the account (the previous one stops working). Returns it in clear,
+    /// once; only its hash is kept.
+    pub fn rotate_web_key(&self, xuid: u64) -> Option<String> {
+        let key = new_web_key();
+        self.with(|db| {
+            db.execute(
+                "INSERT INTO web_keys (xuid, key_hash, created) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (xuid) DO UPDATE SET key_hash = ?2, created = ?3",
+                params![xuid as i64, token_hash(&web_key_canonical(&key)), unix_ms()],
+            )
+        })?;
+        Some(key)
+    }
+
+    /// The account for "name#12345" + web key (site login).
+    pub fn account_by_web_key(&self, gamertag: &str, key: &str) -> Option<Account> {
+        let (name, discriminator) = gamertag.trim().rsplit_once('#')?;
+        let account = self.account_by_name(name, discriminator)?;
+        let stored: String = self
+            .with(|db| db.query_row("SELECT key_hash FROM web_keys WHERE xuid = ?1", [account.xuid as i64], |r| r.get(0)).optional())
+            .flatten()?;
+        (stored == token_hash(&web_key_canonical(key))).then_some(account)
+    }
+
     pub fn set_banned(&self, xuid: u64, banned: bool) -> bool {
         self.with(|db| db.execute("UPDATE accounts SET banned = ?1 WHERE xuid = ?2", params![banned as i64, xuid as i64]))
             .is_some_and(|n| n > 0)
@@ -225,6 +268,14 @@ mod tests {
         assert_eq!(found.xuid, acc.xuid);
         assert_eq!(store.gamertag(acc.xuid), "Alex#01234");
         assert!(store.account_by_token("nope").is_none());
+        let key = store.rotate_web_key(acc.xuid).unwrap();
+        assert_eq!(key.len(), 14);
+        assert!(store.account_by_web_key("Alex#01234", &key).is_some());
+        assert!(store.account_by_web_key("alex#01234", &key.to_lowercase().replace('-', "")).is_some());
+        assert!(store.account_by_web_key("Alex#99999", &key).is_none());
+        let newer = store.rotate_web_key(acc.xuid).unwrap();
+        assert!(store.account_by_web_key("Alex#01234", &key).is_none() || key == newer);
+        assert!(store.account_by_web_key("Alex#01234", &newer).is_some());
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
     }

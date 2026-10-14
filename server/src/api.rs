@@ -76,11 +76,35 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
             match app.store.register_account(name, discriminator, device) {
                 Ok((account, token)) => {
                     let gamertag = account.gamertag();
+                    let web_key = app.store.rotate_web_key(account.xuid).unwrap_or_default();
                     app.store.add_event(account.xuid, "account", &format!("Conta {gamertag} criada"), json!({}));
                     app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
-                    json_reply(200, &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token }))
+                    json_reply(
+                        200,
+                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key }),
+                    )
                 }
                 Err(e) => json_reply(400, &json!({ "error": e })),
+            }
+        }
+        // a new site key, asked from the game's options (the old one stops working)
+        ("POST", "webkey") => match token_account() {
+            Some(a) if !a.banned => match app.store.rotate_web_key(a.xuid) {
+                Some(key) => json_reply(200, &json!({ "webKey": key })),
+                None => json_reply(500, &json!({ "error": "Erro ao gerar a chave." })),
+            },
+            Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
+            None => json_reply(401, &json!({ "error": "Token desconhecido." })),
+        },
+        // site login check: name#12345 + web key
+        ("POST", "weblogin") => {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let gamertag = body["gamertag"].as_str().unwrap_or("");
+            let key = body["webKey"].as_str().unwrap_or("");
+            match app.store.account_by_web_key(gamertag, key) {
+                Some(a) if !a.banned => json_reply(200, &json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag() })),
+                Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
+                None => json_reply(401, &json!({ "error": "Nome ou chave incorretos." })),
             }
         }
         ("GET", "me") => match token_account() {
