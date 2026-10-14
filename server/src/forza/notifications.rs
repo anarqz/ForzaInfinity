@@ -27,6 +27,25 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// XlsNotificationCategory list sent in the Logon reply (at most 7). `type` is the category a
+/// notification falls in: (notificationType >> 8) & 0x7f.
+pub fn categories() -> Value {
+    let list: [(i64, &str, &str); 7] = [
+        (2, "Mensagens", "Mensagens de outros jogadores e do servidor"),
+        (4, "Rivais", "Desafios: amigos que bateram seus tempos"),
+        (7, "Clube", "Convites, membros e mural do seu clube"),
+        (5, "Presentes", "Créditos, carros e itens recebidos"),
+        (3, "Recompensas", "Pagamentos de Drivatar e de conteúdo compartilhado"),
+        (1, "Novidades", "Novidades do FH2Online"),
+        (6, "Avisos", "Avisos da conta"),
+    ];
+    Value::Array(
+        list.iter()
+            .map(|&(t, name, description)| json!({ "type": t, "name": name, "description": description, "backgroundImageFileId": 0 }))
+            .collect(),
+    )
+}
+
 pub fn handle(ctx: &Ctx, method: &str, params: &Value) -> Option<Value> {
     let me = ctx.xuid;
     Some(match method {

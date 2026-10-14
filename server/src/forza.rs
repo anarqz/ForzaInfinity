@@ -376,10 +376,13 @@ fn user_logon(ctx: &Ctx, params: &Value) -> Value {
             "vipOfferIds": [],
             "userData": user_data(ctx, xuid),
             "notificationNonce": 0,
-            "notificationPollIntervalSeconds": 300,
+            // Notifications.RetrieveForUser cadence (it also honors nextRetrieveSeconds).
+            "notificationPollIntervalSeconds": 30,
             "defaultFriendsPollIntervalSeconds": 300,
             "maxFriendsPollIntervalSeconds": 900,
-            "notificationCategories": [],
+            // The message center's tabs: a page shows nothing (stuck on "Recuperando dados")
+            // until it has categories. A notification's category is (type >> 8) & 0x7f.
+            "notificationCategories": notifications::categories(),
             "gameplayLogConfig": { "Enabled": false, "FlushInterval": 0, "Throttle": "" },
             "carsToUnshareFromGame": [],
             "defaultTimeoutMs": 30000,
