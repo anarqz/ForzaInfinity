@@ -64,6 +64,9 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT, xuid INTEGER NOT NULL, time INTEGER NOT NULL,
                  kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS events_user ON events (xuid, id);
+             CREATE TABLE IF NOT EXISTS drivatars (
+                 xuid INTEGER PRIMARY KEY, data TEXT NOT NULL, updated INTEGER NOT NULL,
+                 saves INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE IF NOT EXISTS liveries (
                  id INTEGER PRIMARY KEY AUTOINCREMENT, xuid INTEGER NOT NULL, time INTEGER NOT NULL,
                  name TEXT NOT NULL, car_id INTEGER NOT NULL, data TEXT NOT NULL);
@@ -297,6 +300,41 @@ impl Store {
         .flatten()
     }
 
+    /// Drivatar.SaveDrivatarInformation: what the game learned about how this player drives
+    /// ({info, curveTypes, segmentInformation}). The latest upload replaces the previous one.
+    pub fn save_drivatar(&self, xuid: u64, data: &Value) {
+        self.touch_user(xuid);
+        self.with(|db| {
+            db.execute(
+                "INSERT INTO drivatars (xuid, data, updated, saves) VALUES (?1, ?2, ?3, 1)
+                 ON CONFLICT (xuid) DO UPDATE SET data = ?2, updated = ?3, saves = saves + 1",
+                params![xuid as i64, data.to_string(), unix_ms()],
+            )
+        });
+    }
+
+    /// (data, updated, saves) of a player's drivatar.
+    pub fn drivatar(&self, xuid: u64) -> Option<(Value, i64, i64)> {
+        self.with(|db| {
+            db.query_row("SELECT data, updated, saves FROM drivatars WHERE xuid = ?1", [xuid as i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            })
+            .optional()
+        })
+        .flatten()
+        .map(|(d, u, s)| (serde_json::from_str(&d).unwrap_or(Value::Null), u, s))
+    }
+
+    /// Other players who have a drivatar, most recently updated first.
+    pub fn drivatar_owners(&self, except: u64, limit: i64) -> Vec<u64> {
+        self.with(|db| {
+            let mut stmt = db.prepare("SELECT xuid FROM drivatars WHERE xuid <> ?1 ORDER BY updated DESC LIMIT ?2")?;
+            let rows = stmt.query_map(params![except as i64, limit], |r| r.get::<_, i64>(0))?.flatten().map(|x| x as u64).collect();
+            Ok(rows)
+        })
+        .unwrap_or_default()
+    }
+
     pub fn add_xp(&self, xuid: u64, xp: f64) {
         self.touch_user(xuid);
         self.with(|db| db.execute("INSERT INTO xp (xuid, time, xp) VALUES (?1, ?2, ?3)", params![xuid as i64, unix_ms(), xp]));
@@ -475,6 +513,13 @@ impl Store {
             "xp": xp,
             "tunes": tunes,
             "events": self.events(xuid, 100),
+            "drivatar": self.drivatar(xuid).map(|(d, updated, saves)| json!({
+                "updated": updated,
+                "saves": saves,
+                "segments": d["segmentInformation"].as_array().map(Vec::len).unwrap_or(0),
+                "curves": d["curveTypes"].as_array().map(Vec::len).unwrap_or(0),
+                "info": d["info"],
+            })),
             // Xbox achievements unlock locally (Windows.Xbox.Achievements in Azimuth) and do
             // not reach this server yet; the hook will have to forward them.
             "achievements": [],

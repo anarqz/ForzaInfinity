@@ -47,6 +47,12 @@ pub struct Catalog {
     pub cars: BTreeMap<i64, Car>,
     pub classes: BTreeMap<i64, CarClass>,
     pub tracks: BTreeMap<i64, Track>,
+    /// Data_Car_Buckets: race car buckets (drivatars must drive a car of the race's bucket).
+    #[serde(skip)]
+    pub car_bucket: BTreeMap<i64, i64>,
+    /// bucket -> cars, hero cars first.
+    #[serde(skip)]
+    pub bucket_cars: BTreeMap<i64, Vec<i64>>,
 }
 
 impl Catalog {
@@ -101,6 +107,17 @@ impl Catalog {
             let name = prefix.trim_start_matches("CLASS_").to_owned();
             let rgb = (color as u32) & 0x00ff_ffff;
             catalog.classes.insert(id, CarClass { id, name, color: format!("#{rgb:06x}"), max_pi });
+        }
+
+        let mut stmt = db
+            .prepare("SELECT CarId, CarBucket, BucketHero FROM Data_Car_Buckets ORDER BY BucketHero DESC, CarId")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for (car, bucket) in rows.flatten() {
+            catalog.car_bucket.insert(car, bucket);
+            catalog.bucket_cars.entry(bucket).or_default().push(car);
         }
 
         let mut stmt =

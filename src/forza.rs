@@ -64,19 +64,20 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
             ctx.event("livery", format!("Pintura salva para {}", ctx.car_name(car)), json!({ "name": params["name"], "carId": car }));
             json!({})
         }
-        // No other players' scores to race against yet. An Xls error is the same "no rival"
-        // the game gets from a 503 today, without looking like a server failure.
-        (false, "Scoreboard", "GetRival") => json!({ "__xtsw_error": { "code": 1, "message": "no rival" } }),
-        // Empty drivatar list: the game falls back to its offline AI. Off by default in
-        // responses/routes.json until tested in game (null results have crashed it before).
-        (false, "Drivatar", "GetDrivatarInformationForRace") => json!({
-            "playerData": {
-                "GamerTag": ctx.store.gamertag(ctx.xuid), "Xuid": ctx.xuid,
-                "UserSkillLevel": params["skillSelection"],
-            },
-            "drivatarInfos": [],
-            "currentTime": iso_utc(crate::unix_ms()),
-        }),
+        (false, "Scoreboard", "GetRival") => random_rival(ctx, params),
+        (false, "Drivatar", "SaveDrivatarInformation") => save_drivatar(ctx, params),
+        (false, "Drivatar", "GetDrivatarInformationForRace") => drivatars_for_race(ctx, params),
+        (false, "Drivatar", "GetDrivatarsForCache") => {
+            let n = params["numberOfDrivatars"].as_i64().unwrap_or(0).clamp(0, 200) as usize;
+            let infos: Vec<Value> = ctx
+                .store
+                .drivatar_owners(ctx.xuid, 500)
+                .into_iter()
+                .filter_map(|owner| racing_info(ctx, owner, -1, None))
+                .take(n)
+                .collect();
+            json!({ "drivatarInfos": infos })
+        }
         (false, "GameplayLog", "Write") => {
             ctx.event("gameplay", "Log de gameplay recebido", params.clone());
             json!({})
@@ -119,7 +120,7 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         | (false, "CarClub", "GetRecommendedClubs")
         | (false, "User", "GetOwnedProducts")
         | (false, "User", "GetCompareStatsForRelatedUsers")
-        | (false, "Drivatar", "GetDrivatarsForCache") => json!({}),
+        => json!({}),
         _ => return None,
     })
 }
@@ -355,6 +356,168 @@ fn reconcile(ctx: &Ctx, params: &Value) -> Value {
             json!({ "__xtsw_error": { "code": 6, "message": "unknown transaction" } })
         }
     }
+}
+
+// ---------------------------------------------------------------- drivatars
+
+fn save_drivatar(ctx: &Ctx, params: &Value) -> Value {
+    ctx.store.save_drivatar(ctx.xuid, params);
+    let segments = params["segmentInformation"].as_array().map(Vec::len).unwrap_or(0);
+    let curves = params["curveTypes"].as_array().map(Vec::len).unwrap_or(0);
+    ctx.event(
+        "drivatar",
+        format!("Seu drivatar aprendeu: {segments} trecho(s), {curves} tipo(s) de curva"),
+        json!({ "segments": segments, "curves": curves }),
+    );
+    json!({})
+}
+
+/// The car a player's drivatar brings to a race of `bucket` (<= 0: any bucket):
+/// their most-raced garage car in that bucket, else the bucket's hero car.
+fn drivatar_car(ctx: &Ctx, owner: u64, bucket: i64) -> Option<i64> {
+    let mut garage: Vec<Value> = ctx.store.tables(owner).remove("garageCars").and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    garage.sort_by_key(|c| -c["numRaces"].as_i64().unwrap_or(0));
+    let in_bucket = |car: i64| bucket <= 0 || ctx.catalog.car_bucket.get(&car) == Some(&bucket);
+    garage
+        .iter()
+        .filter_map(|c| c["carId"].as_i64())
+        .find(|&car| in_bucket(car))
+        .or_else(|| (bucket > 0).then(|| ctx.catalog.bucket_cars.get(&bucket).and_then(|cars| cars.first().copied())).flatten())
+}
+
+/// DrivatarRacingInfo for one player. `car` None: pick with drivatar_car; others without a
+/// stored drivatar or a usable car are left out (the game fills the grid with its own AI).
+fn racing_info(ctx: &Ctx, owner: u64, bucket: i64, car: Option<i64>) -> Option<Value> {
+    let (data, _, _) = ctx.store.drivatar(owner)?;
+    let car = car.or_else(|| drivatar_car(ctx, owner, bucket))?;
+    let take = |v: &Value, max: usize| Value::Array(v.as_array().map(|a| a.iter().take(max).cloned().collect()).unwrap_or_default());
+    Some(json!({
+        "GamerTag": ctx.store.gamertag(owner),
+        "IsFriend": false,
+        "Xuid": owner,
+        "CarId": car,
+        "LiveryId": 0,
+        "TuneId": 0,
+        "BucketId": bucket.max(0),
+        "Segments": take(&data["segmentInformation"], 200),
+        "Curves": take(&data["curveTypes"], 20),
+        "UserInfo": data["info"],
+        "UserSkillLevel": 1,
+        "wristbandLevel": 0,
+    }))
+}
+
+/// The race grid: playerData is the player's own drivatar (what the server learned so far,
+/// so the game keeps training it); drivatarInfos are the other players' drivatars. With a
+/// single player the list is empty and the game uses its offline AI.
+fn drivatars_for_race(ctx: &Ctx, params: &Value) -> Value {
+    let bucket = params["bucketId"].as_i64().unwrap_or(-1);
+    let n = params["numberOfDrivatars"].as_i64().unwrap_or(0).clamp(0, 64) as usize;
+    let ids = |k: &str| -> Vec<u64> { params[k].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default() };
+    let (cached, new_cars) = (ids("cachedDrivatars"), ids("cachedDrivatarsNewCars"));
+    let others: Vec<Value> = ctx
+        .store
+        .drivatar_owners(ctx.xuid, 500)
+        .into_iter()
+        .filter(|x| !cached.contains(x) || new_cars.contains(x))
+        .filter_map(|owner| racing_info(ctx, owner, bucket, None))
+        .take(n)
+        .collect();
+    let player = racing_info(ctx, ctx.xuid, bucket, Some(0)).unwrap_or_else(|| {
+        json!({ "GamerTag": ctx.store.gamertag(ctx.xuid), "Xuid": ctx.xuid, "UserSkillLevel": params["skillSelection"] })
+    });
+    if !others.is_empty() {
+        let names: Vec<&str> = others.iter().filter_map(|o| o["GamerTag"].as_str()).collect();
+        ctx.event("drivatar", format!("{} drivatar(es) no grid: {}", others.len(), names.join(", ")), json!({ "bucket": bucket }));
+    }
+    json!({ "playerData": player, "drivatarInfos": others, "currentTime": iso_utc(crate::unix_ms()) })
+}
+
+// ---------------------------------------------------------------- rivals
+
+/// splitmix64 seeded from the clock and a call counter: random-looking rivals without a
+/// dependency, different even for two calls in the same millisecond.
+fn rng() -> impl FnMut() -> f64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    let mut s = (crate::unix_ms() as u64) ^ CALLS.fetch_add(1, Ordering::Relaxed).wrapping_mul(0xd1b5_4a32_d192_ed03);
+    move || {
+        s = s.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = s;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        (z >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+const RIVAL_NAMES: &[&str] = &[
+    "ApexHunter", "LateBraker", "NeonDrifter", "CurbKisser", "GhostLine", "RedlineRita",
+    "SlipstreamSam", "TurboTaxi", "HorizonHero", "GravelGrace", "NitroNico", "MidnightMara",
+];
+
+/// Scoreboard.GetRival: a made-up rival around the player's own time on that track (or a
+/// time from the track length), so the rival shows up in game. Real rivals come with friends.
+fn random_rival(ctx: &Ctx, params: &Value) -> Value {
+    let mut rand = rng();
+    let int = |k: &str| params[k].as_i64().unwrap_or(-1);
+    let (board, score_type, track) = (int("scoreboardType"), int("scoreType"), int("trackId"));
+    let mine = ctx.store.leaderboard(board, score_type, Some(track), None).into_iter().find(|r| r.xuid == ctx.xuid);
+    let lower = crate::db::lower_is_better(score_type);
+    let base = match &mine {
+        Some(r) => r.score,
+        None if lower => {
+            // seconds at ~110 km/h over the track length, or 90 s
+            ctx.catalog.tracks.get(&track).map(|t| t.length_m as f64 / 30.5).filter(|s| *s > 5.0).unwrap_or(90.0)
+        }
+        None => 25_000.0,
+    };
+    // a bit faster or slower than you: 6 % quicker to 3 % slower (times), similar for points
+    let factor = 0.94 + rand() * 0.09;
+    let score = if lower { base * factor } else { base * (2.0 - factor) };
+    let score = (score * 1000.0).round() / 1000.0;
+
+    let car = mine
+        .as_ref()
+        .and_then(|r| r.data["carId"].as_i64())
+        .or_else(|| drivatar_car(ctx, ctx.xuid, -1))
+        // never an invalid id: any real car (the Supra if present)
+        .or_else(|| ctx.catalog.car(461).map(|c| c.id).or_else(|| ctx.catalog.cars.keys().next().copied()))
+        .unwrap_or(461);
+    let cat = ctx.catalog.car(car);
+    let name = RIVAL_NAMES[(rand() * RIVAL_NAMES.len() as f64) as usize % RIVAL_NAMES.len()];
+    let xuid = 0x0009_0000_0100_0000u64 + (rand() * 1_000_000.0) as u64;
+    let bounty = ((1000.0 + rand() * 9000.0) / 100.0).round() as i64 * 100;
+    let days_ago = (rand() * 20.0) as i64;
+    ctx.event(
+        "rival",
+        format!(
+            "Rival em {}: {name} com {}{}",
+            ctx.track_name(track),
+            format_score(score, score_type),
+            cat.map(|c| format!(" ({})", c.name)).unwrap_or_default()
+        ),
+        json!({ "rival": name, "score": score, "trackId": track, "bounty": bounty }),
+    );
+    let row = json!({
+        "position": 1,
+        "rank": 1,
+        "user": {
+            "qwXuid": xuid, "wzGamerTag": name, "flags": 0, "clubId": 0, "clubTag": "",
+            "clubTopTierCount": 0, "roleInClub": 0, "acceptsClubInvites": false,
+            "currentCareerLevel": 20 + (rand() * 200.0) as u32, "currentBadgeId": 0, "currentPlayerTitleId": 0,
+        },
+        "score": score,
+        "submittedTime": iso_utc(crate::unix_ms() - days_ago * 86_400_000),
+        "carId": car,
+        "carClassId": cat.map(|c| c.class_id).unwrap_or(0),
+        "carPerformanceIndex": cat.map(|c| c.pi as f64 / 1000.0).unwrap_or(0.5),
+        "usedSTM": false, "usedTCS": false, "usedABS": true, "usedAutoBrake": false,
+        "usedAutoShifting": rand() < 0.5, "usedClutch": false, "isClean": true,
+        "ghostFileId": 0,
+        "bounty": bounty,
+    });
+    json!({ "rival": { "scoreData": row, "bounty": bounty } })
 }
 
 fn create_tune(ctx: &Ctx, params: &Value) -> Value {
