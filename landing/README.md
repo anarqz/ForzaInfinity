@@ -14,7 +14,7 @@ Settings (`.env`, see `.env.example`):
 
 | Variable | |
 |---|---|
-| `VITE_STATS_URL` | The server's `GET /infinity/v1/stats` (CORS is open). Default `http://localhost:8081/infinity/v1/stats`. |
+| `VITE_STATS_URL` | The server's `GET /infinity/v1/stats` (CORS is open). Default: the public server, `https://infinity.anarqz.dev/infinity/v1/stats` (`.env.example` points at a local one). |
 | `VITE_SERVER_ADDRESS` | The `host:port` players connect to, shown in the install steps. Empty: "ask whoever runs your server". |
 | `VITE_REPO` | `owner/name`; download links go to its latest release. Default `anarqz/ForzaInfinity`. |
 | `VITE_BASE` | The path the site is served under (`/ForzaInfinity/` on GitHub Pages). |
