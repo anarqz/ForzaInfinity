@@ -21,6 +21,7 @@ use crate::{gamedb::Catalog, unix_ms};
 
 pub mod accounts;
 pub mod clubs;
+pub mod integrity;
 pub mod notifications;
 pub mod saves;
 pub use clubs::{ClubFields, ROLE_COLEADER, ROLE_LEADER, ROLE_MEMBER};
@@ -104,6 +105,7 @@ impl Store {
         db.execute_batch(notifications::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(accounts::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(saves::SCHEMA).map_err(|e| e.to_string())?;
+        db.execute_batch(integrity::SCHEMA).map_err(|e| e.to_string())?;
         Ok(Store { db: Mutex::new(db) })
     }
 
@@ -692,6 +694,7 @@ impl Store {
                 "DELETE FROM devices WHERE xuid = ?1",
                 "DELETE FROM web_keys WHERE xuid = ?1",
                 "DELETE FROM saves WHERE xuid = ?1",
+                "DELETE FROM integrity WHERE xuid = ?1",
                 "DELETE FROM friend_requests WHERE from_xuid = ?1 OR to_xuid = ?1",
             ] {
                 db.execute(sql, [x])?;
@@ -936,6 +939,8 @@ impl Store {
             "friends": self.friends_json(xuid),
             "presence": self.presence_json(xuid),
             "notifications": self.notifications_json(xuid),
+            // refused syncs (forza/gates.rs)
+            "integrity": self.integrity_json(xuid),
         }))
     }
 

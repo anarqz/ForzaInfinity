@@ -21,6 +21,8 @@ pub struct Car {
     /// Display PI (e.g. 608), from PerformanceIndex 0.608.
     pub pi: i64,
     pub media_name: String,
+    /// Stock top speed, m/s (Data_Car TopSpeed-mph): the integrity checks' reference.
+    pub top_speed_mps: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,7 +73,7 @@ impl Catalog {
         }
 
         let mut stmt = db
-            .prepare("SELECT Id, Year, MakeID, MediaName, ClassID, PerformanceIndex FROM Data_Car")
+            .prepare("SELECT Id, Year, MakeID, MediaName, ClassID, PerformanceIndex, \"TopSpeed-mph\" FROM Data_Car")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| {
@@ -82,16 +84,27 @@ impl Catalog {
                     r.get::<_, String>(3)?,
                     r.get::<_, i64>(4)?,
                     r.get::<_, f64>(5)?,
+                    r.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
                 ))
             })
             .map_err(|e| e.to_string())?;
-        for (id, year, make_id, media, class_id, pi) in rows.flatten() {
+        for (id, year, make_id, media, class_id, pi, top_mph) in rows.flatten() {
             let make = makes.get(&make_id).cloned().unwrap_or_default();
             let model = model_from_media(&media);
             let name = format!("{make} {model} {year}").trim().to_owned();
             catalog.cars.insert(
                 id,
-                Car { id, name, make, model, year, class_id, pi: (pi * 1000.0).round() as i64, media_name: media },
+                Car {
+                    id,
+                    name,
+                    make,
+                    model,
+                    year,
+                    class_id,
+                    pi: (pi * 1000.0).round() as i64,
+                    media_name: media,
+                    top_speed_mps: top_mph * 0.44704,
+                },
             );
         }
 

@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::{db::Store, gamedb::Catalog};
 
 mod clubs;
+mod gates;
 mod notifications;
 pub use notifications::challenge_target;
 
@@ -457,7 +458,37 @@ fn user_data(ctx: &Ctx, xuid: u64) -> Value {
     })
 }
 
+/// The player's garage car ids, as last synced.
+fn garage_cars(ctx: &Ctx) -> Vec<i64> {
+    ctx.store.tables(ctx.xuid).get("garageCars").and_then(Value::as_array).map(|rows| rows.iter().filter_map(|r| r["carId"].as_i64()).collect()).unwrap_or_default()
+}
+
 fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
+    // integrity: credits / XP / level growth and top speed within reason (gates.rs)
+    let now = crate::unix_ms();
+    let checked = gates::progress(params).and_then(|p| {
+        gates::check_growth(ctx.store.baseline(ctx.xuid).as_ref(), &p, now)?;
+        // a new top speed record must fit the cars (an old record may come from a car since sold)
+        let record = ctx.store.profile_data(ctx.xuid)["playerRaceHistory"][0]["topSpeed"].as_f64().unwrap_or(0.0);
+        if p.top_speed > record + 0.5 {
+            gates::check_top_speed(ctx.catalog, &garage_cars(ctx), p.top_speed)?;
+        }
+        Ok(p)
+    });
+    let progress = match checked {
+        Ok(p) => p,
+        Err(reason) => {
+            gates::refuse(ctx, "Profile sync", &reason);
+            return json!({});
+        }
+    };
+    ctx.store.set_baseline(ctx.xuid, &crate::db::integrity::Baseline {
+        credits: progress.credits,
+        xp: progress.xp,
+        level: progress.level,
+        winnings: progress.winnings,
+        synced: now,
+    });
     ctx.store.save_profile(ctx.xuid, params);
     let race = &params["playerRaceHistory"][0];
     let history = &params["playerHistory"][0];
@@ -478,7 +509,14 @@ fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
 }
 
 fn profile_update_tables(ctx: &Ctx, params: &Value) -> Value {
+    // integrity: only real cars, and not a garage full of them at once
+    let stored = garage_cars(ctx).len();
+    if let Err(reason) = gates::check_garage(ctx.catalog, params, stored, ctx.store.garage_baseline(ctx.xuid), crate::unix_ms()) {
+        gates::refuse(ctx, "Garage sync", &reason);
+        return json!({});
+    }
     let summary = ctx.store.apply_tables(ctx.xuid, params);
+    ctx.store.set_garage_baseline(ctx.xuid, garage_cars(ctx).len() as i64);
     let cars = params["garageCars"].as_array().map(Vec::len).unwrap_or(0);
     let removed = params["deleteGarageCars"].as_array().map(Vec::len).unwrap_or(0);
     let title = if cars + removed > 0 {
@@ -502,6 +540,14 @@ fn submit_score(ctx: &Ctx, params: &Value) -> Value {
     let score = data["score"].as_f64().unwrap_or(f64::NAN);
     if !score.is_finite() || score <= 0.0 || score > 1e9 {
         return json!({ "__xtsw_error": { "code": 1, "message": "invalid score" } });
+    }
+    // integrity: a race time the car could not have done
+    if crate::db::lower_is_better(score_type) {
+        let car = data["carId"].as_i64().unwrap_or(-1);
+        if let Err(reason) = gates::check_race_time(ctx.catalog, car, data["trackId"].as_i64().unwrap_or(-1), score) {
+            gates::refuse(ctx, "Score", &reason);
+            return json!({ "__xtsw_error": { "code": 1, "message": "invalid score" } });
+        }
     }
     let score_id = ctx.store.add_score(ctx.xuid, score_type, data);
     let car = ctx.car_name(data["carId"].as_i64().unwrap_or(-1));
@@ -577,6 +623,11 @@ fn download_file(ctx: &Ctx, params: &Value) -> Value {
 fn submit_xp(ctx: &Ctx, params: &Value) -> Value {
     // one race pays at most a few thousand XP; the club ladder adds these up
     let xp = params["xp"].as_f64().filter(|x| x.is_finite()).unwrap_or(0.0).clamp(0.0, 50_000.0);
+    // integrity: XP reported in the last hour within reason
+    if ctx.store.xp_since(ctx.xuid, crate::unix_ms() - 3_600_000) + xp > gates::XP_REPORTED_PER_HOUR {
+        gates::refuse(ctx, "XP", &format!("{:.0} XP over an hour", gates::XP_REPORTED_PER_HOUR));
+        return json!({ "weeklyTierAchieved": false, "weeklyTierInfo": {} });
+    }
     ctx.store.add_xp(ctx.xuid, xp);
     ctx.event("xp", format!("+{} XP", xp.round() as i64), json!({ "xp": xp }));
     json!({ "weeklyTierAchieved": false, "weeklyTierInfo": {} })
