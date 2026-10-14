@@ -1,0 +1,264 @@
+# FH2Online: handoff
+
+Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
+
+## Objetivo
+
+Fazer o Forza Horizon 2 (Xbox One, rodando no PC pelo Azimuth 0.9.7) voltar a ter serviços online, com um backend nosso em Rust.
+- Não reimplementamos o Azimuth. Fazemos hook nele, com a mesma estratégia do ExtraOptions: o `azimuth-tls.dll` é substituído por um fork do ExtraOptions.
+- Primeiro capturamos o que o jogo envia e espera. Depois respondemos a partir do servidor de testes.
+
+## Onde está tudo (PC "diablo", usuário alcmo)
+
+| Caminho | O que é |
+|---|---|
+| `Downloads\GAMES\FH2\azimuth-windows\azimuth.exe` | Azimuth 0.9.7 (TimeDateStamp `0x6acb70a6`, SizeOfImage `0x352000`) |
+| `...\azimuth-windows\data\bin\` | DLL instalado (`azimuth-tls.dll`), `azimuth-tls.dll.stock` (original, 4,6 KB), `FH2_ExtraOptions.ini`, `FH2_ExtraOptions.log`, `FH2_Network.jsonl` |
+| `...\azimuth-windows\data\logs\azimuth.log` | Log do próprio Azimuth (sessões, sem detalhe de rede) |
+| `Downloads\GAMES\FH2\ForzaHorizon2\Mount\forza_durango_release_final.exe` | Jogo (60 MB, SHA-256 `3ec04c61…cb7f0a3`, que o Azimuth exige) |
+| `Downloads\GAMES\FH2\ExtraOptionsRelease\` | Release original do ExtraOptions 0.2.34 (INI e Gamerpic de referência) |
+| `Downloads\GAMES\FH2\ExtraOptions\` | Clone do upstream (RokkuDayo/ForzaHorizon2_ExtraOptions) |
+| `Downloads\GAMES\FH2\FHPC\` | Projeto antigo (reimplementação do Azimuth). Abandonado, mas `docs\loader.md` documenta o boot do Azimuth |
+| **`Downloads\GAMES\FH2\FH2Online\`** | **Este projeto** |
+| `FH2Online\hook\` | Fork do ExtraOptions, branch `fh2online`, git completo. O módulo novo é `adapters\azimuth_net.c` |
+| `FH2Online\server\` | `fh2-server` em Rust (só std + serde_json + base64), git próprio |
+| `FH2Online\bin\` | DLLs compilados (`azimuth-tls-fh2online5.dll` é o atual) e `network-section.ini` |
+| `FH2Online\captures\` | Capturas guardadas |
+| `FH2Online\notes\` | Descompilações do Azimuth (`decomp\*.c`), JSONs do REA, scripts do daemon REA |
+| `Downloads\Ghidra\` | `ghidra_12.1.4_PUBLIC`, `jdk21`, `zig\zig.exe` (0.15.2), `uv` (ghidra-mcp), .bats de setup |
+| `C:\Users\alcmo\FH2_RE` | Projeto Ghidra com o `azimuth.exe` analisado. O CodeBrowser foi salvo com o GhidraMCPPlugin, e a ponte sobe com `Downloads\Ghidra\start-ghidra-mcp.bat` (HTTP :8080) |
+
+## O que já está provado
+
+1. **O hook HTTP funciona.**
+   - O Azimuth implementa o próprio `CoCreateInstance` (RVA `0x6dbe0`). Para `CLSID_FreeThreadedXMLHTTP60`, ele devolvia um `OfflineRequest` (erro `0x800C0005`).
+   - Nós escrevemos um jump de 14 bytes nesse ponto, depois de conferir o SHA-256 dos 32 primeiros bytes (`bdac0438…cbec`). O XHR passa a ser o nosso `IXMLHTTPRequest2`.
+   - O MMDeviceEnumerator continua indo para a fábrica do Azimuth, em RVA `0x144400`. Qualquer outro CLSID recebe `REGDB_E_CLASSNOTREG` e vai para o log.
+2. **O bloqueio online era o token.**
+   - O `User.GetTokenAndSignatureAsync` do Azimuth (RVA `0x960b0`) devolve uma operação async já falha com `0x800704CF`. Sem token, nem a XSAPI nem o jogo montam a requisição.
+   - Agora as 6 entradas de vtable do `User` (RVAs `.rdata` `0x24ff90`, `0x24ff98`, `0x24ffa0`, `0x250290`, `0x250298`, `0x2502a0`) apontam para thunks nossos. Eles devolvem um `IAsyncOperation<GetTokenAndSignatureResult>` já concluído.
+   - O resultado tem dois getters de HSTRING: **getter 0 = Signature, getter 1 = Token**, confirmado por captura. As HSTRINGs são criadas com o `WindowsCreateString` do Azimuth (RVA `0x86110`).
+   - A posição do parâmetro de saída por slot é e/g/f/e/g/f, para as assinaturas (method, url, headers, out), (…, bodyLen, body, out) e (…, body, out).
+3. **O caminho jogo → hook → servidor Rust funciona** (`Mode=Proxy`, `Server=127.0.0.1:8081`). Alex rodou e o servidor recebeu tudo.
+4. **Classes WinRT.**
+   - O `GetActivationFactoryByPCWSTR` do Azimuth (RVA `0x6da50`, também com hook nosso para trace) tenta 7 provedores. Os RVAs são `0x143020`, `0x2cf50`, `0x1431e0`, `0x93bd0`, `0x144250`, `0x1454b0` e `0x14a310`.
+   - Todas as 20 classes que o jogo pede são atendidas, inclusive `Windows.Networking.Connectivity.NetworkInformation`. A rede não é bloqueio.
+5. **O usuário que o Azimuth inventa:** XUID `0x0009000000000000` (2533274790395904), hash `"1"`, `IsSignedIn = true`, `IsGuest = false`, gamertag vinda do `player_name` do `azimuth.ini` ("Player 1").
+
+## Tráfego que o jogo gera hoje (até o menu, cerca de 1 minuto)
+
+| Requisição | Situação |
+|---|---|
+| `POST https://gameservices.FH2.forzamotorsport.net/Services.FH2Release/o.xtsw`, com `X-ClassName: Forza.WebServices.User, Forza.WebServices` e `X-Method: Logon` | **Próximo alvo.** Corpo binário de 111 bytes. Repete enquanto não recebe sucesso |
+| `GET sessiondirectory.xboxlive.com/serviceconfigs/788f0100-a4bc-46c3-b19b-d1001a96545b/sessiontemplates/defaultTemplate_qos/sessions?xuid=…&private=true&take=32` (contract 105) | Stub `{"results":[]}` |
+| `GET achievements.xboxlive.com/users/xuid(…)/achievements?titleId=446059611&types=challenge&unlockedOnly=true&maxItems=20` (contract 2) | Stub com lista vazia + pagingInfo |
+| `POST gameserverds.xboxlive.com/titles/1368890819/variants`, corpo `{"locale":"en-us","maxVariants":8,"publisherOnly":false}` | Stub `{"variants":[],"variantSchemas":[]}` |
+| `GET music.xboxlive.com/1/user/music/profile` | Stub chutado |
+
+Os stubs ficam em `server\responses\hosts\<host>\_default.json` e **ainda não foram testados com o jogo**.
+
+Headers do Forza:
+- `Content-Type: bin/xtsw`, `User-Agent: Xls Client`
+- `X-TitleID: 446059611`, `X-UserId: 0x9000000000000`, `X-CorrelationId: <n>`
+- `Authorization` e `Signature`, vindos do token falso
+- O jogo manda `Host: 127.0.0.1` por conta própria
+
+Corpo do `User.Logon`, hex, da captura `captures\2026-10-13_first-capture.jsonl`:
+
+```
+00 09 00 00 00 00 00 00   XUID u64 big-endian
+00 00 00 08 "Player 1"    string: u32 BE length + bytes
+00 … 00 16 … 00 06 … 00 00 00 03 00 00 00 18 <24 bytes> …
+```
+
+## Sessão 2 (2026-10-13, local no PC): esquema extraído e `User.Logon` implementado
+
+- **`tools/extract_schema.py`** gera `server/schema.json` a partir do exe em menos de 1 s: 571 tipos, 30 classes, 201 métodos (stub + inferência pelo nome do tipo). Só precisa de `pefile`.
+  - Python: `C:\Users\alcmo\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe` (gerenciado pelo uv; crie um venv com `Downloads\Ghidra\uv\uv.exe venv` e `uv pip install pefile`). O `python` do PATH é o alias da Store.
+  - Tipos sem classe no exe (código morto): DLCMetadata, GiftPhoto, GiftReplay, LargeFileUpload, SharedCar.
+- **Formato `bin/xtsw` todo documentado em `notes/xtsw-format.md`**, lido do próprio leitor do jogo (decompilações em `notes/decomp-game/`). Resumo: big-endian, posicional, string/blob/array com u32 de tamanho; resposta = `[u32 status][u32 code][u32 msgLen]` + `_Results` (status 0 = sucesso).
+- O Logon de 111 bytes da captura bate byte a byte com o esquema (teste em `server/src/xtsw.rs`).
+- **Servidor:**
+  - `src/xtsw.rs` faz o codec guiado pelo `schema.json` (embutido no binário com `include_str!`).
+  - `src/forza.rs` tem os handlers embutidos. O primeiro é o `Forza.WebServices.User.Logon`, que ecoa XUID/gamertag/nível e grava `data/users/<xuid>.json`.
+  - Toda requisição Forza tem os `_Parameters` decodificados em `request_xtsw` na captura, e a resposta enviada vai em `response_xtsw`.
+  - Os specs aceitam `"xtsw": {...}`, que vai mesclado sobre o handler embutido (campos ausentes = zero), e `"xtsw_error": {code, message}`.
+  - As pastas agora são `responses/forza/<Classe>/` para Forza.WebServices e `responses/xls/<Classe>/` para Xls.WebServices. Nas regras de `routes.json`, `class` é o nome completo (`Forza.WebServices.User`).
+- **`tools/xtsw.py`** é um decodificador independente. `--replay <captura>` reenvia as requisições Forza ao servidor e decodifica requisição e resposta. Foi testado ponta a ponta: Logon → HTTP 200, 267 bytes, decodificado sem sobra.
+- O Ghidra headless funciona no exe do jogo sem análise completa: `C:\Users\alcmo\FH2_RE_game` + `notes/ghidra-scripts/Decomp.java`, que decompila ~1200 funções em segundos.
+
+**Teste 1 com o jogo (2026-10-13 19:32):**
+- O Logon passou. O jogo seguiu para `OnlineProfile.UpdateAllTables`/`UpdateAll`, `Storefront.*`, `User.GetCompareStatsForRelatedUsers` e `User.GetEconomySettings`, todos ainda 503.
+- Depois houve um crash em `game+0x41fd28`, ao ler 0x0 (dump em `azimuth-windows\data\logs\20261013T223229-*.dmp`).
+- Causa: o XSAPI copia o corpo de **toda** resposta para um `Windows.Storage.Streams.DataWriter` criado com `ActivateInstance` (`WriteBytes` e depois `DetachBuffer`). Esse código é o `FUN_1800378b0`/`FUN_180038b30` em `Microsoft.Xbox.Services.dll`.
+  - Se o buffer sai vazio, `FUN_180023f40` não cria resultado: a operação assíncrona termina "Completed" com resultado nulo.
+  - O código de challenges do jogo (`FUN_140415030`) não checa nulo e quebra. Com 503 não quebrava, porque a operação termina em Error.
+  - O Azimuth não tem `IDataWriter` próprio: a classe sai de uma tabela genérica. Isso explica por que nenhum JSON do Xbox Live chegava ao jogo (o `DataReader` nunca foi ativado).
+- Correção no hook (`fh2online.6`, commit `1e99ad7`): um autoteste do `DataWriter` do Azimuth roda na primeira ativação. Se falhar, o hook entrega o seu próprio `DataWriter`, que gera o resultado num `Buffer` do Azimuth. O log mostra `WINRT: DataWriter self-test: ...`. **Ainda não foi testado com o jogo.**
+- Teste 2 (`.6`): confirmou `Azimuth's writer loses the bytes`. Com o writer substituído, o `DataReader` passou a ser ativado, mas o crash continuou: o `DataReader` do Azimuth também é genérico, e o `ReadString` sai vazio.
+- `.7` (commit `fb55dab`): também substitui o `DataReader` (`IDataReaderStatics.FromBuffer` e um leitor completo). As HSTRINGs são criadas com o `WindowsCreateString` do Azimuth (RVA `0x86110`). O log mostra `WINRT: DataReader self-test: ...`.
+- Teste 3 (`.7`): o filtro do `DataReader` não disparou porque o IID estava errado (`...e3 49 3c 3c`; o certo é `...e3 49 31 3c`). Corrigido no `.8` (commit `e045df7`, SHA-256 `e8b9bafb…0079`). **Ainda não foi testado com o jogo.** Lição: conferir os IIDs pelas constantes do próprio binário, não de memória.
+- O projeto Ghidra `C:\Users\alcmo\FH2_RE_game` agora também tem `Microsoft.Xbox.Services.dll` (sem análise).
+
+- **Teste 4 (`.8`): funcionou.** Os dois autotestes trocaram o writer e o reader, e o Alex fez uma corrida inteira sem crash. Os stubs JSON do Xbox Live (achievements, variants, qosservers, sessiondirectory, music) agora chegam ao jogo.
+- Métodos Forza pedidos nessa sessão (`server-1791932302627.jsonl`, todos 503 menos o Logon):
+  - `Storefront`: GetLiveriesForDrivatar (44x, em loop), GetFileKeywords, GetFeaturedLiveriesForRandomCars;
+  - `User`: GetEconomySettings, GetCompareStatsForRelatedUsers, GetUserData, GetOwnedProducts;
+  - `OnlineProfile`: UpdateAll, UpdateAllTables;
+  - `CarClub`: GetRecommendedClubs, GetClubKeywords;
+  - `Scoreboard`: GetBestScore, SubmitScore, SubmitXpScore, GetRowsAnthem, GetRival;
+  - `Notifications.RetrieveForUser`, `GameplayLog.Write`, `ContentVersioning.CreateVersionedTuneFromStructs`, `Drivatar.GetDrivatarsForCache`, `DailyCreditBonus.GetPayout`;
+  - no Xbox Live, `eds.xboxlive.com/media/.../fields` também respondeu 503.
+- O `schema.json` foi gerado de novo (commit `ad724d3`, kind 0x13 = f64). Antes disso, o `SubmitScore` não decodificava.
+
+## Sessão 3: perfil em SQLite + manager web ao vivo (commit `1231cca` no server)
+
+- **Banco:** `server/data/fh2online.sqlite`, temporário (pode apagar: o jogo reenvia o perfil). Tabelas:
+  - `users`;
+  - `profile` (o último `UpdateAll`: créditos, nível, XP, histórico de corridas, stats);
+  - `profile_tables` (`UpdateAllTables` em deltas: cada tabela é um mapa por id, com os `delete*` aplicados; a garagem é a `garageCars`);
+  - `scores`, `xp`, `tunes`, `events` (o feed).
+- **SQLite no toolchain GNU:** `rusqlite` com `bundled`, e o C compilado pelo `zig cc` via `server/.cargo/config.toml`. O `CRATE_CC_NO_DEFAULTS` é necessário porque o cc-rs passa `--target=x86_64-pc-windows-gnu`, que o zig não aceita.
+- **Handlers com banco** (`forza.rs`):
+  - Logon, que devolve como checkpoint o `transactionId` guardado;
+  - Xls `User.GetUserData`;
+  - `OnlineProfile.UpdateAll`/`UpdateAllTables`;
+  - `Scoreboard.SubmitScore`/`SubmitXpScore`/`GetBestScore`/`GetRowsAnthem` (hipótese: scoreType 1 = tempo, menor é melhor);
+  - `ContentVersioning.CreateVersionedTuneFromStructs`, `GameplayLog.Write`, Xls `Notifications.RetrieveForUser`, `DailyCreditBonus.GetPayout`;
+  - listas vazias para storefront, clubes e drivatares;
+  - `profile.xboxlive.com/users/batch/profile/settings`.
+  - **Ficam 503 de propósito:** `User.GetEconomySettings` (zeros podem zerar recompensas; achar os padrões no exe), `Scoreboard.GetRival` e `Drivatar.GetDrivatarInformationForRace`.
+- **Catálogo** (`gamedb.rs`): o `ForzaHorizon2\Mount\media\stripped\gamedbRC.slt` é SQLite puro. `Data_Car` + `List_CarMake` + `CarClasses` + `Tracks` dão nomes como "Toyota Supra RZ 1998", classe e PI. Os nomes oficiais (`_&<hash>`) estão nos `stringtables\*.zip` (`.str` em formato `LSB2`, compactado, ainda não lido). As miniaturas estão nos `RC*.zip` como `.swatchbin` (textura Xbox).
+- **API e ao vivo:** `/api/users`, `/api/users/<xuid>`, `/api/catalog`, `/api/status`, `/ws` (WebSocket próprio, RFC 6455, que manda `request` e `event`) e `/ui/` (a build do React). Requisições com `X-Fh2-Original-Url` sempre vão para o caminho do jogo.
+- **Interface** em `FH2Online/web`: React 19 + Vite 8 + TS 7.
+  - `web\build.bat` gera o `web\dist`, servido em `http://127.0.0.1:8081/ui/`. O `web\dev.bat` usa a porta 5173 com proxy para o 8081.
+  - O Node portátil está em `Downloads\Tools\node-v24.21.0-win-x64` (checksum conferido).
+- **Validado** reenviando a sessão real (`tools/xtsw.py --replay`, que agora manda o `X-UserId` e tolera 503): perfil, garagem, score, XP e tune foram gravados, o WebSocket recebeu 82 requests e 9 eventos, e a interface foi conferida por screenshot (Edge headless).
+- **Correções depois do primeiro teste do manager** (commit `1ec54ef`):
+  - **WebSocket:** o GUID do RFC 6455 estava digitado errado (`…C5AB0DC11B65`; o certo é `…C85B11`), e todo navegador recusava o handshake. Os meus testes em Python e Node usavam o mesmo GUID errado e "passavam". Agora há um teste com o exemplo do próprio RFC.
+  - **Crash `game+0x124f916`:** veio do handler de `profile.xboxlive.com` (`GameDisplayPicRaw: ""` vira Uri nula no XSAPI, e o jogo não checa). O código agora manda URLs absolutas, **mas o `responses/routes.json` continua respondendo 503 para esse host** até ser testado.
+  - **Nível:** o perfil guarda o nível a partir de 0, e o jogo mostra `level + 1` (conferido: o mesmo snapshot tinha 120.866 CR, igual à tela, com nível 2 contra 3 no jogo). `compareStats.wristbandLevel` é na verdade o XP.
+  - Os números do manager só mudam quando o jogo manda o `UpdateAll` (fim de corrida, menus); entre um envio e outro, ficam defasados em relação à tela.
+- **Gamerpic** (commit `13cff6b`): `GameDisplayPicRaw` aponta para `http://gamerpic.fh2online/pic?xuid=…`, e o próprio servidor responde a imagem. A ordem é:
+  1. `data/gamerpics/<xuid>.png`;
+  2. o avatar público do Xbox 360 pelo gamertag (`avatar-ssl.xboxlive.com/avatar/<gt>/avatarpic-l.png`, que ainda funciona sem login; baixado com o `curl.exe` e guardado em cache);
+  3. um identicon pelo XUID.
+  - O "Player 1" do `azimuth.ini` é um gamertag real de outra pessoa.
+  - O `routes.json` com 503 virou `routes.disabled.json`. Se o crash voltar, é só renomear de volta.
+- **Transações** (commit `be5fa42`): o `User.RetrieveOnlineCredits` vai com `X-TransactionId`. Com 503, toda sessão deixava uma transação pendente, e o jogo repetia o `Xls Transaction.Reconcile` sem parar (30 vezes por sessão).
+  - Agora o servidor responde `credit: 0` e guarda a resposta exata. O `Reconcile` devolve essa resposta em `WebRequestPayload`, o corpo inteiro com o envelope, que o cliente processa como uma resposta atrasada (`FUN_140efce10`). Para uma transação desconhecida, devolve o erro Xls 6 (`0x80510006`), e o cliente encerra a transação (`FUN_140f04c80`).
+  - **Hipótese ainda não confirmada:** a transação pendente segura o `OnlineProfile.UpdateAll`. Na sessão das 21:05, o perfil só subiu no login, enquanto XP e pontuação subiram depois das corridas.
+- **Confirmado no jogo** (sessão das 21:21): com o `Reconcile` respondido, o `OnlineProfile.UpdateAll` passou a subir depois das corridas, e o `profile.xboxlive.com` com a URL nova não derrubou mais o jogo.
+- **Commit `0e397cb`:**
+  - `UpdateLivery`/`CreateVersionedLivery` gravados na tabela `liveries`;
+  - `GetRival` → erro Xls 1 ("sem rival");
+  - `Storefront.GetCuratedContent`/`GetMyFileList` → listas vazias;
+  - `Drivatar.GetDrivatarInformationForRace` → lista vazia, **mas o `routes.json` mantém 503 até ser testado**.
+- **`GetEconomySettings` resolvido** (servidor commit `4d174bb`; hook `0.2.34+fh2online.10`, commit `0dc4dcd`):
+  - O getter de `CreditsPerKm` nunca é chamado, porque o C++ lê o campo direto. Por isso a sonda passou para a entrada de `FUN_140561000` (`game+0x561000`): trampolim em `VirtualAlloc`, com 16 bytes sem RIP-relativo, que despeja o módulo uma vez no log.
+  - Valores reais: CreditDestinationBonus 30000, Falloff 2000, XPPerKmOffline 800, XPPerKmOnline 640, CreditsPerKm 960, MinimumFinishlineXP 0, SubmitXpFrequency 300000 ms, Tombola 1.0, Promo 1.0, Tokens 0, Music 0, **UseServerValues 1** (o jogo usa o que o servidor manda), RetrievalAttemptInterval 5 s, MaxRetry 120 s, Backoff 2.0.
+  - Cada propriedade ocupa um slot de 0x20 com o valor em +8. Ponteiros de tipo: int `0x142c91c20`, float `0x142c6f280`, bool `0x142c6f268`.
+  - O servidor responde com esses mesmos valores, e dá para ajustar pelo spec `forza/User/GetEconomySettings.json` (`xtsw`).
+  - As duas sondas continuam no hook. São inofensivas e podem sair numa próxima versão.
+- **Drivatares e rival** (commit `240bb67`, ainda não testados no jogo):
+  - `SaveDrivatarInformation` → tabela `drivatars`.
+  - `GetDrivatarInformationForRace`: `playerData` traz o drivatar do próprio jogador, e `drivatarInfos` traz os drivatares dos **outros** jogadores. O carro é o mais corrido da garagem dele dentro do bucket ou, se não houver, o herói do bucket (`Data_Car_Buckets`).
+  - `GetRival`: rival aleatório em torno do tempo do jogador. `ghostFileId` vai 0.
+  - Testado com dois jogadores no servidor de teste, com o `tools/xtsw.py`, que agora também codifica (`encode`).
+- **Primeiro teste no jogo do drivatar:** `GetDrivatarsForCache` e `GetDrivatarInformationForRace` → 200 com listas vazias, e o grid foi montado com a IA offline (pilotos sem nome), sem crash.
+- **Fantasmas implementados** (commit `2ffbd6b`, testados fora do jogo):
+  - O `SubmitScore` só pede o upload (`uploadFiles`) para um novo recorde pessoal no evento.
+  - A tabela `ghosts` guarda um fantasma por jogador e evento (chave: tipo de placar, tipo de pontuação, evento e pista). O `UploadFile` aceita o fantasma só se ele ainda for o recorde, e substitui o anterior mantendo o mesmo id.
+  - O `DownloadFile` responde pelo id (máximo de 512 KB, limite do leitor do jogo), e o `GetRowsAnthem` informa o `ghostFileId`.
+  - Os pedidos agora aceitam blobs de até 32 MB (`MAX_BLOB_IN`).
+  - **Falta ver no jogo** se o upload acontece e o tamanho real de um fantasma.
+- **Fantasmas (como o protocolo funciona):** o protocolo já prevê. O `SubmitScore` devolve `uploadFiles`; se for true, o jogo chama `Scoreboard.UploadFile(scoreId, blob)`. As linhas de placar e de rival trazem `ghostFileId`, que o jogo baixa com `Scoreboard.DownloadFile(id, maxSize)`.
+- **Histórico, antes da sonda: `GetEconomySettings` ficava 503.**
+  - As propriedades ficam no `ForzaEconomyModule`: o registro está em `FUN_14053bc10`, os getters em `0x14054xxxx`, e os valores no objeto em `+0x208`… `+0x348` (passo de 0x20). Os nomes são `CreditDestinationBonus`, `CreditDestinationFalloff`, `XPPerKmOffline`, `XPPerKmOnline`, `CreditsPerKm`, `MinimumFinishlineXP`, `SubmitXpFrequency`, `TombolaPrizeScale`, `HorizonPromoBonusScale`, `TokensEnabled`, `XboxMusicEnabled`, além de `UseServerValues` (`+0x1e8`) e `DownloadedEconomyValues` (`+0x351`).
+  - Os padrões não estão em XML (o `modules.xml` só lista o módulo) nem no gamedb: devem vir do construtor C++, que não foi localizado.
+  - A varredura da memória do jogo rodando (`memscan2.py`) não achou a instância.
+- **Menu online travado ("RECURSO BLOQUEADO… servidor de Forza não está disponível"): duas condições** (2026-10-13 23h):
+  - O popup `FUN_140ddd630(menu, motivo)` usa o motivo 0 = `IDS_Popup_FeatureLocked_LSPDown_Message`. O menu principal (`FUN_140db4f60`) exige `CLobby+0xf0` (CLobby em `*0x1434d6348`) **e** o LSP no ar (`FUN_14126c4c0`: `sessionObj+0x74 == 2 && +0x1131`; sessionObj = `*0x14367a6d0`).
+  - **LSP/permissões:** o PermissionsLoader fica embutido em `sessionObj+0x80` (estado em `+0x90`; 4 = carregado). O `FUN_14126c260(sess, área)` testa `+0x1131` e depois a máscara de áreas banidas (`loader+0x10ac`). O servidor agora responde `User.GetPermissionsTable` (commit `714549a`), com permissões vazias e máscara 0. Com o servidor no ar, o estado ficou OK (`+0x1131=1`, loader 4).
+  - **CLobby+0xf0 = "conectado ao Xbox Live"**, definido em `FUN_140a2b900` como `FUN_140a2fa40(CLobby+0xe8) == 2`. Esse estado é `NetworkInformation.GetInternetConnectionProfile().GetNetworkConnectivityLevel() == 4` (XboxLiveAccess, existe só no console). O Azimuth (provider 2) nunca devolve 4, então a flag fica em 0. Correção no hook `.11` (commit `02293df` no fork): shim de `INetworkInformationStatics` e `IConnectionProfile` que repassa tudo ao Azimuth e só sobe o nível para 4. O log registra `WINRT: connectivity level N ... reported as 4`.
+  - O Azimuth também stuba como offline as APIs de multiplayer real: `Windows.Xbox.Networking` (SecureDeviceAssociation, QoS), `Windows.Xbox.Multiplayer` (party) e privilégios da loja ("Restricted"). Veja as strings em `azimuth.exe` perto de `0x267b00` e `0x2692a8`. Multiplayer de verdade vai exigir substituir essas APIs pelo hook.
+- **Conquistas:** não passam pelo servidor. O FH2 desbloqueia via `Windows.Xbox.Achievements` local (Azimuth). Para mostrá-las, o hook precisa interceptar e repassar.
+
+**Próximo:**
+1. Alex roda o jogo com o servidor novo e vê o que vem depois do Logon (`captures/server-*.jsonl`, campo `request_xtsw`).
+2. Para cada método novo, escrever o handler em `forza.rs`, ou um spec com `xtsw`. `responses/forza/_default.example.json` responde sucesso vazio para tudo, se quiser ver até onde o jogo vai.
+3. Descobrir se `permissions` vazio bloqueia métodos, e o que `isProfileValid` dispara.
+
+## Esquema Forza.WebServices: onde começar (sessão 1, já feito)
+
+- O executável do jogo guarda o nome de cada campo logo antes do nome do tipo em `.rdata`:
+  - `loginData` em `0x141fa7bf8`, `ForzaUserLogon_Parameters` em `0x141fa7c08`;
+  - `responseData` em `0x141fa7c28`, `ForzaUserLogon_Results` em `0x141fa7c38`;
+  - também `isVip` / `ForzaUserGetVipState_Results` e `credit` / `ForzaUserRetrieveOnlineCredits_Results`.
+- 25 classes e cerca de 185 métodos. O nome da classe na requisição vem como `Forza.WebServices.<Classe>, Forza.WebServices`.
+- O framework é o "Xls" da Turn 10. Também aparecem `Xls.WebServices.User`, `Xls.WebServices.Club` e caminhos `/Services.Anthem*/o.xtsw`.
+- Pesquisa na internet em 2026-10-13: **não há documentação pública** do `bin/xtsw` nem projeto de servidor privado.
+- Base de imagem do jogo: `0x140000000`, que o Azimuth mapeia nesse endereço mesmo. Seções: `.text` `0x140001000`, `.rdata` `0x141dd0000`, `.data` `0x142c47000`.
+
+**Próximos passos:**
+1. **Extrator de esquema.** Achar quem aponta para essas strings: ponteiros absolutos de 8 bytes em `.rdata` e `.data`, ou `lea` RIP-relativo em `.text`. Entender o descritor de tipo (lista de campos com tipo e offset) e gerar `schema.json` com todos os `_Parameters` e `_Results`.
+2. **Formato.** Validar o Logon de 111 bytes contra o esquema. Achar o código que lê a resposta do `o.xtsw` (procurar xrefs de `bin/xtsw` em `0x14235e2c8` e de `Xls Client` em `0x14235e300`, ambos UTF-16) para descobrir o envelope e o status.
+3. **Servidor.** Codec `xtsw` em Rust a partir do esquema, primeiro handler `User.Logon`, depois os demais. Persistência simples (perfil, créditos, VIP).
+4. Analisar o executável inteiro no Ghidra headless aqui no PC, que tem hardware para isso. Na nuvem eram só 2 núcleos e 7 GB.
+5. Mais adiante: P2P. O Azimuth simula Secure Device Associations e sockets offline (`Windows.Xbox.Networking.SecureDeviceAssociationTemplate`).
+
+## Hook: detalhes
+
+- Código em `hook\adapters\azimuth_net.c`, chamado por `runtime.c` (`azimuth_apply_network`) dentro de `#ifdef FH2_AZIMUTH`.
+- `settings.c` aceita `[Network]` com `Mode=Off|Capture|Proxy` e `Server=host:porta`. O parser do INI é estrito: seção ou chave desconhecida faz recusar tudo.
+- Versão atual: `0.2.34+fh2online.5`, SHA-256 `974a462f1ff3bdbfc85a96a5f5da878ed8e1a33981b7efa83fabe581458693f0`.
+- No modo Capture, cada requisição vai para `FH2_Network.jsonl` e recebe a resposta "offline". No modo Proxy, ela é encaminhada por WinHTTP para `http://<Server>/<host original>/<path>`, com os headers `X-Fh2-Original-Url` e `X-Fh2-Request-Id`.
+- `FH2_ExtraOptions.log` mostra o que aconteceu:
+  - `NETWORK:` para o hook HTTP;
+  - `WINRT: activate "<classe>" provider=N -> hr` para as classes pedidas, sem repetir;
+  - `XBL: User.GetTokenAndSignature slot N "<method>" "<url>"` para os pedidos de token;
+  - `NETWORK: open #N` para as primeiras 64 requisições.
+- Regras do código, herdadas do ExtraOptions:
+  - C freestanding (`-ffreestanding -fno-builtin -Werror`), sem CRT.
+  - Só importa Kernel32 (`kernel32.def`). Outros DLLs entram por `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)` e `GetProcAddress`.
+  - Nada de arrays grandes na pilha, porque `___chkstk_ms` não existe aqui.
+  - Arquivos com **CRLF**.
+  - O TLS precisa continuar idêntico: template de 336 bytes zerados, alinhamento 16, sem callbacks, exports `azimuth_tls_index` e `azimuth_tls_attached`. Por isso o helper tem que ser C, e não Rust.
+
+### Build (Windows)
+
+```powershell
+cd C:\Users\alcmo\Downloads\GAMES\FH2\FH2Online\hook
+python build.py C:\Users\alcmo\Downloads\Ghidra\zig\zig.exe --azimuth --build-dir build --output build\azimuth-tls.dll
+```
+
+Antes, confira se o `build.py` roda no Windows; o original foi pensado para isso, mas ainda não testamos. Depois:
+1. Verifique os imports, que devem ser só KERNEL32, e o TLS.
+2. Feche o jogo, porque o DLL fica travado enquanto ele roda.
+3. Copie para `azimuth-windows\data\bin\azimuth-tls.dll` **e também para `FH2Online\bin\azimuth-tls.dll`**, porque o `install.bat` reinstala o que estiver lá. Depois **confira o SHA-256 dos dois**. Nesta sessão uma cópia disse que funcionou e deixou o arquivo antigo.
+
+### Servidor
+
+```powershell
+cd ...\FH2Online\server
+cargo +stable-x86_64-pc-windows-gnu build --release   # ou build.bat
+target\release\fh2-server.exe --listen 127.0.0.1:8081 --root .
+```
+
+- Grava cada requisição em `captures\server-*.jsonl`.
+- Responde a partir de `responses\`, relido a cada requisição. A ordem de busca é:
+  1. `routes.json`;
+  2. `forza\<Classe>\<Metodo>.json`;
+  3. `forza\<Classe>\_default.json`;
+  4. `forza\_default.json`;
+  5. `hosts\<host>\_default.json`;
+  6. `_default.json`, que hoje responde 503.
+- Formato de cada arquivo: `{status, headers, json | body | body_b64 | body_file, delay_ms}`.
+- Não use tokio nem axum: no toolchain GNU eles exigem o `dlltool.exe`.
+
+## Lições desta sessão
+
+- Troque o DLL só com o jogo fechado (o Windows trava o arquivo em uso).
+- O Azimuth fecha o processo quando uma classe WinRT não existe. O nosso trace devolve o erro em vez disso.
+- O Azimuth não tem log detalhado. Instrumentar pelo nosso DLL foi o que funcionou.
+- A ordem de vtable e de getters foi descoberta mandando valores diferentes em cada um e lendo a captura. Funciona bem para tirar dúvida de ABI.
