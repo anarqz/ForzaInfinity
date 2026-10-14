@@ -151,6 +151,43 @@ export interface Profile {
   presence: Presence;
 }
 
+export interface ClubMember {
+  xuid: string;
+  gamertag: string;
+  /** 1 leader, 2 co-leader, 3 member */
+  role: number;
+  joined: number;
+  presence: Presence;
+}
+
+export interface Club {
+  id: number;
+  tag: string;
+  name: string;
+  description: string;
+  /** 0 open, 1 open to friends, 2 invite only, 3 private */
+  privacy: number;
+  region: number;
+  attitude: number;
+  interest: number;
+  xp: number;
+  created: number;
+  members: ClubMember[];
+  invites: { id: number; xuid: string; gamertag: string; sender: string; senderGamertag: string; created: number }[];
+  requests: { xuid: string; gamertag: string; created: number }[];
+  notices: { id: number; xuid: string; gamertag: string; message: string; created: number }[];
+}
+
+export interface Keyword {
+  id: number;
+  /** 0 region, 1 attitude, 2 interest */
+  category: number;
+  text: string;
+}
+
+export const ROLES: Record<number, string> = { 1: "Líder", 2: "Vice-líder", 3: "Membro" };
+export const PRIVACY = ["Aberto", "Aberto para amigos", "Só por convite", "Privado"];
+
 /** The text Xbox shows for a rich presence id (same as forza::rich_presence_text). */
 export function richText(p: Presence): string {
   if (!p.online) return p.updated ? "offline" : "nunca jogou";
@@ -256,6 +293,8 @@ interface LiveHandlers {
   onHello: (users: UserSummary[]) => void;
   /** players list changed (friends, presence, created / removed) */
   onUsers?: (users: UserSummary[]) => void;
+  /** clubs changed */
+  onClubs?: () => void;
 }
 
 /** WebSocket to /ws with automatic reconnect. */
@@ -284,6 +323,7 @@ export function useLive(handlers: LiveHandlers): LiveState {
         else if (msg.type === "request") ref.current.onRequest(msg);
         else if (msg.type === "hello") ref.current.onHello(msg.users);
         else if (msg.type === "users") ref.current.onUsers?.(msg.users);
+        else if (msg.type === "clubs") ref.current.onClubs?.();
       };
       socket.onclose = () => {
         setState("offline");

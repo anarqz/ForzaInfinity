@@ -9,7 +9,20 @@
 //!   PUT    /api/users/<xuid>/friends/<f> {favorite}   mark a friend as favorite
 //!   DELETE /api/users/<xuid>/friends/<f> undo a friendship
 //!
-//! Every change is announced on /ws as {"type":"users", "users": [...]}.
+//!   GET    /api/clubs                     clubs (members, invites, requests, notices) + keywords
+//!   POST   /api/clubs {owner, tag, name, description, privacy, region, attitude, interest}
+//!   PUT    /api/clubs/<id> {name, description, privacy, region, attitude, interest}
+//!   DELETE /api/clubs/<id>
+//!   POST   /api/clubs/<id>/members {xuid}         add (or approve a join request)
+//!   PUT    /api/clubs/<id>/members/<xuid> {role}  1 leader, 2 co-leader, 3 member
+//!   DELETE /api/clubs/<id>/members/<xuid>
+//!   POST   /api/clubs/<id>/invites {xuid, sender}
+//!   DELETE /api/clubs/<id>/invites/<invite id>
+//!   DELETE /api/clubs/<id>/requests/<xuid>         decline a join request
+//!   POST   /api/clubs/<id>/notices {xuid, message}
+//!   DELETE /api/clubs/<id>/notices/<notice id>
+//!
+//! Every change is announced on /ws as {"type":"users", "users": [...]} and {"type":"clubs"}.
 //!   GET /api/catalog          cars, classes and tracks from the game database
 //!   GET /api/status           request counter, connected UIs
 //!   GET /ws                   WebSocket: {"type":"request"|"event", ...} as they happen
@@ -76,6 +89,7 @@ pub fn handle(app: &App, request: &Request) -> Outcome {
             response(200, "image/png", &extra, &png)
         }
         ["catalog"] => json_reply(200, &json!(app.catalog)),
+        ["clubs"] => json_reply(200, &clubs_reply(app)),
         ["status"] => json_reply(
             200,
             &json!({
@@ -93,6 +107,7 @@ fn change(app: &App, request: &Request, path: &str) -> Vec<u8> {
     let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
     let parts: Vec<&str> = path.trim_start_matches("/api/").split('/').filter(|p| !p.is_empty()).collect();
     let xuid = |s: &str| s.parse::<u64>().ok().filter(|&x| app.store.user_exists(x));
+    let club = |s: &str| s.parse::<i64>().ok().and_then(|id| app.store.club(id));
     let result: Result<Value, (u16, String)> = match (request.method.as_str(), parts.as_slice()) {
         ("POST", ["users"]) => {
             let tag = body["gamertag"].as_str().unwrap_or("").trim().to_owned();
@@ -127,14 +142,114 @@ fn change(app: &App, request: &Request, path: &str) -> Vec<u8> {
             (Some(a), Some(b)) if app.store.remove_friend(a, b) => Ok(app.store.friends_json(a)),
             _ => Err((404, "amizade desconhecida".into())),
         },
+        ("POST", ["clubs"]) => {
+            let owner = body_xuid(&body, "owner");
+            match owner.filter(|&x| app.store.user_exists(x)) {
+                Some(owner) => app
+                    .store
+                    .create_club(owner, &club_fields(&body, None))
+                    .map(|id| json!({ "id": id }))
+                    .map_err(|e| (400, e)),
+                None => Err((404, "dono desconhecido".into())),
+            }
+        }
+        ("PUT", ["clubs", id]) => match club(id) {
+            Some(c) => app.store.update_club(c.id, &club_fields(&body, Some(&c))).map(|_| json!({})).map_err(|e| (400, e)),
+            None => Err((404, "clube desconhecido".into())),
+        },
+        ("DELETE", ["clubs", id]) => match club(id) {
+            Some(c) if app.store.delete_club(c.id) => Ok(json!({})),
+            _ => Err((404, "clube desconhecido".into())),
+        },
+        ("POST", ["clubs", id, "members"]) => match (club(id), body_xuid(&body, "xuid").filter(|&x| app.store.user_exists(x))) {
+            (Some(c), Some(x)) => {
+                app.store.delete_club_request(c.id, x);
+                app.store.add_member(c.id, x, crate::db::ROLE_MEMBER);
+                Ok(json!({}))
+            }
+            _ => Err((404, "clube ou jogador desconhecido".into())),
+        },
+        ("PUT", ["clubs", id, "members", x]) => match (club(id), xuid(x)) {
+            (Some(c), Some(x)) if app.store.set_member_role(c.id, x, body["role"].as_i64().unwrap_or(0)) => Ok(json!({})),
+            _ => Err((400, "membro ou cargo inválido".into())),
+        },
+        ("DELETE", ["clubs", id, "members", x]) => match (club(id), xuid(x)) {
+            (Some(c), Some(x)) if app.store.membership(x).map(|m| m.0) == Some(c.id) => {
+                app.store.leave_club(x, crate::db::clubs::ACTION_REMOVED);
+                Ok(json!({}))
+            }
+            _ => Err((404, "membro desconhecido".into())),
+        },
+        ("POST", ["clubs", id, "invites"]) => match (club(id), body_xuid(&body, "xuid").filter(|&x| app.store.user_exists(x))) {
+            (Some(c), Some(x)) => {
+                let sender = body_xuid(&body, "sender").unwrap_or(0);
+                app.store.invite_to_club(c.id, sender, x).map(|id| json!({ "id": id })).map_err(|e| (400, e))
+            }
+            _ => Err((404, "clube ou jogador desconhecido".into())),
+        },
+        ("DELETE", ["clubs", _, "invites", invite]) => match invite.parse::<i64>() {
+            Ok(i) if app.store.delete_club_invite(i) => Ok(json!({})),
+            _ => Err((404, "convite desconhecido".into())),
+        },
+        ("DELETE", ["clubs", id, "requests", x]) => match (club(id), x.parse::<u64>().ok()) {
+            (Some(c), Some(x)) if app.store.delete_club_request(c.id, x) => Ok(json!({})),
+            _ => Err((404, "pedido desconhecido".into())),
+        },
+        ("POST", ["clubs", id, "notices"]) => match club(id) {
+            Some(c) => {
+                let message = body["message"].as_str().unwrap_or("").trim().to_owned();
+                if message.is_empty() {
+                    Err((400, "mensagem vazia".into()))
+                } else {
+                    let author = body_xuid(&body, "xuid").unwrap_or(0);
+                    Ok(json!({ "id": app.store.add_club_notice(c.id, author, &message) }))
+                }
+            }
+            None => Err((404, "clube desconhecido".into())),
+        },
+        ("DELETE", ["clubs", _, "notices", n]) => match n.parse::<i64>() {
+            Ok(n) if app.store.delete_club_notice(n) => Ok(json!({})),
+            _ => Err((404, "aviso desconhecido".into())),
+        },
         _ => Err((404, "not found".into())),
     };
     match result {
         Ok(value) => {
             app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
+            app.hub.broadcast(&json!({ "type": "clubs" }));
             json_reply(200, &value)
         }
         Err((status, error)) => json_reply(status, &json!({ "error": error })),
+    }
+}
+
+fn clubs_reply(app: &App) -> Value {
+    let keywords: Vec<Value> = crate::forza::club_keywords()
+        .iter()
+        .map(|&(id, category, text)| json!({ "id": id, "category": category, "text": text }))
+        .collect();
+    json!({ "clubs": app.store.clubs_json(), "keywords": keywords })
+}
+
+/// A XUID sent as a string (JS cannot hold 64-bit numbers) or a number.
+fn body_xuid(body: &Value, key: &str) -> Option<u64> {
+    body[key].as_str().and_then(|s| s.parse().ok()).or_else(|| body[key].as_u64())
+}
+
+/// Club fields from a manager request; `current` fills what an edit leaves out.
+fn club_fields(body: &Value, current: Option<&crate::db::clubs::Club>) -> crate::db::ClubFields {
+    let text = |key: &str, old: Option<&String>| {
+        body[key].as_str().map(str::to_owned).or_else(|| old.cloned()).unwrap_or_default()
+    };
+    let num = |key: &str, old: Option<i64>| body[key].as_i64().or(old).unwrap_or(0);
+    crate::db::ClubFields {
+        tag: text("tag", current.map(|c| &c.tag)),
+        name: text("name", current.map(|c| &c.name)),
+        description: text("description", current.map(|c| &c.description)),
+        privacy: num("privacy", current.map(|c| c.privacy)),
+        region: num("region", current.map(|c| c.region)),
+        attitude: num("attitude", current.map(|c| c.attitude)),
+        interest: num("interest", current.map(|c| c.interest)),
     }
 }
 

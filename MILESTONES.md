@@ -50,7 +50,14 @@ Legenda: ✅ feito · 🟡 em andamento / parcial · ⬜ a fazer
 Decisão (2026-10-13): **sem UI dentro do jogo**. O jogo só consome (amigos, presença, clubes, placares), e toda a gestão é CRUD no servidor, feita pelo manager web. As telas do sistema do Xbox que o jogo tentaria abrir (cartão de perfil, convidar amigo, mensagens) não funcionam no Azimuth; essas ações passam a ser feitas pela web.
 - ✅ Jogadores: criar (XUIDs a partir de 2535000000000001) e remover.
 - ✅ Amigos: adicionar (nos dois sentidos), remover, favoritar, presença ao vivo.
-- ⬜ Car Clubs (`CarClub.*`): criar, entrar e sair, cargos, palavras-chave, busca, recomendações, clubes dos amigos. O `ClubData` já está no esquema.
+- ✅ Car Clubs:
+  - **Leitura** (`Forza.WebServices.CarClub`): palavras-chave, recomendados, clubes dos amigos, detalhes, info completa, busca por tag, por nome e por filtros.
+  - **Ações** (`Xls.WebServices.Club`): criar, editar, convidar (por XUID ou gamertag), aceitar convite, pedir para entrar (direto se o clube for aberto ou aberto para amigos), aprovar, sair, remover, mudar cargo, sugerir remoção, histórico, mural, `GetUsersToInvite` e `GetUsersToJoin`.
+  - **Na web:** criar e apagar clubes, privacidade, membros e cargos, convites, pedidos, mural.
+  - **Valores do jogo:** cargos 1 = Líder, 2 = Vice, 3 = Membro; privacidade 0 = Aberto, 1 = Amigos, 2 = Convite, 3 = Privado.
+  - ⬜ Conferir no jogo se `Category` 0/1/2 das palavras-chave é mesmo região/atitude/interesse.
+  - ⬜ Convites dentro do jogo: o jogo provavelmente os recebe via `Notifications.RetrieveForUser`, que ainda vem vazio.
+- ✅ "Meus rivais" (`User.GetCompareStatsForRelatedUsers`): as estatísticas de carreira dos amigos, vindas do `UpdateAll` deles. Também `GetCompareStatsByBucket` e `SetPlayerCardInfo`.
 - ⬜ Grupos e mensagens (`Xls.Notifications.SendTextNotification` / `RetrieveForUser`).
 - ⬜ Convites para clube (`Xls.User.AcceptClubInvites`).
 
