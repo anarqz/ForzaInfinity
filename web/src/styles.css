@@ -194,3 +194,29 @@ select {
 .welcome { text-align: center; padding: 120px 20px; color: var(--muted); }
 .welcome h1 { color: var(--text); font-size: 28px; }
 .avatar-img { object-fit: cover; padding: 0; background: var(--bg2); border: 2px solid rgba(255,255,255,.12); }
+
+/* ------------------------------------------------------------ social */
+.social { display: flex; flex-direction: column; gap: 12px; }
+.social-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.social-list li { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 10px; cursor: default; }
+.social-list li:hover { background: rgba(255,255,255,.04); }
+.social-list li.selected { background: rgba(255,45,120,.10); }
+.social-list li[class] { cursor: pointer; }
+.social-avatar { border-radius: 8px; flex: none; background: rgba(255,255,255,.05); }
+.social-who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.social-who b { display: flex; align-items: center; gap: 6px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.small { font-size: 12px; }
+.presence-dot { width: 8px; height: 8px; border-radius: 50%; background: #4a5068; flex: none; }
+.presence-dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.icon-btn { background: transparent; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; padding: 4px 6px; border-radius: 6px; }
+.icon-btn:hover { background: rgba(255,255,255,.07); color: var(--text); }
+.icon-btn.fav { color: var(--orange); }
+.icon-btn.danger:hover { color: var(--red); }
+.social-form { display: flex; gap: 8px; }
+.social-form select, .social-form input {
+  flex: 1; min-width: 0; background: rgba(255,255,255,.05); color: var(--text); border: 1px solid var(--card-border);
+  border-radius: 10px; padding: 7px 10px; font: inherit; font-size: 13px;
+}
+.btn { background: var(--grad); color: #fff; border: 0; border-radius: 10px; padding: 7px 14px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.btn:disabled { opacity: .4; cursor: default; }
+.error { cursor: pointer; }

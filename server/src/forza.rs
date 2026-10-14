@@ -26,7 +26,11 @@ pub struct Ctx<'a> {
 
 impl Ctx<'_> {
     fn event(&self, kind: &str, title: impl AsRef<str>, detail: Value) {
-        let e = self.store.add_event(self.xuid, kind, title.as_ref(), detail);
+        self.event_for(self.xuid, kind, title, detail);
+    }
+
+    fn event_for(&self, xuid: u64, kind: &str, title: impl AsRef<str>, detail: Value) {
+        let e = self.store.add_event(xuid, kind, title.as_ref(), detail);
         self.events.borrow_mut().push(e);
     }
 
@@ -112,6 +116,8 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         // Transactional (X-TransactionId): credits granted by the service. Nothing to grant yet.
         (false, "User", "RetrieveOnlineCredits") => json!({ "credit": 0 }),
         (true, "Transaction", "Reconcile") => reconcile(ctx, params),
+        // The friends the console knows (from social.xboxlive.com, i.e. ours): nothing to keep.
+        (true, "User", "SetFriends") => json!({}),
         // The PermissionsLoader (game 0x140f09930) sends this at boot; until it gets an answer the
         // game treats the LSP as down (sessionObj+0x1131 == 0) and locks online features with
         // IDS_Popup_FeatureLocked_LSPDown_Message. No method overrides, no banned feature areas.
@@ -135,56 +141,159 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
     })
 }
 
+/// An Xbox Live request as live_service sees it.
+pub struct LiveRequest<'a> {
+    pub method: &'a str,
+    pub host: &'a str,
+    pub path: &'a str,
+    pub query: &'a str,
+    pub body: &'a [u8],
+}
+
 /// Xbox Live JSON services the game needs answered with real data (not a static stub).
-pub fn live_service(ctx: &Ctx, host: &str, path: &str, body: &[u8]) -> Option<Value> {
+pub fn live_service(ctx: &Ctx, req: &LiveRequest) -> Option<Value> {
+    let (host, path) = (req.host, req.path);
+    // "me" and xuid(...) in the path. Xbox Live calls carry no X-UserId, only the token: until
+    // the server authenticates players, "me" is the player who logged on last.
+    let me = match ctx.xuid {
+        0 => ctx.store.latest_player(),
+        x => x,
+    };
+    let subject = path_xuid(path).unwrap_or(me);
+
     if host == "profile.xboxlive.com" && path.ends_with("/profile/settings") {
-        let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
-        let ids: Vec<String> = request["userIds"]
+        let request: Value = serde_json::from_slice(req.body).unwrap_or(Value::Null);
+        let ids: Vec<u64> = request["userIds"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+            .map(|a| a.iter().filter_map(|v| v.as_str()?.parse().ok()).collect())
             .unwrap_or_default();
-        let wanted: Vec<String> = request["settings"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
-            .unwrap_or_default();
-        let users: Vec<Value> = ids
-            .iter()
-            .map(|id| {
-                let xuid = id.parse::<u64>().unwrap_or(0);
-                // The game looks up every grid driver and rival here: offline AI drivatars and
-                // our made-up rivals are not players, so they get a stable generated name.
-                let known = ctx.store.gamertag(xuid);
-                let tag = if known.is_empty() { generated_gamertag(xuid) } else { known };
-                let settings: Vec<Value> = wanted
-                    .iter()
-                    .map(|name| {
-                        let value = match name.as_str() {
-                            "Gamertag" | "GameDisplayName" | "AppDisplayName" => tag.clone(),
-                            "AccountTier" => "Gold".into(),
-                            "Gamerscore" => "0".into(),
-                            // Must be an absolute URL: XSAPI turns it into a Uri, an empty string
-                            // gives a null Uri and the game crashes on it (game+0x124f916).
-                            "GameDisplayPicRaw" | "AppDisplayPicRaw" => crate::gamerpic::url_for(xuid),
-                            _ => String::new(),
-                        };
-                        json!({ "id": name, "value": value })
-                    })
-                    .collect();
-                json!({ "id": id, "hostId": id, "settings": settings, "isSponsoredUser": false })
-            })
-            .collect();
+        let wanted = string_list(&request["settings"]);
+        let users: Vec<Value> = ids.iter().map(|&xuid| profile_user(ctx, xuid, &wanted)).collect();
         return Some(json!({ "profileUsers": users }));
     }
-    // The friends list ("People" = who the player follows), same shape as the batch above.
-    // Empty until the server has a friends system.
+    // The friends list ("People" = who the player follows), same shape as the batch above;
+    // the settings come in the query string.
     if host == "profile.xboxlive.com" && path.ends_with("/profile/settings/people/People") {
-        return Some(json!({ "profileUsers": [] }));
+        let wanted: Vec<String> = query_param(req.query, "settings")
+            .map(|s| s.split(',').map(str::to_owned).collect())
+            .unwrap_or_default();
+        let users: Vec<Value> =
+            ctx.store.friends(subject).iter().map(|&(friend, _, _)| profile_user(ctx, friend, &wanted)).collect();
+        return Some(json!({ "profileUsers": users }));
     }
-    // Rich presence (RP_SPLASH, RP_FREEROAM, ...). The game retries every 2 s while it fails.
+    // social.xboxlive.com: who the player follows, with the favorite / follows-back flags.
+    if host == "social.xboxlive.com" && path.ends_with("/people") {
+        let people: Vec<Value> = ctx
+            .store
+            .friends(subject)
+            .iter()
+            .map(|&(friend, favorite, mutual)| {
+                json!({
+                    "xuid": friend.to_string(),
+                    "isFavorite": favorite,
+                    "isFollowingCaller": mutual,
+                    "socialNetworks": [],
+                })
+            })
+            .collect();
+        return Some(json!({ "totalCount": people.len(), "people": people }));
+    }
+    // Rich presence (RP_SPLASH, RP_FREEROAM, ...): the game posts it every few seconds.
     if host == "userpresence.xboxlive.com" && path.ends_with("/devices/current/titles/current") {
+        if req.method == "DELETE" {
+            ctx.store.set_presence(subject, "offline", "");
+            return Some(json!({}));
+        }
+        let body: Value = serde_json::from_slice(req.body).unwrap_or(Value::Null);
+        let state = body["state"].as_str().unwrap_or("active");
+        let rich = body["activity"]["richPresence"]["id"].as_str().unwrap_or("");
+        if ctx.store.set_presence(subject, state, rich) {
+            ctx.event_for(subject, "presence", rich_presence_text(rich), json!({ "rich": rich, "state": state }));
+        }
         return Some(json!({}));
     }
+    // Presence of everyone the player follows.
+    if host == "userpresence.xboxlive.com" && path.ends_with("/groups/People") {
+        let records: Vec<Value> =
+            ctx.store.friends(subject).iter().map(|&(friend, _, _)| presence_record(ctx, friend)).collect();
+        return Some(Value::Array(records));
+    }
+    // One player's presence.
+    if host == "userpresence.xboxlive.com" && req.method == "GET" && path_xuid(path).is_some() && path.ends_with(')') {
+        return Some(presence_record(ctx, subject));
+    }
     None
+}
+
+/// One profile.xboxlive.com user with the requested settings.
+fn profile_user(ctx: &Ctx, xuid: u64, wanted: &[String]) -> Value {
+    // The game looks up every grid driver and rival here: offline AI drivatars and our
+    // made-up rivals are not players, so they get a stable generated name.
+    let known = ctx.store.gamertag(xuid);
+    let tag = if known.is_empty() { generated_gamertag(xuid) } else { known };
+    let settings: Vec<Value> = wanted
+        .iter()
+        .map(|name| {
+            let value = match name.as_str() {
+                "Gamertag" | "GameDisplayName" | "AppDisplayName" => tag.clone(),
+                "AccountTier" => "Gold".into(),
+                "Gamerscore" => "0".into(),
+                // Must be an absolute URL: XSAPI turns it into a Uri, an empty string gives a
+                // null Uri and the game crashes on it (game+0x124f916).
+                "GameDisplayPicRaw" | "AppDisplayPicRaw" => crate::gamerpic::url_for(xuid),
+                _ => String::new(),
+            };
+            json!({ "id": name, "value": value })
+        })
+        .collect();
+    let id = xuid.to_string();
+    json!({ "id": id, "hostId": id, "settings": settings, "isSponsoredUser": false })
+}
+
+/// A userpresence.xboxlive.com record: online players show Forza Horizon 2 and their activity.
+fn presence_record(ctx: &Ctx, xuid: u64) -> Value {
+    let Some((_, rich, updated)) = ctx.store.presence(xuid).filter(|_| ctx.store.is_online(xuid)) else {
+        return json!({ "xuid": xuid.to_string(), "state": "Offline" });
+    };
+    json!({
+        "xuid": xuid.to_string(),
+        "state": "Online",
+        "devices": [{
+            "type": "XboxOne",
+            "titles": [{
+                "id": "446059611",
+                "name": "Forza Horizon 2",
+                "placement": "Full",
+                "state": "Active",
+                "lastModified": iso_utc(updated),
+                "activity": { "richPresence": rich_presence_text(&rich) },
+            }],
+        }],
+    })
+}
+
+/// The text for a rich presence id (the console read it from the title's service config).
+pub fn rich_presence_text(id: &str) -> String {
+    match id {
+        "RP_SPLASH" => "Na tela inicial".into(),
+        "RP_FREEROAM" => "Explorando o sul da Europa".into(),
+        "" => "Jogando".into(),
+        other => other.trim_start_matches("RP_").replace('_', " ").to_lowercase(),
+    }
+}
+
+fn path_xuid(path: &str) -> Option<u64> {
+    let start = path.find("xuid(")? + 5;
+    let end = path[start..].find(')')? + start;
+    path[start..end].parse().ok()
+}
+
+fn query_param<'q>(query: &'q str, name: &str) -> Option<&'q str> {
+    query.split('&').find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+}
+
+fn string_list(value: &Value) -> Vec<String> {
+    value.as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default()
 }
 
 /// User.Logon: the game repeats it until it gets a valid reply, and nothing else in the Forza

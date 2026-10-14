@@ -36,24 +36,23 @@ Legenda: ✅ feito · 🟡 em andamento / parcial · ⬜ a fazer
 - ⬜ Servidor acessível pela rede, não só em `127.0.0.1`: HTTPS ou túnel, e um mínimo de segurança.
 
 ## M3: Serviços Xbox Live reimplementados 🟡
-- ✅ `profile.xboxlive.com`: settings em lote e `People`, ainda vazio.
-- ✅ `userpresence.xboxlive.com`: aceita o rich presence.
+- ✅ `profile.xboxlive.com`: settings em lote, e `People` com os amigos do servidor.
+- ✅ `social.xboxlive.com /users/xuid()/people`: quem o jogador segue, com "favorito" e "segue de volta".
+- ✅ `userpresence.xboxlive.com`: guarda o rich presence que o jogo posta. `groups/People` devolve a presença dos amigos. Online = o jogo postou nos últimos 5 min.
+- ✅ `Xls.User.SetFriends`: aceito, sem nada a guardar.
+- 🟡 "me" nas chamadas Xbox Live vira o último jogador logado. Com autenticação (M2), passa a ser o dono do token.
 - 🟡 `achievements.xboxlive.com`: hoje responde vazio. O desbloqueio é local, no Azimuth, e o hook precisa repassá-lo.
-- ⬜ Guardar e servir a presença (online, "em Free Roam"…) para os amigos.
-- ⬜ `social.xboxlive.com` / `People` com os amigos de verdade.
 - ⬜ `eds.xboxlive.com /media/*/fields` (hoje 503).
 - ⬜ `sessiondirectory` / MPSD e `qosservers` com respostas coerentes: clubes, convites, Road Trip online.
 - ⬜ Privacidade e privilégios, para o multiplayer e o conteúdo gerado pelos jogadores.
 
-## M4: Social (telas do sistema pelo hook) ⬜
-- ⬜ Mapear as telas do sistema que o jogo chama e o Azimuth fecha na hora: cartão de perfil, seletor de amigos, enviar mensagem, convites.
-- ⬜ Uma UI própria injetada pelo hook (overlay) para:
-  - adicionar e remover amigos;
-  - criar grupos;
-  - trocar mensagens;
-  - aceitar convites.
-- ⬜ O mesmo pelo manager web (`web/`), como alternativa fora do jogo.
-- ⬜ Car Clubs (`CarClub.*`) de verdade: criar, entrar, palavras-chave, recomendações.
+## M4: Social, gerenciado pela web 🟡
+Decisão (2026-10-13): **sem UI dentro do jogo**. O jogo só consome (amigos, presença, clubes, placares), e toda a gestão é CRUD no servidor, feita pelo manager web. As telas do sistema do Xbox que o jogo tentaria abrir (cartão de perfil, convidar amigo, mensagens) não funcionam no Azimuth; essas ações passam a ser feitas pela web.
+- ✅ Jogadores: criar (XUIDs a partir de 2535000000000001) e remover.
+- ✅ Amigos: adicionar (nos dois sentidos), remover, favoritar, presença ao vivo.
+- ⬜ Car Clubs (`CarClub.*`): criar, entrar e sair, cargos, palavras-chave, busca, recomendações, clubes dos amigos. O `ClubData` já está no esquema.
+- ⬜ Grupos e mensagens (`Xls.Notifications.SendTextNotification` / `RetrieveForUser`).
+- ⬜ Convites para clube (`Xls.User.AcceptClubInvites`).
 
 ## M5: Competição assíncrona entre amigos ⬜
 - ⬜ Rivais com os tempos e fantasmas reais dos amigos, em vez de aleatórios.

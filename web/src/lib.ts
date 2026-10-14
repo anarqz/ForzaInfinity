@@ -2,12 +2,30 @@ import { useEffect, useRef, useState } from "react";
 
 // ---------------------------------------------------------------- types (api.rs / db.rs)
 
+export interface Presence {
+  online: boolean;
+  /** rich presence id the game posted (RP_FREEROAM...) */
+  rich: string;
+  updated: number;
+}
+
 export interface UserSummary {
   xuid: string;
   gamertag: string;
   firstSeen: number;
   lastSeen: number;
   logons: number;
+  friends: number;
+  presence: Presence;
+}
+
+export interface Friend {
+  xuid: string;
+  gamertag: string;
+  favorite: boolean;
+  /** follows back */
+  mutual: boolean;
+  presence: Presence;
 }
 
 export interface CatalogCar {
@@ -129,6 +147,15 @@ export interface Profile {
   achievements: { id: string; name: string; unlocked: boolean; time?: number }[];
   ghosts: { id: number; scoreType: number; trackId: number; track: Track | null; score: number; carId: number; car: CatalogCar | null; time: number; bytes: number }[];
   drivatar: null | { updated: number; saves: number; segments: number; curves: number };
+  friends: Friend[];
+  presence: Presence;
+}
+
+/** The text Xbox shows for a rich presence id (same as forza::rich_presence_text). */
+export function richText(p: Presence): string {
+  if (!p.online) return p.updated ? "offline" : "nunca jogou";
+  const known: Record<string, string> = { RP_SPLASH: "Na tela inicial", RP_FREEROAM: "Explorando o sul da Europa" };
+  return known[p.rich] ?? (p.rich ? p.rich.replace(/^RP_/, "").replace(/_/g, " ").toLowerCase() : "Jogando");
 }
 
 // ---------------------------------------------------------------- formatting
@@ -209,12 +236,26 @@ export async function getJson<T>(url: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+/** POST / PUT / DELETE on the manager API; throws with the server's error text. */
+export async function sendJson<T>(method: string, url: string, body?: unknown): Promise<T> {
+  const r = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${r.status}`);
+  return data as T;
+}
+
 export type LiveState = "connecting" | "live" | "offline";
 
 interface LiveHandlers {
   onEvent: (e: FeedEvent) => void;
   onRequest: (r: TrafficItem) => void;
   onHello: (users: UserSummary[]) => void;
+  /** players list changed (friends, presence, created / removed) */
+  onUsers?: (users: UserSummary[]) => void;
 }
 
 /** WebSocket to /ws with automatic reconnect. */
@@ -242,6 +283,7 @@ export function useLive(handlers: LiveHandlers): LiveState {
         if (msg.type === "event") ref.current.onEvent(msg.event);
         else if (msg.type === "request") ref.current.onRequest(msg);
         else if (msg.type === "hello") ref.current.onHello(msg.users);
+        else if (msg.type === "users") ref.current.onUsers?.(msg.users);
       };
       socket.onclose = () => {
         setState("offline");
