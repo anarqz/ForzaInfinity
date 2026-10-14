@@ -58,6 +58,11 @@ pub fn is_local(request: &Request) -> bool {
         || path.starts_with(ACCOUNT_PREFIX)
 }
 
+/// Player text echoed back: at most `max` chars, letters/digits/'#' only.
+fn clip(text: &str, max: usize) -> String {
+    text.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '#').take(max).collect()
+}
+
 /// Account endpoints the hook calls directly (not proxied game traffic).
 const ACCOUNT_PREFIX: &str = "/fh2online/v1/";
 
@@ -93,6 +98,49 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
                 Some(key) => json_reply(200, &json!({ "webKey": key })),
                 None => json_reply(500, &json!({ "error": "Erro ao gerar a chave." })),
             },
+            Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
+            None => json_reply(401, &json!({ "error": "Token desconhecido." })),
+        },
+        // befriend "Name#12345" from the game: friends (and rivals) once both added each other
+        ("POST", "friends") => match token_account() {
+            Some(me) if !me.banned => {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let tag = body["gamertag"].as_str().unwrap_or("").trim();
+                let target = tag.rsplit_once('#').and_then(|(n, d)| app.store.account_by_name(n, d));
+                match target {
+                    _ if app.store.friend_requests_since(me.xuid, 3_600_000) >= 20 => {
+                        json_reply(429, &json!({ "error": "Muitos pedidos de amizade. Tente de novo mais tarde." }))
+                    }
+                    None => json_reply(404, &json!({ "error": format!("Não existe o perfil {} neste servidor.", clip(tag, 15)) })),
+                    Some(t) if t.xuid == me.xuid => json_reply(400, &json!({ "error": "Esse é o seu próprio perfil." })),
+                    Some(t) if app.store.friends(me.xuid).iter().any(|f| f.0 == t.xuid && f.2) => {
+                        json_reply(200, &json!({ "message": format!("Você e {} já são amigos e rivais.", t.gamertag()) }))
+                    }
+                    Some(t) => {
+                        let mine = me.gamertag();
+                        let theirs = t.gamertag();
+                        if app.store.request_friend(me.xuid, t.xuid) {
+                            for (to, other) in [(t.xuid, &mine), (me.xuid, &theirs)] {
+                                app.store.notify(to, crate::db::notifications::MESSAGE, json!({
+                                    "Message": format!("Você e {other} agora são amigos e rivais. Comparem tempos nas corridas de fantasma!"),
+                                    "SRAUri": "",
+                                }));
+                            }
+                            app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
+                            json_reply(200, &json!({ "message": format!("Você e {theirs} agora são amigos e rivais!"), "friends": true }))
+                        } else {
+                            app.store.notify(t.xuid, crate::db::notifications::MESSAGE, json!({
+                                "Message": format!("{mine} quer ser seu amigo. Adicione {mine} em Configurações > Multiplayer para virarem rivais."),
+                                "SRAUri": "",
+                            }));
+                            json_reply(200, &json!({
+                                "message": format!("Pedido enviado para {theirs}. Quando {theirs} adicionar você também, vocês viram amigos e rivais."),
+                                "friends": false,
+                            }))
+                        }
+                    }
+                }
+            }
             Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
             None => json_reply(401, &json!({ "error": "Token desconhecido." })),
         },

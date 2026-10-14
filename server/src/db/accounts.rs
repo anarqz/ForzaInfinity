@@ -26,6 +26,9 @@ pub const SCHEMA: &str = "
         token_hash TEXT PRIMARY KEY, xuid INTEGER NOT NULL, created INTEGER NOT NULL,
         last_seen INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS devices_xuid ON devices (xuid);
+    CREATE TABLE IF NOT EXISTS friend_requests (
+        from_xuid INTEGER NOT NULL, to_xuid INTEGER NOT NULL, created INTEGER NOT NULL,
+        PRIMARY KEY (from_xuid, to_xuid));
     CREATE TABLE IF NOT EXISTS web_keys (
         xuid INTEGER PRIMARY KEY, key_hash TEXT NOT NULL, created INTEGER NOT NULL);";
 
@@ -226,6 +229,54 @@ impl Store {
             .with(|db| db.query_row("SELECT key_hash FROM web_keys WHERE xuid = ?1", [account.xuid as i64], |r| r.get(0)).optional())
             .flatten()?;
         (stored == token_hash(&web_key_canonical(key))).then_some(account)
+    }
+
+    /// `from` asks to befriend `to`. Friends (and rivals) only once both asked: returns true
+    /// when this request completed the pair. Pending requests older than 30 days lapse.
+    pub fn request_friend(&self, from: u64, to: u64) -> bool {
+        let now = unix_ms();
+        let mutual = self
+            .with(|db| {
+                db.execute("DELETE FROM friend_requests WHERE created < ?1", [now - 30 * 86_400_000])?;
+                let reverse = db
+                    .query_row(
+                        "SELECT 1 FROM friend_requests WHERE from_xuid = ?1 AND to_xuid = ?2",
+                        params![to as i64, from as i64],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some();
+                if reverse {
+                    db.execute(
+                        "DELETE FROM friend_requests WHERE (from_xuid = ?1 AND to_xuid = ?2) OR (from_xuid = ?2 AND to_xuid = ?1)",
+                        params![from as i64, to as i64],
+                    )?;
+                } else {
+                    db.execute(
+                        "INSERT INTO friend_requests (from_xuid, to_xuid, created) VALUES (?1, ?2, ?3)
+                         ON CONFLICT (from_xuid, to_xuid) DO UPDATE SET created = ?3",
+                        params![from as i64, to as i64, now],
+                    )?;
+                }
+                Ok(reverse)
+            })
+            .unwrap_or(false);
+        if mutual {
+            self.add_friend(from, to);
+        }
+        mutual
+    }
+
+    /// Friend requests `from` sent in the last `window_ms` (rate limit).
+    pub fn friend_requests_since(&self, from: u64, window_ms: i64) -> i64 {
+        self.with(|db| {
+            db.query_row(
+                "SELECT COUNT(*) FROM friend_requests WHERE from_xuid = ?1 AND created >= ?2",
+                params![from as i64, unix_ms() - window_ms],
+                |r| r.get(0),
+            )
+        })
+        .unwrap_or(0)
     }
 
     pub fn set_banned(&self, xuid: u64, banned: bool) -> bool {
