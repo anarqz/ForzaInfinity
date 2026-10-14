@@ -1,0 +1,4 @@
+[submodule "hook"]
+	path = hook
+	url = git@github.com:anarqz/ForzaInfinity.git
+	branch = fh2online
