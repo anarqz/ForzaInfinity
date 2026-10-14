@@ -1,0 +1,231 @@
+//! FH2Online accounts: "name#12345", created from the game through the hook
+//! (POST /fh2online/v1/register). Each account is a player (users row, server-allocated XUID);
+//! the hook then sends X-Fh2-Token on every request and the token, not the game's own XUID,
+//! says who is playing.
+//!
+//! Tables:
+//! - accounts: name (1-9 letters/digits, first a letter) + discriminator (5 digits, the start
+//!   of the device fingerprint), unique together; gamertag is "name#discriminator".
+//!   One account per PC: `device` is the SHA-1 of the device id the hook sends (its full
+//!   fingerprint hashed with this server's host, so servers cannot match players up);
+//! - devices: one token per registered device, stored only as its SHA-1.
+//!
+//! A new account always starts from zero (no offline progress is imported).
+
+use rusqlite::{OptionalExtension, params};
+
+use super::Store;
+use crate::unix_ms;
+
+pub const SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS accounts (
+        xuid INTEGER PRIMARY KEY, name TEXT NOT NULL, discriminator TEXT NOT NULL,
+        device TEXT NOT NULL UNIQUE, created INTEGER NOT NULL, banned INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (name COLLATE NOCASE, discriminator));
+    CREATE TABLE IF NOT EXISTS devices (
+        token_hash TEXT PRIMARY KEY, xuid INTEGER NOT NULL, created INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS devices_xuid ON devices (xuid);";
+
+pub struct Account {
+    pub xuid: u64,
+    pub name: String,
+    pub discriminator: String,
+    pub banned: bool,
+}
+
+impl Account {
+    pub fn gamertag(&self) -> String {
+        format!("{}#{}", self.name, self.discriminator)
+    }
+}
+
+/// 1 to 9 ASCII letters or digits starting with a letter: with "#12345" the gamertag stays
+/// within the game's 15 characters.
+pub fn valid_name(name: &str) -> bool {
+    (1..=9).contains(&name.len())
+        && name.bytes().next().is_some_and(|b| b.is_ascii_alphabetic())
+        && name.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+pub fn valid_discriminator(d: &str) -> bool {
+    d.len() == 5 && d.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The hook's per-server device id: 64 hex digits (SHA-256).
+pub fn valid_device(d: &str) -> bool {
+    d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// 32 random bytes from the OS, as hex.
+pub fn new_token() -> String {
+    let mut bytes = [0u8; 32];
+    os_random(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn token_hash(token: &str) -> String {
+    sha1_smol::Sha1::from(token.trim().as_bytes()).digest().to_string()
+}
+
+#[cfg(windows)]
+fn os_random(buf: &mut [u8]) {
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        // RtlGenRandom
+        fn SystemFunction036(buffer: *mut u8, length: u32) -> u8;
+    }
+    let ok = unsafe { SystemFunction036(buf.as_mut_ptr(), buf.len() as u32) };
+    assert!(ok != 0, "RtlGenRandom failed");
+}
+
+#[cfg(not(windows))]
+fn os_random(buf: &mut [u8]) {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf)).expect("/dev/urandom");
+}
+
+impl Store {
+    /// Creates the account and its first device token. Err: a message for the player.
+    pub fn register_account(&self, name: &str, discriminator: &str, device: &str) -> Result<(Account, String), String> {
+        if !valid_name(name) {
+            return Err("O nome deve ter de 1 a 9 letras ou números e começar com uma letra.".into());
+        }
+        if !valid_discriminator(discriminator) {
+            return Err("Fingerprint inválido (esperado 5 dígitos).".into());
+        }
+        if !valid_device(device) {
+            return Err("Identificador do dispositivo inválido.".into());
+        }
+        let device = token_hash(&device.to_ascii_lowercase());
+        if let Some(existing) = self.account_by_device(&device) {
+            return Err(format!("Este PC já tem a conta {} neste servidor.", existing.gamertag()));
+        }
+        if self.account_by_name(name, discriminator).is_some() {
+            return Err(format!("{name}#{discriminator} já existe neste servidor."));
+        }
+        let gamertag = format!("{name}#{discriminator}");
+        let xuid = self.create_user(&gamertag)?;
+        let token = new_token();
+        let now = unix_ms();
+        self.with(|db| {
+            db.execute(
+                "INSERT INTO accounts (xuid, name, discriminator, device, created) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![xuid as i64, name, discriminator, device, now],
+            )?;
+            db.execute(
+                "INSERT INTO devices (token_hash, xuid, created, last_seen) VALUES (?1, ?2, ?3, ?3)",
+                params![token_hash(&token), xuid as i64, now],
+            )
+        })
+        .ok_or("Erro ao salvar a conta.")?;
+        Ok((Account { xuid, name: name.into(), discriminator: discriminator.into(), banned: false }, token))
+    }
+
+    fn account_row(r: &rusqlite::Row) -> rusqlite::Result<Account> {
+        Ok(Account {
+            xuid: r.get::<_, i64>(0)? as u64,
+            name: r.get(1)?,
+            discriminator: r.get(2)?,
+            banned: r.get::<_, i64>(3)? != 0,
+        })
+    }
+
+    pub fn account_by_name(&self, name: &str, discriminator: &str) -> Option<Account> {
+        self.with(|db| {
+            db.query_row(
+                "SELECT xuid, name, discriminator, banned FROM accounts WHERE name = ?1 COLLATE NOCASE AND discriminator = ?2",
+                params![name, discriminator],
+                Self::account_row,
+            )
+            .optional()
+        })
+        .flatten()
+    }
+
+    fn account_by_device(&self, device_hash: &str) -> Option<Account> {
+        self.with(|db| {
+            db.query_row(
+                "SELECT xuid, name, discriminator, banned FROM accounts WHERE device = ?1",
+                [device_hash],
+                Self::account_row,
+            )
+            .optional()
+        })
+        .flatten()
+    }
+
+    pub fn account(&self, xuid: u64) -> Option<Account> {
+        self.with(|db| {
+            db.query_row(
+                "SELECT xuid, name, discriminator, banned FROM accounts WHERE xuid = ?1",
+                [xuid as i64],
+                Self::account_row,
+            )
+            .optional()
+        })
+        .flatten()
+    }
+
+    /// The account behind a device token (banned accounts included: the caller decides).
+    pub fn account_by_token(&self, token: &str) -> Option<Account> {
+        let hash = token_hash(token);
+        let account = self
+            .with(|db| {
+                db.query_row(
+                    "SELECT a.xuid, a.name, a.discriminator, a.banned FROM devices d JOIN accounts a ON a.xuid = d.xuid
+                     WHERE d.token_hash = ?1",
+                    [&hash],
+                    Self::account_row,
+                )
+                .optional()
+            })
+            .flatten()?;
+        self.with(|db| db.execute("UPDATE devices SET last_seen = ?1 WHERE token_hash = ?2", params![unix_ms(), hash]));
+        Some(account)
+    }
+
+    pub fn set_banned(&self, xuid: u64, banned: bool) -> bool {
+        self.with(|db| db.execute("UPDATE accounts SET banned = ?1 WHERE xuid = ?2", params![banned as i64, xuid as i64]))
+            .is_some_and(|n| n > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names() {
+        assert!(valid_name("Alex"));
+        assert!(valid_name("A23456789"));
+        assert!(!valid_name("A234567890"));
+        assert!(!valid_name("1Alex"));
+        assert!(!valid_name("Al ex"));
+        assert!(!valid_name(""));
+        assert!(valid_discriminator("00042"));
+        assert!(!valid_discriminator("4242"));
+    }
+
+    #[test]
+    fn register_and_token() {
+        let dir = std::env::temp_dir().join(format!("fh2-accounts-{}", new_token()));
+        let store = Store::open(&dir.join("t.sqlite")).unwrap();
+        let pc = |n: u8| format!("{n:02x}").repeat(32);
+        let (acc, token) = store.register_account("Alex", "01234", &pc(1)).unwrap();
+        assert_eq!(acc.gamertag(), "Alex#01234");
+        assert_eq!(token.len(), 64);
+        // same name#discriminator from another PC
+        assert!(store.register_account("alex", "01234", &pc(2)).is_err());
+        // second account on the same PC
+        assert!(store.register_account("Outra", "01234", &pc(1)).is_err());
+        assert!(store.register_account("Alex", "99999", &pc(3)).is_ok());
+        assert!(store.register_account("Alex", "55555", "curto").is_err());
+        let found = store.account_by_token(&token).unwrap();
+        assert_eq!(found.xuid, acc.xuid);
+        assert_eq!(store.gamertag(acc.xuid), "Alex#01234");
+        assert!(store.account_by_token("nope").is_none());
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
