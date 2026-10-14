@@ -101,9 +101,7 @@ pub fn live_service(ctx: &Ctx, host: &str, path: &str, body: &[u8]) -> Option<Va
                             "Gamerscore" => "0".into(),
                             // Must be an absolute URL: XSAPI turns it into a Uri, an empty string
                             // gives a null Uri and the game crashes on it (game+0x124f916).
-                            "GameDisplayPicRaw" | "AppDisplayPicRaw" => {
-                                "http://images-eds.xboxlive.com/image?url=fh2online-gamerpic".into()
-                            }
+                            "GameDisplayPicRaw" | "AppDisplayPicRaw" => crate::gamerpic::url_for(xuid),
                             _ => String::new(),
                         };
                         json!({ "id": name, "value": value })
