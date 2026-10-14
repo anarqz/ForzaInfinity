@@ -99,10 +99,16 @@ pub fn handle(ctx: &Ctx, method: &str, params: &Value) -> Option<Value> {
         }
         "GetCategories" => json!({ "results": [] }),
         "GetThumbnail" => json!({ "data": "", "required": 0 }),
-        // A text message to another player.
+        // A text message to a friend (30 an hour at most).
         "SendTextNotification" => {
             let to = params["xuidRecipient"].as_u64().unwrap_or(0);
-            let text = params["message"].as_str().unwrap_or("");
+            let text = super::clean_text(params["message"].as_str().unwrap_or(""), 200);
+            if text.is_empty() || !ctx.friend_ids().contains(&to) {
+                return Some(json!({ "__xtsw_error": { "code": 1, "message": "messages go to friends only" } }));
+            }
+            if ctx.store.events_since(me, "message", crate::unix_ms() - 3_600_000) >= 30 {
+                return Some(json!({ "__xtsw_error": { "code": 1, "message": "too many messages" } }));
+            }
             let id = ctx.store.notify(to, crate::db::notifications::MESSAGE, json!({ "Message": text, "SRAUri": "" }));
             ctx.event("message", format!("Mensagem para {}: {text}", ctx.store.gamertag(to)), json!({ "to": to.to_string() }));
             json!({ "notificationId": id })

@@ -191,6 +191,10 @@ impl Store {
 
     /// The account behind a device token (banned accounts included: the caller decides).
     pub fn account_by_token(&self, token: &str) -> Option<Account> {
+        let token = token.trim();
+        if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         let hash = token_hash(token);
         let account = self
             .with(|db| {
@@ -229,6 +233,30 @@ impl Store {
             .with(|db| db.query_row("SELECT key_hash FROM web_keys WHERE xuid = ?1", [account.xuid as i64], |r| r.get(0)).optional())
             .flatten()?;
         (stored == token_hash(&web_key_canonical(key))).then_some(account)
+    }
+
+    /// Logs an existing account in on another PC (or again on this one): name#12345 plus the
+    /// web key. Every token the account had stops working (the old PC goes offline), the web
+    /// key is replaced (it was just typed somewhere), and the new token is returned:
+    /// (account, token, new web key). The PC that created an account stays the only one that
+    /// could create it: logging in never frees a PC to create another account.
+    pub fn log_in_elsewhere(&self, gamertag: &str, web_key: &str) -> Result<(Account, String, String), String> {
+        let account = self.account_by_web_key(gamertag, web_key).ok_or("Nome ou chave incorretos.")?;
+        if account.banned {
+            return Err("Conta suspensa neste servidor.".into());
+        }
+        let token = new_token();
+        let now = unix_ms();
+        self.with(|db| {
+            db.execute("DELETE FROM devices WHERE xuid = ?1", [account.xuid as i64])?;
+            db.execute(
+                "INSERT INTO devices (token_hash, xuid, created, last_seen) VALUES (?1, ?2, ?3, ?3)",
+                params![token_hash(&token), account.xuid as i64, now],
+            )
+        })
+        .ok_or("Erro ao salvar o acesso.")?;
+        let key = self.rotate_web_key(account.xuid).ok_or("Erro ao gerar a chave.")?;
+        Ok((account, token, key))
     }
 
     /// `from` asks to befriend `to`. Friends (and rivals) only once both asked: returns true

@@ -1,23 +1,13 @@
 //! Player pictures, for the Xbox profile settings (GameDisplayPicRaw) and the web UI.
 //!
-//! Order: a PNG dropped by hand at data/gamerpics/<xuid>.png, then the public Xbox 360 avatar
-//! service by gamertag (https://avatar-ssl.xboxlive.com/avatar/<gamertag>/avatarpic-l.png, no
-//! login; 500 for unknown gamertags), cached on disk, then a generated placeholder: a
-//! symmetric "identicon" seeded by the XUID, so it is random-looking but stable per player.
-//!
-//! The server is std-only (no TLS), so the download uses Windows' own curl.exe.
+//! Order: a PNG dropped by the server admin at data/gamerpics/<xuid>.png, else a generated
+//! placeholder: a symmetric "identicon" seeded by the XUID, random-looking but stable per
+//! player.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-    time::{Duration, SystemTime},
-};
+use std::{fs, path::Path};
 
 /// Host the game is told to load pictures from; the hook forwards it to us like any other.
 pub const HOST: &str = "gamerpic.fh2online";
-/// After a failed lookup (unknown gamertag, no network), try again after this long.
-const RETRY_AFTER: Duration = Duration::from_secs(3600);
 
 pub fn url_for(xuid: u64) -> String {
     format!("http://{HOST}/pic?xuid={xuid}")
@@ -26,65 +16,14 @@ pub fn url_for(xuid: u64) -> String {
 /// Where the picture came from, for the UI and logs.
 pub enum Source {
     Manual,
-    Xbox,
     Placeholder,
 }
 
-pub fn get(root: &Path, xuid: u64, gamertag: &str) -> (Vec<u8>, Source) {
-    let dir = root.join("data").join("gamerpics");
-    if let Ok(bytes) = fs::read(dir.join(format!("{xuid}.png"))) {
-        return (bytes, Source::Manual);
-    }
-    if !gamertag.trim().is_empty() {
-        if let Some(bytes) = xbox_avatar(&dir, gamertag.trim()) {
-            return (bytes, Source::Xbox);
-        }
-    }
-    (identicon(xuid, 208), Source::Placeholder)
-}
-
-fn safe_name(gamertag: &str) -> String {
-    gamertag.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect()
-}
-
-fn xbox_avatar(dir: &Path, gamertag: &str) -> Option<Vec<u8>> {
-    let cached: PathBuf = dir.join(format!("xbox-{}.png", safe_name(gamertag)));
-    let failed = dir.join(format!("xbox-{}.none", safe_name(gamertag)));
-    if let Ok(bytes) = fs::read(&cached) {
-        return Some(bytes);
-    }
-    let recent_failure = fs::metadata(&failed)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| SystemTime::now().duration_since(t).ok())
-        .is_some_and(|age| age < RETRY_AFTER);
-    if recent_failure {
-        return None;
-    }
-    let _ = fs::create_dir_all(dir);
-    let encoded: String = gamertag
-        .bytes()
-        .map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") })
-        .collect();
-    let url = format!("https://avatar-ssl.xboxlive.com/avatar/{encoded}/avatarpic-l.png");
-    let tmp = dir.join(format!("xbox-{}.tmp", safe_name(gamertag)));
-    let ok = Command::new("curl.exe")
-        .args(["-s", "-f", "-L", "--max-time", "8", "-o"])
-        .arg(&tmp)
-        .arg(&url)
-        .status()
-        .is_ok_and(|s| s.success());
-    let bytes = if ok { fs::read(&tmp).ok().filter(|b| b.starts_with(b"\x89PNG")) } else { None };
-    let _ = fs::remove_file(&tmp);
-    match bytes {
-        Some(b) => {
-            let _ = fs::write(&cached, &b);
-            Some(b)
-        }
-        None => {
-            let _ = fs::write(&failed, gamertag);
-            None
-        }
+pub fn get(root: &Path, xuid: u64) -> (Vec<u8>, Source) {
+    let file = root.join("data").join("gamerpics").join(format!("{xuid}.png"));
+    match fs::read(file) {
+        Ok(bytes) => (bytes, Source::Manual),
+        Err(_) => (identicon(xuid, 208), Source::Placeholder),
     }
 }
 

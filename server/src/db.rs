@@ -22,9 +22,12 @@ use crate::{gamedb::Catalog, unix_ms};
 pub mod accounts;
 pub mod clubs;
 pub mod notifications;
+pub mod saves;
 pub use clubs::{ClubFields, ROLE_COLEADER, ROLE_LEADER, ROLE_MEMBER};
 
 const MAX_EVENTS: i64 = 5000;
+/// Liveries and tunes kept per player (the newest).
+const MAX_PER_PLAYER: i64 = 200;
 /// A player counts as online while their game posted presence within this window.
 pub const PRESENCE_TTL_MS: i64 = 5 * 60 * 1000;
 
@@ -100,6 +103,7 @@ impl Store {
         db.execute_batch(clubs::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(notifications::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(accounts::SCHEMA).map_err(|e| e.to_string())?;
+        db.execute_batch(saves::SCHEMA).map_err(|e| e.to_string())?;
         Ok(Store { db: Mutex::new(db) })
     }
 
@@ -294,6 +298,18 @@ impl Store {
                     data.get("isClean").and_then(Value::as_bool).unwrap_or(false),
                     data.to_string()
                 ],
+            )?;
+            // per event keep only the player's best and this new one (SubmitScore returns
+            // before UploadFile names it)
+            let order = if lower_is_better(score_type) { "ASC" } else { "DESC" };
+            db.execute(
+                &format!(
+                    "DELETE FROM scores WHERE xuid = ?1 AND score_type = ?2 AND scoreboard_type = ?3
+                       AND game_scoreboard_id = ?4 AND track_id = ?5 AND score_id <> ?6
+                       AND id <> (SELECT id FROM scores WHERE xuid = ?1 AND score_type = ?2 AND scoreboard_type = ?3
+                                    AND game_scoreboard_id = ?4 AND track_id = ?5 ORDER BY score {order}, id ASC LIMIT 1)"
+                ),
+                params![xuid as i64, score_type, int("scoreboardType"), int("gameScoreboardId"), int("trackId"), score_id],
             )
         });
         score_id
@@ -340,7 +356,9 @@ impl Store {
             db.execute(
                 "INSERT OR REPLACE INTO transactions (id, xuid, time, method, body) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![transaction_key(id), xuid as i64, unix_ms(), method, body],
-            )
+            )?;
+            // the game reconciles within its session: a week is plenty
+            db.execute("DELETE FROM transactions WHERE time < ?1", [unix_ms() - 7 * 86_400_000])
         });
     }
 
@@ -381,14 +399,15 @@ impl Store {
     /// Scoreboard.UploadFile: keeps the ghost only if its score is still the player's best on
     /// that event, replacing the previous one (the ghost id of an event stays the same).
     /// Returns (ghost id, event key description) or None when the score is unknown/not best.
-    pub fn save_ghost(&self, score_id: &str, data: &[u8]) -> Option<(i64, Value)> {
+    pub fn save_ghost(&self, owner: u64, score_id: &str, data: &[u8]) -> Option<(i64, Value)> {
         if !self.is_personal_best(score_id) {
             return None;
         }
         self.with(|db| {
             let (xuid, sb, st, gs, track, score, car): (i64, i64, i64, i64, i64, f64, i64) = db.query_row(
-                "SELECT xuid, scoreboard_type, score_type, game_scoreboard_id, track_id, score, car_id FROM scores WHERE score_id = ?1",
-                [score_id],
+                "SELECT xuid, scoreboard_type, score_type, game_scoreboard_id, track_id, score, car_id FROM scores
+                 WHERE score_id = ?1 AND xuid = ?2",
+                params![score_id, owner as i64],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
             )?;
             db.execute(
@@ -407,8 +426,13 @@ impl Store {
         })
     }
 
-    pub fn ghost(&self, id: i64) -> Option<Vec<u8>> {
-        self.with(|db| db.query_row("SELECT data FROM ghosts WHERE id = ?1", [id], |r| r.get(0)).optional()).flatten()
+    /// (owner, data) of a ghost.
+    pub fn ghost(&self, id: i64) -> Option<(u64, Vec<u8>)> {
+        self.with(|db| {
+            db.query_row("SELECT xuid, data FROM ghosts WHERE id = ?1", [id], |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?)))
+                .optional()
+        })
+        .flatten()
     }
 
     /// Ghost id of a player's best on an event, if uploaded.
@@ -424,13 +448,20 @@ impl Store {
         .flatten()
     }
 
-    /// Any player's ghost on a route (event ignored) whose score is closest to `score`:
-    /// (ghost id, its score, its car).
-    pub fn nearest_ghost(&self, scoreboard_type: i64, score_type: i64, track_id: i64, score: f64) -> Option<(i64, f64, i64)> {
+    /// The ghost of one of `owners` on a route (event ignored) whose score is closest to
+    /// `score`: (ghost id, its score, its car).
+    pub fn nearest_ghost(&self, owners: &[u64], scoreboard_type: i64, score_type: i64, track_id: i64, score: f64) -> Option<(i64, f64, i64)> {
+        if owners.is_empty() {
+            return None;
+        }
+        // integers only: safe to inline
+        let list = owners.iter().map(|x| (*x as i64).to_string()).collect::<Vec<_>>().join(",");
         self.with(|db| {
             db.query_row(
-                "SELECT id, score, car_id FROM ghosts WHERE scoreboard_type = ?1 AND score_type = ?2 AND track_id = ?3
-                 ORDER BY abs(score - ?4) LIMIT 1",
+                &format!(
+                    "SELECT id, score, car_id FROM ghosts WHERE xuid IN ({list}) AND scoreboard_type = ?1 AND score_type = ?2
+                       AND track_id = ?3 ORDER BY abs(score - ?4) LIMIT 1"
+                ),
                 params![scoreboard_type, score_type, track_id, score],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -489,15 +520,6 @@ impl Store {
         .map(|(d, u, s)| (serde_json::from_str(&d).unwrap_or(Value::Null), u, s))
     }
 
-    /// Other players who have a drivatar, most recently updated first.
-    pub fn drivatar_owners(&self, except: u64, limit: i64) -> Vec<u64> {
-        self.with(|db| {
-            let mut stmt = db.prepare("SELECT xuid FROM drivatars WHERE xuid <> ?1 ORDER BY updated DESC LIMIT ?2")?;
-            let rows = stmt.query_map(params![except as i64, limit], |r| r.get::<_, i64>(0))?.flatten().map(|x| x as u64).collect();
-            Ok(rows)
-        })
-        .unwrap_or_default()
-    }
 
     pub fn add_xp(&self, xuid: u64, xp: f64) {
         self.touch_user(xuid);
@@ -511,9 +533,14 @@ impl Store {
         self.with(|db| {
             db.execute(
                 "INSERT INTO liveries (xuid, time, name, car_id, data) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![xuid as i64, unix_ms(), name, car_id, data.to_string()],
+                params![xuid as i64, unix_ms(), name.chars().take(64).collect::<String>(), car_id, data.to_string()],
             )?;
-            Ok(db.last_insert_rowid())
+            let id = db.last_insert_rowid();
+            db.execute(
+                "DELETE FROM liveries WHERE xuid = ?1 AND id NOT IN (SELECT id FROM liveries WHERE xuid = ?1 ORDER BY id DESC LIMIT ?2)",
+                params![xuid as i64, MAX_PER_PLAYER],
+            )?;
+            Ok(id)
         })
         .unwrap_or(0)
     }
@@ -525,7 +552,12 @@ impl Store {
                 "INSERT INTO tunes (xuid, time, car_id, data) VALUES (?1, ?2, ?3, ?4)",
                 params![xuid as i64, unix_ms(), car_id, data.to_string()],
             )?;
-            Ok(db.last_insert_rowid())
+            let id = db.last_insert_rowid();
+            db.execute(
+                "DELETE FROM tunes WHERE xuid = ?1 AND id NOT IN (SELECT id FROM tunes WHERE xuid = ?1 ORDER BY id DESC LIMIT ?2)",
+                params![xuid as i64, MAX_PER_PLAYER],
+            )?;
+            Ok(id)
         })
         .unwrap_or(0)
     }
@@ -545,6 +577,18 @@ impl Store {
             })
             .unwrap_or(0);
         json!({ "id": id, "xuid": xuid.to_string(), "time": now, "kind": kind, "title": title, "detail": detail })
+    }
+
+    /// How many `kind` events a player caused since a time (rate limits).
+    pub fn events_since(&self, xuid: u64, kind: &str, since: i64) -> i64 {
+        self.with(|db| {
+            db.query_row(
+                "SELECT COUNT(*) FROM events WHERE xuid = ?1 AND kind = ?2 AND time >= ?3",
+                params![xuid as i64, kind, since],
+                |r| r.get(0),
+            )
+        })
+        .unwrap_or(0)
     }
 
     pub fn users(&self) -> Value {
@@ -582,19 +626,6 @@ impl Store {
                 })
                 .collect(),
         )
-    }
-
-    /// The player who logged on most recently: Xbox Live calls carry no X-UserId (only the
-    /// token), so "me" resolves to this until the server has real authentication.
-    pub fn latest_player(&self) -> u64 {
-        self.with(|db| {
-            db.query_row("SELECT xuid FROM users WHERE logons > 0 ORDER BY last_seen DESC LIMIT 1", [], |r| {
-                r.get::<_, i64>(0)
-            })
-            .optional()
-        })
-        .flatten()
-        .unwrap_or(0) as u64
     }
 
     pub fn xuid_by_gamertag(&self, gamertag: &str) -> Option<u64> {
@@ -659,6 +690,9 @@ impl Store {
                 "DELETE FROM notifications WHERE xuid = ?1",
                 "DELETE FROM accounts WHERE xuid = ?1",
                 "DELETE FROM devices WHERE xuid = ?1",
+                "DELETE FROM web_keys WHERE xuid = ?1",
+                "DELETE FROM saves WHERE xuid = ?1",
+                "DELETE FROM friend_requests WHERE from_xuid = ?1 OR to_xuid = ?1",
             ] {
                 db.execute(sql, [x])?;
             }

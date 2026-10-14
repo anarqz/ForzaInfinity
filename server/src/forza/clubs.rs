@@ -75,12 +75,25 @@ pub fn club_data(ctx: &Ctx, club: &Club, viewer: u64) -> Value {
         "interestKeyword": keyword(club.interest),
         "clubPrivacy": club.privacy,
         "clubXP": ctx.store.club_xp(club.id),
-        "clubXPRank": rank(ctx, club),
+        // no public rankings
+        "clubXPRank": 0,
     })
 }
 
-fn rank(ctx: &Ctx, club: &Club) -> usize {
-    ctx.store.clubs().iter().position(|c| c.id == club.id).map(|i| i + 1).unwrap_or(0)
+/// Players see their own club and the clubs their friends are in; nothing else exists for
+/// them (FH2Online has no public discovery).
+fn visible(ctx: &Ctx, club: &Club) -> bool {
+    let friends = ctx.friend_ids();
+    ctx.store.club_members(club.id).iter().any(|m| m.0 == ctx.xuid || friends.contains(&m.0))
+}
+
+fn visible_club(ctx: &Ctx, id: i64) -> Option<Club> {
+    ctx.store.club(id).filter(|c| visible(ctx, c))
+}
+
+/// Club name and description as typed in game, cleaned.
+fn club_text(params: &Value, key: &str, fallback: &str, max: usize) -> String {
+    super::clean_text(params[key].as_str().unwrap_or(fallback), max)
 }
 
 fn error(code: u32, message: &str) -> Value {
@@ -136,7 +149,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 .store
                 .clubs()
                 .iter()
-                .filter(|c| Some(c.id) != mine && c.privacy != 3)
+                .filter(|c| Some(c.id) != mine && c.privacy != 3 && visible(ctx, c))
                 .take(max_results(params, "maxResults"))
                 .map(|c| club_data(ctx, c, me))
                 .collect();
@@ -144,7 +157,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         }
         (false, "CarClub", "GetFriendsClubs") => {
             let mut seen = Vec::new();
-            for (friend, _, _) in ctx.store.friends(me) {
+            for friend in ctx.friend_ids() {
                 if let Some((club, _)) = ctx.store.membership(friend) {
                     if !seen.contains(&club) {
                         seen.push(club);
@@ -159,11 +172,11 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 .collect();
             json!({ "totalClubs": list.len(), "friendsClubDetailsList": list })
         }
-        (false, "CarClub", "GetClubDetails") => match ctx.store.club(param_i64(params, "clubId")) {
+        (false, "CarClub", "GetClubDetails") => match visible_club(ctx, param_i64(params, "clubId")) {
             Some(c) => json!({ "clubDetails": club_data(ctx, &c, me) }),
             None => json!({ "clubDetails": {} }),
         },
-        (false, "CarClub", "GetClubFullInfo") => match ctx.store.club(param_i64(params, "clubId")) {
+        (false, "CarClub", "GetClubFullInfo") => match visible_club(ctx, param_i64(params, "clubId")) {
             Some(c) => {
                 let max = max_results(params, "maxLeaders");
                 let leaders: Vec<Value> = ctx
@@ -179,7 +192,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
             None => json!({ "clubDetails": {}, "leaders": [] }),
         },
         (false, "CarClub", "SearchForClubByTag") => {
-            match ctx.store.club_by_tag(params["clubTag"].as_str().unwrap_or("")) {
+            match ctx.store.club_by_tag(params["clubTag"].as_str().unwrap_or("")).filter(|c| visible(ctx, c)) {
                 Some(c) => json!({ "clubDetails": club_data(ctx, &c, me) }),
                 None => json!({ "clubDetails": {} }),
             }
@@ -190,7 +203,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 .store
                 .clubs()
                 .iter()
-                .filter(|c| c.privacy != 3)
+                .filter(|c| c.privacy != 3 && visible(ctx, c))
                 .filter(|c| c.name.to_lowercase().contains(&wanted) || c.tag.to_lowercase() == wanted)
                 .take(max_results(params, "maxResults"))
                 .map(|c| club_data(ctx, c, me))
@@ -202,19 +215,17 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
             let privacy = p["Privacy"].as_i64().unwrap_or(-1);
             let (region, attitude, interest) =
                 (param_i64(p, "RegionKeywordId"), param_i64(p, "AttitudeKeywordId"), param_i64(p, "InterestKeywordId"));
-            let friends_only = p["FriendsOnly"].as_bool().unwrap_or(false);
-            let friends: Vec<u64> = ctx.store.friends(me).into_iter().map(|f| f.0).collect();
+            // every search is "friends only": other clubs do not exist for the player
             let list: Vec<Value> = ctx
                 .store
                 .clubs()
                 .iter()
-                .filter(|c| c.privacy != 3)
+                .filter(|c| c.privacy != 3 && visible(ctx, c))
                 // "WithNone" enums: anything outside the four privacy values means "any"
                 .filter(|c| !(0..=3).contains(&privacy) || c.privacy == privacy)
                 .filter(|c| region == 0 || c.region == region)
                 .filter(|c| attitude == 0 || c.attitude == attitude)
                 .filter(|c| interest == 0 || c.interest == interest)
-                .filter(|c| !friends_only || ctx.store.club_members(c.id).iter().any(|m| friends.contains(&m.0)))
                 .take(max_results(params, "maxResults"))
                 .map(|c| club_data(ctx, c, me))
                 .collect();
@@ -225,7 +236,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         // reward tiers (topTierCount = tiers reached).
         (false, "Scoreboard", "GetLadderRows") => {
             let club = param_i64(params, "clubId");
-            let ladder = ctx.store.club_ladder(club);
+            let ladder = if visible_club(ctx, club).is_some() { ctx.store.club_ladder(club) } else { Vec::new() };
             let tiers: Vec<Value> = LADDER_TIERS
                 .iter()
                 .take(params["maxTiers"].as_i64().filter(|&n| n > 0).unwrap_or(5) as usize)
@@ -241,7 +252,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 })
             };
             let start = params["startAt"].as_i64().unwrap_or(1).max(1) as usize;
-            let max = params["maxResults"].as_i64().filter(|&n| n > 0).unwrap_or(100) as usize;
+            let max = params["maxResults"].as_i64().filter(|&n| n > 0).unwrap_or(100).min(200) as usize;
             let rows: Vec<Value> =
                 ladder.iter().enumerate().skip(start - 1).take(max).map(|(i, &(x, s))| row(i + 1, x, s)).collect();
             let user_row = ladder
@@ -256,13 +267,16 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         (true, "Club", "CreateClub") => {
             let fields = ClubFields {
                 tag: params["clubTag"].as_str().unwrap_or("").into(),
-                name: params["clubName"].as_str().unwrap_or("").into(),
-                description: params["clubDescription"].as_str().unwrap_or("").into(),
+                name: club_text(params, "clubName", "", 24),
+                description: club_text(params, "clubDescription", "", 200),
                 privacy: param_i64(params, "privacy"),
                 region: param_i64(params, "regionKeywordId"),
                 attitude: param_i64(params, "attitudeKeywordId"),
                 interest: param_i64(params, "interestKeywordId"),
             };
+            if ctx.store.events_since(me, "club", crate::unix_ms() - 3_600_000) >= 10 {
+                return Some(error(1, "too many club changes"));
+            }
             match ctx.store.create_club(me, &fields) {
                 Ok(id) => {
                     ctx.event("club", format!("Criou o clube [{}] {}", fields.tag.to_uppercase(), fields.name), json!({ "clubId": id }));
@@ -275,8 +289,8 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
             Ok((club, role)) if is_officer(role) => {
                 let fields = ClubFields {
                     tag: club.tag.clone(),
-                    name: params["newClubName"].as_str().unwrap_or(&club.name).into(),
-                    description: params["newClubDescription"].as_str().unwrap_or(&club.description).into(),
+                    name: club_text(params, "newClubName", &club.name, 24),
+                    description: club_text(params, "newClubDescription", &club.description, 200),
                     privacy: param_i64(params, "privacyLevel"),
                     region: param_i64(params, "regionKeyword"),
                     attitude: param_i64(params, "attitudeKeyword"),
@@ -293,7 +307,8 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         (true, "Club", "ChangeMemberRole") => match my_club(ctx) {
             Ok((club, ROLE_LEADER)) => {
                 let who = param_xuid(params, "userToChange");
-                if ctx.store.set_member_role(club.id, who, param_i64(params, "newRole")) {
+                // the leader hands over leadership by promoting someone else, never demotes self
+                if who != me && ctx.store.set_member_role(club.id, who, param_i64(params, "newRole")) {
                     json!({})
                 } else {
                     error(1, "not a member")
@@ -304,19 +319,19 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         },
         (true, "Club", "GetClubMembers") => {
             let id = param_i64(params, "clubId");
-            let members = ctx.store.club_members(id);
+            let members = if visible_club(ctx, id).is_some() { ctx.store.club_members(id) } else { Vec::new() };
             let recent = crate::unix_ms() - 7 * 24 * 3600 * 1000;
             let list: Vec<Value> = members
                 .iter()
-                .take(params["maxMembers"].as_u64().filter(|&n| n > 0).unwrap_or(100) as usize)
+                .take(params["maxMembers"].as_u64().filter(|&n| n > 0).unwrap_or(100).min(500) as usize)
                 .map(|&(x, _, joined)| json!({ "user": member_data(ctx, x), "recentClubStatusChange": joined > recent }))
                 .collect();
             json!({ "totalMembers": members.len(), "clubMembers": list })
         }
         (true, "Club", "GetClubStatus") => {
             let who = match param_xuid(params, "xuid") {
-                0 => me,
-                x => x,
+                x if x != 0 && ctx.can_see(x) => x,
+                _ => me,
             };
             json!({ "clubStatus": {
                 "acceptsClubInvites": ctx.store.accepts_club_invites(who),
@@ -325,12 +340,12 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         }
         (true, "Club", "GetClubHistory") => {
             let who = match param_xuid(params, "userXuid") {
-                0 => me,
-                x => x,
+                x if x != 0 && ctx.can_see(x) => x,
+                _ => me,
             };
             let entries: Vec<Value> = ctx
                 .store
-                .club_history(who, params["maxEntries"].as_i64().unwrap_or(20))
+                .club_history(who, params["maxEntries"].as_i64().unwrap_or(20).clamp(0, 100))
                 .into_iter()
                 .map(|(club_name, role, action, time)| {
                     json!({ "clubName": club_name, "date": iso_utc(time), "user": member_data(ctx, who), "role": role, "action": action })
@@ -342,12 +357,11 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         (true, "Club", "GetUsersToInvite") => {
             let mine = ctx.store.membership(me).map(|m| m.0);
             let list: Vec<Value> = ctx
-                .store
-                .friends(me)
+                .friend_ids()
                 .into_iter()
-                .filter(|f| ctx.store.membership(f.0).map(|m| m.0) != mine || mine.is_none())
-                .take(params["maxResults"].as_u64().filter(|&n| n > 0).unwrap_or(50) as usize)
-                .map(|(x, _, _)| {
+                .filter(|&f| ctx.store.membership(f).map(|m| m.0) != mine || mine.is_none())
+                .take(params["maxResults"].as_u64().filter(|&n| n > 0).unwrap_or(50).min(200) as usize)
+                .map(|x| {
                     let club_name = ctx.store.membership(x).and_then(|m| ctx.store.club(m.0)).map(|c| c.name).unwrap_or_default();
                     json!({
                         "user": member_data(ctx, x),
@@ -362,10 +376,9 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         // Friends who are in a club the caller could join.
         (true, "Club", "GetUsersToJoin") => {
             let list: Vec<Value> = ctx
-                .store
-                .friends(me)
+                .friend_ids()
                 .into_iter()
-                .filter_map(|(x, _, _)| {
+                .filter_map(|x| {
                     let (club_id, _) = ctx.store.membership(x)?;
                     let club = ctx.store.club(club_id)?;
                     Some(json!({
@@ -375,7 +388,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                         "clubIsOpenForMembership": club.privacy == PRIVACY_OPEN || club.privacy == PRIVACY_FRIENDS,
                     }))
                 })
-                .take(params["maxResults"].as_u64().filter(|&n| n > 0).unwrap_or(50) as usize)
+                .take(params["maxResults"].as_u64().filter(|&n| n > 0).unwrap_or(50).min(200) as usize)
                 .collect();
             json!({ "usersInClubs": list })
         }
@@ -385,7 +398,8 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                     Some(name) => ctx.store.xuid_by_gamertag(name).unwrap_or(0),
                     None => param_xuid(params, "userToInvite"),
                 };
-                if who == 0 {
+                // only friends can be invited
+                if who == 0 || !ctx.friend_ids().contains(&who) {
                     return Some(error(1, "unknown player"));
                 }
                 match ctx.store.invite_to_club(club.id, me, who) {
@@ -414,7 +428,10 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 Some(tag) => ctx.store.club_by_tag(tag),
                 None => ctx.store.club(param_i64(params, "clubId")),
             };
-            let Some(club) = club else { return Some(error(1, "unknown club")) };
+            // a club with one of the player's friends in it (or one that invited them)
+            let Some(club) = club.filter(|c| visible(ctx, c) || has_invite(ctx, c.id)) else {
+                return Some(error(1, "unknown club"));
+            };
             if club.privacy == 3 || (club.privacy == PRIVACY_INVITE_ONLY && !has_invite(ctx, club.id)) {
                 ctx.store.request_to_join(club.id, me);
                 return Some(json!({ "requestApproved": false }));
@@ -431,7 +448,8 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         (true, "Club", "ApproveRequestToJoin") => match my_club(ctx) {
             Ok((club, role)) if is_officer(role) => {
                 let who = param_xuid(params, "approvedUser");
-                if ctx.store.delete_club_request(club.id, who) || ctx.store.user_exists(who) {
+                // only someone who asked to join
+                if ctx.store.delete_club_request(club.id, who) {
                     ctx.store.add_member(club.id, who, ROLE_MEMBER);
                     json!({})
                 } else {
@@ -466,6 +484,13 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         (true, "Club", "RecommendMemberForRemoval") => match my_club(ctx) {
             Ok((club, _)) => {
                 let who = param_xuid(params, "userToRemove");
+                if who == me || ctx.store.membership(who).map(|m| m.0) != Some(club.id) {
+                    return Some(error(1, "not a member"));
+                }
+                if ctx.store.events_since(me, "club-report", crate::unix_ms() - 3_600_000) >= 5 {
+                    return Some(error(1, "too many reports"));
+                }
+                ctx.event("club-report", "Sugeriu remover um membro do clube", json!({ "clubId": club.id }));
                 let note = json!({
                     "recommendingRemovalXuid": me,
                     "recommendingRemovalGamertag": ctx.store.gamertag(me),
@@ -484,15 +509,30 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         },
         (true, "Club", "CreateNoticeBoardNotification") => match my_club(ctx) {
             Ok((club, _)) => {
-                let text = params["noticeBoardMessage"].as_str().unwrap_or("");
-                json!({ "notificationId": ctx.store.add_club_notice(club.id, me, text) })
+                let text = super::clean_text(params["noticeBoardMessage"].as_str().unwrap_or(""), 200);
+                if text.is_empty() {
+                    return Some(error(1, "empty notice"));
+                }
+                if ctx.store.events_since(me, "notice", crate::unix_ms() - 3_600_000) >= 20 {
+                    return Some(error(1, "too many notices"));
+                }
+                ctx.event("notice", format!("Aviso no mural do clube [{}]", club.tag), json!({ "clubId": club.id }));
+                json!({ "notificationId": ctx.store.add_club_notice(club.id, me, &text) })
             }
             Err(e) => e,
         },
-        (true, "Club", "DeleteNoticeBoardNotification") => {
-            ctx.store.delete_club_notice(params["notificationId"].as_i64().unwrap_or(0));
-            json!({})
-        }
+        // the author, or an officer of the club, takes a notice down
+        (true, "Club", "DeleteNoticeBoardNotification") => match my_club(ctx) {
+            Ok((club, role)) => {
+                let id = params["notificationId"].as_i64().unwrap_or(0);
+                let mine = ctx.store.club_notices(club.id).iter().any(|n| n.0 == id && (n.1 == me || is_officer(role)));
+                if mine {
+                    ctx.store.delete_club_notice(id);
+                }
+                json!({})
+            }
+            Err(e) => e,
+        },
         (true, "User", "AcceptClubInvites") => {
             ctx.store.set_accepts_club_invites(me, params["acceptingClubInvites"].as_bool().unwrap_or(true));
             json!({})
