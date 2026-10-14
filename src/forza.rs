@@ -112,6 +112,12 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         // Transactional (X-TransactionId): credits granted by the service. Nothing to grant yet.
         (false, "User", "RetrieveOnlineCredits") => json!({ "credit": 0 }),
         (true, "Transaction", "Reconcile") => reconcile(ctx, params),
+        // The PermissionsLoader (game 0x140f09930) sends this at boot; until it gets an answer the
+        // game treats the LSP as down (sessionObj+0x1131 == 0) and locks online features with
+        // IDS_Popup_FeatureLocked_LSPDown_Message. No method overrides, no banned feature areas.
+        (false, "User", "GetPermissionsTable") => json!({
+            "permissions": [], "featureAreasBanMask": 0, "userFlags": 0,
+        }),
         // Lists that are empty until the server has the content (storefront, clubs, drivatars).
         (false, "Storefront", "GetFileKeywords")
         | (false, "Storefront", "GetLiveriesForDrivatar")
