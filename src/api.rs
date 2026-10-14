@@ -57,6 +57,12 @@ pub fn handle(app: &App, request: &Request) -> Outcome {
             Some(profile) => json_reply(200, &profile),
             None => json_reply(404, &json!({ "error": "unknown player" })),
         },
+        ["gamerpic", xuid] => {
+            let xuid = xuid.trim_end_matches(".png").parse::<u64>().unwrap_or(0);
+            let (png, from) = crate::gamerpic::get(&app.root, xuid, &app.store.gamertag(xuid));
+            let extra = format!("X-Gamerpic-Source: {}\r\n", crate::gamerpic_source(&from));
+            response(200, "image/png", &extra, &png)
+        }
         ["catalog"] => json_reply(200, &json!(app.catalog)),
         ["status"] => json_reply(
             200,

@@ -30,6 +30,7 @@ mod api;
 mod db;
 mod forza;
 mod gamedb;
+mod gamerpic;
 mod live;
 mod xtsw;
 
@@ -359,6 +360,20 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
                 Some(reply) => reply,
                 None => build_body(spec, &source),
             }
+        }
+        None if !specific && target.host == gamerpic::HOST => {
+            // the picture URL we put in the Xbox profile settings
+            let xuid = target
+                .query
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("xuid="))
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(ctx.xuid);
+            let (png, from) = gamerpic::get(&app.root, xuid, &app.store.gamertag(xuid));
+            source = Some(format!("builtin:gamerpic:{}", gamerpic_source(&from)));
+            let mut headers = BTreeMap::new();
+            headers.insert("Content-Type".into(), "image/png".into());
+            (200, headers, png)
         }
         None => match (specific, forza::live_service(&ctx, &target.host, &target.path, &request.body)) {
             (false, Some(reply)) => {
@@ -724,6 +739,14 @@ fn safe(name: &str) -> String {
 
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_owned() } else { s.chars().take(n - 1).collect::<String>() + "…" }
+}
+
+fn gamerpic_source(from: &gamerpic::Source) -> &'static str {
+    match from {
+        gamerpic::Source::Manual => "manual",
+        gamerpic::Source::Xbox => "xbox",
+        gamerpic::Source::Placeholder => "placeholder",
+    }
 }
 
 fn unix_ms() -> i64 {
