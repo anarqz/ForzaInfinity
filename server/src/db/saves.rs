@@ -81,6 +81,23 @@ pub fn check_bundle(data: &[u8]) -> Result<u64, String> {
     Ok(revision)
 }
 
+/// The cars a new profile may start with (the game's own first-car choice, IEAutoShowCars):
+/// Camaro SS 69, Supra RZ 98, BMW Z4 11.
+pub const STARTER_CARS: [i64; 3] = [289, 461, 1218];
+
+/// The starting save of a new profile with `car`: templates/starter-<car>.bundle and .commit
+/// (tools/make_starter_saves.py). None for any other car or a missing or malformed template.
+pub fn starter_template(root: &std::path::Path, car: i64) -> Option<(u64, String, Vec<u8>)> {
+    if !STARTER_CARS.contains(&car) {
+        return None;
+    }
+    let dir = root.join("templates");
+    let data = std::fs::read(dir.join(format!("starter-{car}.bundle"))).ok()?;
+    let commit = std::fs::read_to_string(dir.join(format!("starter-{car}.commit"))).ok()?.trim().to_owned();
+    let revision = check_bundle(&data).ok()?;
+    valid_commit(&commit).then_some((revision, commit, data))
+}
+
 pub fn valid_commit(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -149,6 +166,16 @@ mod tests {
             out.extend_from_slice(data);
         }
         out
+    }
+
+    #[test]
+    fn starters() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for car in STARTER_CARS {
+            assert!(starter_template(root, car).is_some(), "template for {car}");
+        }
+        assert!(starter_template(root, 999).is_none());
+        assert!(starter_template(root, 0).is_none());
     }
 
     #[test]

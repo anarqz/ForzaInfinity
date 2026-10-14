@@ -123,11 +123,22 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
             let name = body["name"].as_str().unwrap_or("").trim();
             let discriminator = body["discriminator"].as_str().unwrap_or("").trim();
             let device = body["device"].as_str().unwrap_or("").trim();
+            // the starting save: only one of the game's three first cars, from its template
+            let car = body["starterCar"].as_i64().unwrap_or(0);
+            let Some((revision, commit, starter)) = crate::db::saves::starter_template(&app.root, car) else {
+                let error = if crate::db::saves::STARTER_CARS.contains(&car) {
+                    "This server has no starting save for that car."
+                } else {
+                    "Choose one of the starter cars."
+                };
+                return json_reply(400, &json!({ "error": error }));
+            };
             match app.store.register_account(name, discriminator, device) {
                 Ok((account, token)) => {
                     let gamertag = account.gamertag();
                     let web_key = app.store.rotate_web_key(account.xuid).unwrap_or_default();
-                    app.store.add_event(account.xuid, "account", &format!("Conta {gamertag} criada"), json!({}));
+                    app.store.put_save(account.xuid, revision, &commit, &starter);
+                    app.store.add_event(account.xuid, "account", &format!("Conta {gamertag} criada (carro {car})"), json!({}));
                     app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
                     json_reply(
                         200,
