@@ -143,7 +143,10 @@ pub fn live_service(ctx: &Ctx, host: &str, path: &str, body: &[u8]) -> Option<Va
             .iter()
             .map(|id| {
                 let xuid = id.parse::<u64>().unwrap_or(0);
-                let tag = ctx.store.gamertag(xuid);
+                // The game looks up every grid driver and rival here: offline AI drivatars and
+                // our made-up rivals are not players, so they get a stable generated name.
+                let known = ctx.store.gamertag(xuid);
+                let tag = if known.is_empty() { generated_gamertag(xuid) } else { known };
                 let settings: Vec<Value> = wanted
                     .iter()
                     .map(|name| {
@@ -509,10 +512,30 @@ fn rng() -> impl FnMut() -> f64 {
     }
 }
 
-const RIVAL_NAMES: &[&str] = &[
-    "ApexHunter", "LateBraker", "NeonDrifter", "CurbKisser", "GhostLine", "RedlineRita",
-    "SlipstreamSam", "TurboTaxi", "HorizonHero", "GravelGrace", "NitroNico", "MidnightMara",
+const NAME_FIRST: &[&str] = &[
+    "Apex", "Late", "Neon", "Curb", "Ghost", "Redline", "Slip", "Turbo", "Horizon", "Gravel",
+    "Nitro", "Midnight", "Drift", "Torque", "Chrome", "Dusty", "Rapid", "Silent", "Wild", "Lucky",
+    "Brave", "Crimson", "Solar", "Rally",
 ];
+const NAME_SECOND: &[&str] = &[
+    "Hunter", "Braker", "Rider", "Kisser", "Line", "Rita", "Sam", "Taxi", "Hero", "Grace",
+    "Nico", "Mara", "King", "Fox", "Wolf", "Viper", "Pilot", "Comet", "Duke", "Nova", "Rex",
+    "Joy", "Blaze", "Storm",
+];
+
+/// A stable, readable gamertag for an XUID that is not a player (<= 15 chars, like Xbox).
+pub fn generated_gamertag(xuid: u64) -> String {
+    let mut h = xuid ^ 0x9e37_79b9_7f4a_7c15;
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^= h >> 31;
+    let a = NAME_FIRST[(h % NAME_FIRST.len() as u64) as usize];
+    let b = NAME_SECOND[((h >> 16) % NAME_SECOND.len() as u64) as usize];
+    let n = (h >> 32) % 100;
+    let mut tag = format!("{a}{b}{n}");
+    tag.truncate(15);
+    tag
+}
 
 /// Scoreboard.GetRival: a made-up rival around the player's own time on that track (or a
 /// time from the track length), so the rival shows up in game. Real rivals come with friends.
@@ -543,8 +566,10 @@ fn random_rival(ctx: &Ctx, params: &Value) -> Value {
         .or_else(|| ctx.catalog.car(461).map(|c| c.id).or_else(|| ctx.catalog.cars.keys().next().copied()))
         .unwrap_or(461);
     let cat = ctx.catalog.car(car);
-    let name = RIVAL_NAMES[(rand() * RIVAL_NAMES.len() as f64) as usize % RIVAL_NAMES.len()];
+    // the game asks profile.xboxlive.com for this XUID's name: generate it the same way
     let xuid = 0x0009_0000_0100_0000u64 + (rand() * 1_000_000.0) as u64;
+    let name = generated_gamertag(xuid);
+    let name = name.as_str();
     let bounty = ((1000.0 + rand() * 9000.0) / 100.0).round() as i64 * 100;
     let days_ago = (rand() * 20.0) as i64;
     ctx.event(
