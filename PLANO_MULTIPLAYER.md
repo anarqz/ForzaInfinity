@@ -171,3 +171,18 @@ As fases 1, 5 e 6 não dependem de RE e podem andar em paralelo com a fase 0.
     - Sem token, um XUID de conta é ignorado, inclusive o `loginData.xuid` do `Logon`.
     - Uma conta suspensa recebe 403 (`POST`/`DELETE /api/users/<xuid>/ban`).
   - O `Logon` usa o XUID e o `nome#12345` da conta.
+- **Fase 2, identidade no jogo (feita e testada no jogo em 14/10/2026, hook `fh2online.15`):** `hook/adapters/azimuth_account.c`.
+  - **Configuração no ini:** `[Account] Name=Alex`, com `[Network] Server` (aceita `https://`).
+  - **Fingerprint:** SHA-256 de `FH2Online/v1|MachineGuid|serial do volume`. O `#` é formado pelos 8 primeiros bytes, mod 100000.
+  - **Device id:** SHA-256 de `hex(fingerprint)|host:porta`.
+  - **Token:** guardado em `data\bin\FH2Online_Accounts.ini`, numa seção por servidor. Nas aberturas seguintes é validado com `GET /me`. Se o servidor responder 401, o hook registra a conta de novo.
+  - **Identidade no Azimuth:**
+    - `LocalUser.get_XboxUserId` (slot `azimuth+0x24ff88`, que formatava o fixo `0x9000000000000`) devolve o XUID da conta.
+    - O nome do jogador é uma `std::wstring` em `azimuth+0x318c60`, lida por todos os getters de gamertag e nome de exibição (`LocalDisplayInfo`, slots `0x24ffe8`, `0x24fff8` e `0x250000`). O hook reescreve essa string no lugar.
+    - Os getters esperam a thread de registro terminar, por no máximo 10 s.
+  - **Resultado:** com o XUID novo, o Azimuth grava em `saves\player-1\User_<xuid hex>`, uma pasta própria. O jogo trata a conta como um jogador novo (boas-vindas, ajuste de brilho, introdução) e o save offline (`User_9000000000000`) não é tocado. A conta começa do zero.
+  - **Validado no jogo:**
+    - todas as chamadas chegam com o XUID da conta e o `X-Fh2-Token`;
+    - o `GetUserData` devolve `Alex#72178`;
+    - o menu de pausa mostra "Alex#72178";
+    - na segunda abertura o token é reaproveitado sem criar outra conta.
