@@ -3,7 +3,7 @@
 O jogo é só o título. Tudo o que o Xbox One fazia por ele (sistema, SDK, Xbox Live) não existe no PC, então o FH2Online reimplementa:
 
 - **no servidor (`server/`):** os serviços Forza (`Forza.WebServices`, `Xls.WebServices`) e os serviços Xbox Live que o jogo chama por HTTP (profile, presence, people, achievements, sessiondirectory…);
-- **no hook (`hook/`):** as APIs do console que o Azimuth deixa offline ou fecha na hora (conectividade, telas do sistema, privilégios, party…). Também as telas do sistema que o jogo espera abrir: cartão de perfil, seletor de amigos, mensagens e convites.
+- **no hook (`hook/`, fork `anarqz/ForzaHorizon2_ExtraOptions`):** as APIs do console que o Azimuth deixa offline ou fecha na hora (conectividade, telas do sistema, privilégios, party…). Também as telas do sistema que o jogo espera abrir: cartão de perfil, seletor de amigos, mensagens e convites.
 
 O multiplayer em tempo real (vários jogadores no mesmo mapa) **está fora do escopo por enquanto**.
 
