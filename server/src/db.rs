@@ -8,7 +8,9 @@
 //!   (garageCars, trackStats, affinities...). Uploads are deltas: rows are merged and
 //!   delete* lists applied;
 //! - scores, xp, tunes: Scoreboard.SubmitScore / SubmitXpScore, ContentVersioning tunes;
-//! - events: the activity feed shown live in the web UI.
+//! - events: the activity feed shown live in the web UI;
+//! - friends: who each player follows (Xbox "People"); the manager adds both directions;
+//! - presence: the last rich presence each player's game posted.
 
 use std::{path::Path, sync::Mutex};
 
@@ -18,6 +20,8 @@ use serde_json::{Map, Value, json};
 use crate::{gamedb::Catalog, unix_ms};
 
 const MAX_EVENTS: i64 = 5000;
+/// A player counts as online while their game posted presence within this window.
+pub const PRESENCE_TTL_MS: i64 = 5 * 60 * 1000;
 
 pub struct Store {
     db: Mutex<Connection>,
@@ -79,7 +83,13 @@ impl Store {
                  name TEXT NOT NULL, car_id INTEGER NOT NULL, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS transactions (
                  id TEXT PRIMARY KEY, xuid INTEGER NOT NULL, time INTEGER NOT NULL,
-                 method TEXT NOT NULL, body BLOB NOT NULL);",
+                 method TEXT NOT NULL, body BLOB NOT NULL);
+             CREATE TABLE IF NOT EXISTS friends (
+                 xuid INTEGER NOT NULL, friend INTEGER NOT NULL, favorite INTEGER NOT NULL DEFAULT 0,
+                 created INTEGER NOT NULL, PRIMARY KEY (xuid, friend));
+             CREATE TABLE IF NOT EXISTS presence (
+                 xuid INTEGER PRIMARY KEY, state TEXT NOT NULL, rich TEXT NOT NULL,
+                 updated INTEGER NOT NULL);",
         )
         .map_err(|e| e.to_string())?;
         Ok(Store { db: Mutex::new(db) })
@@ -489,24 +499,219 @@ impl Store {
     }
 
     pub fn users(&self) -> Value {
+        let rows = self
+            .with(|db| {
+                let mut stmt = db.prepare(
+                    "SELECT u.xuid, u.gamertag, u.first_seen, u.last_seen, u.logons,
+                            (SELECT COUNT(*) FROM friends f WHERE f.xuid = u.xuid)
+                     FROM users u ORDER BY u.last_seen DESC",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| {
+                        Ok((
+                            r.get::<_, i64>(0)? as u64,
+                            json!({
+                                "xuid": (r.get::<_, i64>(0)? as u64).to_string(),
+                                "gamertag": r.get::<_, String>(1)?,
+                                "firstSeen": r.get::<_, i64>(2)?,
+                                "lastSeen": r.get::<_, i64>(3)?,
+                                "logons": r.get::<_, i64>(4)?,
+                                "friends": r.get::<_, i64>(5)?,
+                            }),
+                        ))
+                    })?
+                    .flatten()
+                    .collect::<Vec<_>>();
+                Ok(rows)
+            })
+            .unwrap_or_default();
+        Value::Array(
+            rows.into_iter()
+                .map(|(xuid, mut user)| {
+                    user["presence"] = self.presence_json(xuid);
+                    user
+                })
+                .collect(),
+        )
+    }
+
+    /// The player who logged on most recently: Xbox Live calls carry no X-UserId (only the
+    /// token), so "me" resolves to this until the server has real authentication.
+    pub fn latest_player(&self) -> u64 {
         self.with(|db| {
-            let mut stmt =
-                db.prepare("SELECT xuid, gamertag, first_seen, last_seen, logons FROM users ORDER BY last_seen DESC")?;
+            db.query_row("SELECT xuid FROM users WHERE logons > 0 ORDER BY last_seen DESC LIMIT 1", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()
+        })
+        .flatten()
+        .unwrap_or(0) as u64
+    }
+
+    pub fn user_exists(&self, xuid: u64) -> bool {
+        self.with(|db| db.query_row("SELECT 1 FROM users WHERE xuid = ?1", [xuid as i64], |_| Ok(())).optional())
+            .flatten()
+            .is_some()
+    }
+
+    /// A player made in the manager (a friend who has not played yet, or a test account).
+    /// XUIDs come from a range real consoles never used (2535000000000001...).
+    pub fn create_user(&self, gamertag: &str) -> Result<u64, String> {
+        let now = unix_ms();
+        let db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let taken: bool = db
+            .query_row("SELECT 1 FROM users WHERE gamertag = ?1 COLLATE NOCASE", [gamertag], |_| Ok(()))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if taken {
+            return Err("gamertag já existe".into());
+        }
+        let base: i64 = 2_535_000_000_000_000;
+        let next: i64 = db
+            .query_row("SELECT MAX(xuid) FROM users WHERE xuid > ?1", [base], |r| r.get::<_, Option<i64>>(0))
+            .map_err(|e| e.to_string())?
+            .unwrap_or(base)
+            + 1;
+        db.execute(
+            "INSERT INTO users (xuid, gamertag, first_seen, last_seen) VALUES (?1, ?2, ?3, ?3)",
+            params![next, gamertag, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(next as u64)
+    }
+
+    /// Removes a player and everything that is only theirs.
+    pub fn delete_user(&self, xuid: u64) -> bool {
+        let x = xuid as i64;
+        self.with(|db| {
+            let n = db.execute("DELETE FROM users WHERE xuid = ?1", [x])?;
+            for sql in [
+                "DELETE FROM friends WHERE xuid = ?1 OR friend = ?1",
+                "DELETE FROM presence WHERE xuid = ?1",
+                "DELETE FROM profile WHERE xuid = ?1",
+                "DELETE FROM profile_tables WHERE xuid = ?1",
+                "DELETE FROM drivatars WHERE xuid = ?1",
+                "DELETE FROM ghosts WHERE xuid = ?1",
+                "DELETE FROM events WHERE xuid = ?1",
+            ] {
+                db.execute(sql, [x])?;
+            }
+            Ok(n > 0)
+        })
+        .unwrap_or(false)
+    }
+
+    /// Friendship as the manager makes it: each one follows the other.
+    pub fn add_friend(&self, a: u64, b: u64) -> bool {
+        let now = unix_ms();
+        self.with(|db| {
+            for (x, y) in [(a, b), (b, a)] {
+                db.execute(
+                    "INSERT OR IGNORE INTO friends (xuid, friend, created) VALUES (?1, ?2, ?3)",
+                    params![x as i64, y as i64, now],
+                )?;
+            }
+            Ok(true)
+        })
+        .unwrap_or(false)
+    }
+
+    pub fn remove_friend(&self, a: u64, b: u64) -> bool {
+        self.with(|db| {
+            db.execute(
+                "DELETE FROM friends WHERE (xuid = ?1 AND friend = ?2) OR (xuid = ?2 AND friend = ?1)",
+                params![a as i64, b as i64],
+            )
+        })
+        .is_some_and(|n| n > 0)
+    }
+
+    pub fn set_favorite(&self, xuid: u64, friend: u64, favorite: bool) -> bool {
+        self.with(|db| {
+            db.execute(
+                "UPDATE friends SET favorite = ?3 WHERE xuid = ?1 AND friend = ?2",
+                params![xuid as i64, friend as i64, favorite as i64],
+            )
+        })
+        .is_some_and(|n| n > 0)
+    }
+
+    /// Who `xuid` follows: (friend, favorite, follows back).
+    pub fn friends(&self, xuid: u64) -> Vec<(u64, bool, bool)> {
+        self.with(|db| {
+            let mut stmt = db.prepare(
+                "SELECT f.friend, f.favorite,
+                        EXISTS (SELECT 1 FROM friends b WHERE b.xuid = f.friend AND b.friend = f.xuid)
+                 FROM friends f WHERE f.xuid = ?1 ORDER BY f.created",
+            )?;
             let rows = stmt
-                .query_map([], |r| {
-                    Ok(json!({
-                        "xuid": (r.get::<_, i64>(0)? as u64).to_string(),
-                        "gamertag": r.get::<_, String>(1)?,
-                        "firstSeen": r.get::<_, i64>(2)?,
-                        "lastSeen": r.get::<_, i64>(3)?,
-                        "logons": r.get::<_, i64>(4)?,
-                    }))
+                .query_map([xuid as i64], |r| {
+                    Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? != 0, r.get::<_, i64>(2)? != 0))
                 })?
                 .flatten()
-                .collect::<Vec<_>>();
-            Ok(Value::Array(rows))
+                .collect();
+            Ok(rows)
         })
-        .unwrap_or(Value::Array(Vec::new()))
+        .unwrap_or_default()
+    }
+
+    /// The friends list as the manager shows it.
+    pub fn friends_json(&self, xuid: u64) -> Value {
+        Value::Array(
+            self.friends(xuid)
+                .into_iter()
+                .map(|(friend, favorite, mutual)| {
+                    json!({
+                        "xuid": friend.to_string(),
+                        "gamertag": self.gamertag(friend),
+                        "favorite": favorite,
+                        "mutual": mutual,
+                        "presence": self.presence_json(friend),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Stores the game's rich presence. Returns true when it changed (not just refreshed).
+    pub fn set_presence(&self, xuid: u64, state: &str, rich: &str) -> bool {
+        let before = self.presence(xuid);
+        self.with(|db| {
+            db.execute(
+                "INSERT INTO presence (xuid, state, rich, updated) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (xuid) DO UPDATE SET state = ?2, rich = ?3, updated = ?4",
+                params![xuid as i64, state, rich, unix_ms()],
+            )
+        });
+        !matches!(before, Some((s, r, t)) if s == state && r == rich && unix_ms() - t < PRESENCE_TTL_MS)
+    }
+
+    /// (state, rich presence id, updated) as the game last posted it.
+    pub fn presence(&self, xuid: u64) -> Option<(String, String, i64)> {
+        self.with(|db| {
+            db.query_row("SELECT state, rich, updated FROM presence WHERE xuid = ?1", [xuid as i64], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()
+        })
+        .flatten()
+    }
+
+    /// Online while the game keeps posting (it does every few seconds while running).
+    pub fn is_online(&self, xuid: u64) -> bool {
+        self.presence(xuid).is_some_and(|(state, _, t)| state != "offline" && unix_ms() - t < PRESENCE_TTL_MS)
+    }
+
+    pub fn presence_json(&self, xuid: u64) -> Value {
+        match self.presence(xuid) {
+            Some((_, rich, updated)) => json!({
+                "online": self.is_online(xuid),
+                "rich": rich,
+                "updated": updated,
+            }),
+            None => json!({ "online": false, "rich": "", "updated": 0 }),
+        }
     }
 
     /// Everything the web UI shows for one player.
@@ -629,6 +834,8 @@ impl Store {
             // Xbox achievements unlock locally (Windows.Xbox.Achievements in Azimuth) and do
             // not reach this server yet; the hook will have to forward them.
             "achievements": [],
+            "friends": self.friends_json(xuid),
+            "presence": self.presence_json(xuid),
         }))
     }
 

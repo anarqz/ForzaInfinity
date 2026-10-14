@@ -375,7 +375,13 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
             headers.insert("Content-Type".into(), "image/png".into());
             (200, headers, png)
         }
-        None => match (specific, forza::live_service(&ctx, &target.host, &target.path, &request.body)) {
+        None => match (specific, forza::live_service(&ctx, &forza::LiveRequest {
+            method: &request.method,
+            host: &target.host,
+            path: &target.path,
+            query: &target.query,
+            body: &request.body,
+        })) {
             (false, Some(reply)) => {
                 source = Some(format!("builtin:{}", target.host));
                 let mut headers = BTreeMap::new();
@@ -445,8 +451,13 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
         "status": status,
         "source": source,
     }));
+    let mut presence_changed = false;
     for event in ctx.events.take() {
+        presence_changed |= event["kind"] == "presence";
         app.hub.broadcast(&json!({ "type": "event", "event": event }));
+    }
+    if presence_changed {
+        app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
     }
 
     if let Some(ms) = delay {
