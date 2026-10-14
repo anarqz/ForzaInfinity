@@ -24,6 +24,7 @@ pub mod clubs;
 pub mod integrity;
 pub mod notifications;
 pub mod saves;
+pub mod storefront;
 pub use clubs::{ClubFields, ROLE_COLEADER, ROLE_LEADER, ROLE_MEMBER};
 
 const MAX_EVENTS: i64 = 5000;
@@ -106,6 +107,7 @@ impl Store {
         db.execute_batch(accounts::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(saves::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(integrity::SCHEMA).map_err(|e| e.to_string())?;
+        db.execute_batch(storefront::SCHEMA).map_err(|e| e.to_string())?;
         Ok(Store { db: Mutex::new(db) })
     }
 
@@ -319,6 +321,32 @@ impl Store {
 
     /// Best score of each player on a board. `track_id` None = any track.
     /// Hypothesis: score type 1 is a time (lower is better); the others are points.
+    /// A player's best time (score type 1, lower is better) on each route event: one row per
+    /// scoreboard type, event and track (data holds those and the car).
+    pub fn route_bests(&self, xuid: u64) -> Vec<ScoreRow> {
+        self.with(|db| {
+            // SQLite: the bare columns come from the row holding MIN(score)
+            let mut stmt = db.prepare(
+                "SELECT score, time, data, MIN(score) FROM scores
+                 WHERE xuid = ?1 AND score_type = 1 AND track_id >= 0
+                 GROUP BY scoreboard_type, game_scoreboard_id, track_id",
+            )?;
+            let found = stmt
+                .query_map([xuid as i64], |r| {
+                    Ok(ScoreRow {
+                        xuid,
+                        score: r.get(0)?,
+                        time: r.get(1)?,
+                        data: serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(Value::Null),
+                    })
+                })?
+                .flatten()
+                .collect::<Vec<_>>();
+            Ok(found)
+        })
+        .unwrap_or_default()
+    }
+
     pub fn leaderboard(&self, scoreboard_type: i64, score_type: i64, track_id: Option<i64>, game_scoreboard_id: Option<i64>) -> Vec<ScoreRow> {
         let lower = lower_is_better(score_type);
         let mut rows: Vec<ScoreRow> = self
@@ -539,12 +567,58 @@ impl Store {
             )?;
             let id = db.last_insert_rowid();
             db.execute(
-                "DELETE FROM liveries WHERE xuid = ?1 AND id NOT IN (SELECT id FROM liveries WHERE xuid = ?1 ORDER BY id DESC LIMIT ?2)",
+                // a livery a shared file points at is kept
+                "DELETE FROM liveries WHERE xuid = ?1 AND id NOT IN (SELECT id FROM liveries WHERE xuid = ?1 ORDER BY id DESC LIMIT ?2)
+                 AND id NOT IN (SELECT versioned_id FROM storefront_files WHERE kind = 'livery' AND removed = 0)",
                 params![xuid as i64, MAX_PER_PLAYER],
             )?;
             Ok(id)
         })
         .unwrap_or(0)
+    }
+
+    /// A versioned livery by id: (owner, parameters with its data). CreateVersionedLivery only
+    /// names the livery; its bytes came in the UpdateLivery of the same name just before, so a
+    /// row without data takes the newest data of that owner and name.
+    pub fn livery(&self, id: i64) -> Option<(u64, Value)> {
+        self.with(|db| {
+            let Some((xuid, name, data)) = db
+                .query_row("SELECT xuid, name, data FROM liveries WHERE id = ?1", [id], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                })
+                .optional()?
+            else {
+                return Ok(None);
+            };
+            let mut params: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
+            if params["data"].as_str().is_none_or(str::is_empty) {
+                let mut stmt = db.prepare("SELECT data FROM liveries WHERE xuid = ?1 AND name = ?2 ORDER BY id DESC")?;
+                let rows = stmt.query_map(params![xuid, name], |r| r.get::<_, String>(0))?;
+                if let Some(full) = rows.flatten().filter_map(|t| serde_json::from_str::<Value>(&t).ok()).find(|v| {
+                    v["data"].as_str().is_some_and(|d| !d.is_empty())
+                }) {
+                    params = full;
+                }
+            }
+            Ok(Some((xuid as u64, params)))
+        })
+        .flatten()
+        .filter(|(_, p)| p["data"].as_str().is_some_and(|d| !d.is_empty()))
+    }
+
+    pub fn set_livery_data(&self, id: i64, data: &Value) {
+        self.with(|db| db.execute("UPDATE liveries SET data = ?2 WHERE id = ?1", params![id, data.to_string()]));
+    }
+
+    /// A versioned tune by id: (owner, its parameters: carId, installedParts, tuning...).
+    pub fn tune(&self, id: i64) -> Option<(u64, Value)> {
+        self.with(|db| {
+            db.query_row("SELECT xuid, data FROM tunes WHERE id = ?1", [id], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or(Value::Null)))
+            })
+            .optional()
+        })
+        .flatten()
     }
 
     pub fn add_tune(&self, xuid: u64, car_id: i64, data: &Value) -> i64 {
@@ -556,7 +630,8 @@ impl Store {
             )?;
             let id = db.last_insert_rowid();
             db.execute(
-                "DELETE FROM tunes WHERE xuid = ?1 AND id NOT IN (SELECT id FROM tunes WHERE xuid = ?1 ORDER BY id DESC LIMIT ?2)",
+                "DELETE FROM tunes WHERE xuid = ?1 AND id NOT IN (SELECT id FROM tunes WHERE xuid = ?1 ORDER BY id DESC LIMIT ?2)
+                 AND id NOT IN (SELECT versioned_id FROM storefront_files WHERE kind = 'tune' AND removed = 0)",
                 params![xuid as i64, MAX_PER_PLAYER],
             )?;
             Ok(id)

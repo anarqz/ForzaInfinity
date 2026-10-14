@@ -2,6 +2,7 @@
 server/target/
 server/captures/
 server/data/
+server/logs/
 captures/
 web/node_modules/
 web/dist/
@@ -18,3 +19,6 @@ __pycache__/
 
 # Claude Code worktrees (branches live on origin)
 .claude/
+
+WIP
+Forza\ Horizon\ 2

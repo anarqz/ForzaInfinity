@@ -12,3 +12,4 @@ serde_json = { version = "1.0.154", features = ["preserve_order"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 # WebSocket handshake (Sec-WebSocket-Accept). Pure Rust, no dependencies.
 sha1_smol = "1.0"
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }

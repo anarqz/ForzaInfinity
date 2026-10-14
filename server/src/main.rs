@@ -34,6 +34,7 @@ mod api;
 mod db;
 mod forza;
 mod gamedb;
+mod strtable;
 mod gamerpic;
 mod guard;
 mod live;

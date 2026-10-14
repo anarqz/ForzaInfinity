@@ -1,8 +1,9 @@
 //! Read-only catalog from the game's own database (media/stripped/gamedbRC.slt, plain SQLite):
 //! car names, classes and tracks, so the UI can show "Toyota Supra RZ 1998" instead of 461.
 //!
-//! The official display names are hashed string ids ("_&3444158956") into compressed .str
-//! tables, so for now names are built from MediaName ("TOY_SupraRZ_98") and the make table.
+//! The official display names are string ids ("_&3444158956") into the game's .str tables
+//! (strtable.rs): tracks use them (English, from stringtables/EN.zip next to the database);
+//! car names are still built from MediaName ("TOY_SupraRZ_98") and the make table.
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -15,6 +16,8 @@ pub struct Car {
     pub id: i64,
     pub name: String,
     pub make: String,
+    /// Data_Car MakeID (the storefront searches by it).
+    pub make_id: i64,
     pub model: String,
     pub year: i64,
     pub class_id: i64,
@@ -98,6 +101,7 @@ impl Catalog {
                     id,
                     name,
                     make,
+                    make_id,
                     model,
                     year,
                     class_id,
@@ -133,18 +137,33 @@ impl Catalog {
             catalog.bucket_cars.entry(bucket).or_default().push(car);
         }
 
+        // route names ("Nice Aérodrome Cross Country"); every route's MediaName is "Anthem"
+        let track_names = path
+            .parent()
+            .and_then(|dir| std::fs::read(dir.join("stringtables").join("EN.zip")).ok())
+            .and_then(|zip| crate::strtable::zip_entry(&zip, "Tracks.str"))
+            .map(|table| crate::strtable::parse(&table))
+            .unwrap_or_default();
         let mut stmt =
-            db.prepare("SELECT id, MediaName, Length, IsReverse FROM Tracks").map_err(|e| e.to_string())?;
+            db.prepare("SELECT id, MediaName, Length, IsReverse, DisplayName FROM Tracks").map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                ))
             })
             .map_err(|e| e.to_string())?;
-        for (id, media, length, reverse) in rows.flatten() {
-            let mut name = split_words(&media);
-            if reverse != 0 {
-                name.push_str(" (reverso)");
-            }
+        for (id, media, length, reverse, display) in rows.flatten() {
+            let official = crate::strtable::key(&display).and_then(|k| track_names.get(&k)).filter(|n| !n.is_empty());
+            let name = match official {
+                Some(n) => n.clone(),
+                None if reverse != 0 => format!("{} (reverso)", split_words(&media)),
+                None => split_words(&media),
+            };
             catalog.tracks.insert(id, Track { id, name, length_m: length, reverse: reverse != 0 });
         }
         Ok(catalog)

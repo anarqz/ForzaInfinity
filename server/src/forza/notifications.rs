@@ -51,6 +51,7 @@ pub fn handle(ctx: &Ctx, method: &str, params: &Value) -> Option<Value> {
     Some(match method {
         "StartNewSession" => json!({ "nonce": 1, "nextRetrieveSeconds": POLL_SECONDS }),
         "RetrieveForUser" => {
+            sync_rivals(ctx);
             let max = params["maxResults"].as_i64().filter(|&n| n > 0).unwrap_or(64);
             let budget = params["cbParameterBlockSize"].as_i64().filter(|&n| n > 0).unwrap_or(0x10000) as usize;
             let mut block = Vec::new();
@@ -117,8 +118,6 @@ pub fn handle(ctx: &Ctx, method: &str, params: &Value) -> Option<Value> {
     })
 }
 
-/// "Your rival beat your time": after `xuid` posted `score`, tell each friend whose best on the
-/// same event is now worse.
 /// Where "Ir para" in Meus Rivais takes the player (FUN_140d6b6b0): category 1 = Panama
 /// (Storm Island), 4 = monthly rivals; otherwise timeTrialId != -1 = that showcase, -1 = the
 /// festival route (trackId) with car select. Returns (category, timeTrialId).
@@ -129,50 +128,78 @@ pub fn challenge_target(board: i64, event: i64) -> (i64, i64) {
     }
 }
 
-pub fn rivals_beaten(ctx: &Ctx, score_type: i64, data: &Value) {
+/// Meus Rivais: each friend's best time on every route event the player has not beaten yet
+/// (not raced there, or slower), as one "time to beat" (TimeTrialTimeBeaten) per friend and
+/// event. Run on every RetrieveForUser (the game polls every 30 s and drops ids missing from
+/// activeNotificationIds), so it follows new bests, beaten times and friendships both ways.
+/// Only route times: the game has no rival notification for speed traps, zones or skills, and
+/// "Ir para" on one opens a broken event (no GPS, no line, "1/- laps"); those boards are
+/// compared on the friends' leaderboards. A time the player deleted is not sent again.
+pub fn sync_rivals(ctx: &Ctx) {
     let me = ctx.xuid;
-    let score = data["score"].as_f64().unwrap_or(0.0);
-    let board = data["scoreboardType"].as_i64().unwrap_or(0);
-    let event = data["gameScoreboardId"].as_i64().unwrap_or(-1);
-    let track = data["trackId"].as_i64().unwrap_or(-1);
-    let lower = score_type == 1;
-    let friends: Vec<u64> = ctx.store.friends(me).into_iter().map(|f| f.0).collect();
-    if friends.is_empty() {
-        return;
+    let key = |board: i64, event: i64, track: i64| (board, event, track);
+    let row_key = |d: &Value| {
+        key(d["scoreboardType"].as_i64().unwrap_or(-1), d["gameScoreboardId"].as_i64().unwrap_or(-1), d["trackId"].as_i64().unwrap_or(-1))
+    };
+    let mine: Vec<((i64, i64, i64), f64)> = ctx.store.route_bests(me).iter().map(|r| (row_key(&r.data), r.score)).collect();
+    let my_best = |k: (i64, i64, i64)| mine.iter().find(|(m, _)| *m == k).map(|m| m.1);
+    // what the list should hold: (sender, event, the sender's best)
+    let mut wanted = Vec::new();
+    for friend in ctx.friend_ids() {
+        for best in ctx.store.route_bests(friend) {
+            let k = row_key(&best.data);
+            if my_best(k).is_none_or(|m| best.score < m) {
+                wanted.push((friend, k, best));
+            }
+        }
     }
-    let club = ctx.store.membership(me).and_then(|(id, role)| ctx.store.club(id).map(|c| (c.tag, role)));
-    let track_name = if track >= 0 { ctx.track_name(track) } else { String::new() };
-    for row in ctx.store.leaderboard(board, score_type, Some(track), Some(event)) {
-        if row.xuid == me || !friends.contains(&row.xuid) {
+    let same = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let existing = ctx.store.rival_notifications(me);
+    let notice_key = |p: &Value| {
+        (p["senderXuid"].as_u64().unwrap_or(0), key(p["rivalBoard"].as_i64().unwrap_or(i64::MIN), p["rivalEvent"].as_i64().unwrap_or(-1), p["trackId"].as_i64().unwrap_or(-1)))
+    };
+    // drop the times beaten, improved on, or from someone no longer a friend
+    for (id, cleared, p) in &existing {
+        let (sender, k) = notice_key(p);
+        let score = p["score"].as_f64().unwrap_or(f64::NAN);
+        if !cleared && !wanted.iter().any(|(f, wk, b)| *f == sender && *wk == k && same(b.score, score)) {
+            ctx.store.clear_notification(me, *id);
+        }
+    }
+    for (friend, k, best) in wanted {
+        let sent_before = existing.iter().any(|(_, _, p)| notice_key(p) == (friend, k) && same(p["score"].as_f64().unwrap_or(f64::NAN), best.score));
+        if sent_before {
             continue;
         }
-        let beaten = if lower { score < row.score } else { score > row.score };
-        if !beaten {
-            continue;
-        }
+        let (board, event, track) = k;
+        let (category, time_trial) = challenge_target(board, event);
+        let club = ctx.store.membership(friend).and_then(|(id, role)| ctx.store.club(id).map(|c| (c.tag, role)));
+        let track_name = ctx.track_name(track);
         let params = json!({
-            "senderXuid": me,
-            "senderGamertag": ctx.store.gamertag(me),
+            "senderXuid": friend,
+            "senderGamertag": ctx.store.gamertag(friend),
             "senderClubTag": club.as_ref().map(|c| c.0.clone()).unwrap_or_default(),
             "senderClubRole": club.as_ref().map(|c| c.1).unwrap_or(0),
             "senderFlags": 0,
-            "sentTime": super::iso_utc(crate::unix_ms()),
-            "timeTrialId": challenge_target(board, event).1,
-            "carId": data["carId"].as_i64().unwrap_or(-1),
-            "carClassId": data["carClassId"].as_i64().unwrap_or(0),
+            "sentTime": super::iso_utc(best.time),
+            "timeTrialId": time_trial,
+            "carId": best.data["carId"].as_i64().unwrap_or(-1),
+            "carClassId": best.data["carClassId"].as_i64().unwrap_or(0),
             "localizedTimeTrialName": track_name,
             "trackName": track_name,
             "trackId": track,
-            "score": score,
-            "scoreType": score_type,
-            "category": challenge_target(board, event).0,
+            "score": best.score,
+            "scoreType": 1,
+            "category": category,
+            // ours, not the game's: which event this is
+            "rivalBoard": board,
+            "rivalEvent": event,
         });
-        ctx.store.notify(row.xuid, crate::db::notifications::TIME_BEATEN, params);
-        ctx.event_for(
-            row.xuid,
+        ctx.store.notify(me, crate::db::notifications::TIME_BEATEN, params);
+        ctx.event(
             "rival",
-            format!("{} bateu seu tempo em {}", ctx.store.gamertag(me), if track_name.is_empty() { "um evento" } else { &track_name }),
-            json!({ "from": me.to_string(), "score": score }),
+            format!("Tempo para bater: {} em {} ({})", ctx.store.gamertag(friend), track_name, super::format_score(best.score, 1)),
+            json!({ "from": friend.to_string(), "score": best.score }),
         );
     }
 }
