@@ -23,6 +23,8 @@ pub enum Bucket {
     Register,
     /// Checks of a name + web key: slow enough that guessing is pointless.
     Login,
+    /// Cloud save uploads (PUT /infinity/v1/save, up to db::saves::MAX_BUNDLE each).
+    Save,
 }
 
 impl Bucket {
@@ -32,6 +34,7 @@ impl Bucket {
             Bucket::Account => (30.0, 0.5),
             Bucket::Register => (3.0, 3.0 / 3600.0),
             Bucket::Login => (10.0, 10.0 / 600.0),
+            Bucket::Save => (5.0, 1.0 / 30.0),
         }
     }
 }
@@ -61,12 +64,13 @@ impl Drop for Slot<'_> {
 }
 
 impl Guard {
-    /// A slot for a new connection from `ip`, or None when over the limits.
-    pub fn connect(&self, ip: IpAddr) -> Option<Slot<'_>> {
+    /// A slot for a new connection from `ip`, or None when over the limits (`per_ip`: the
+    /// per-address one too).
+    pub fn connect(&self, ip: IpAddr, per_ip: bool) -> Option<Slot<'_>> {
         let mut open = self.connections.lock().unwrap_or_else(|p| p.into_inner());
         let total: usize = open.values().sum();
         let mine = open.entry(ip).or_insert(0);
-        if total >= MAX_CONNECTIONS || *mine >= MAX_CONNECTIONS_PER_IP {
+        if total >= MAX_CONNECTIONS || (per_ip && *mine >= MAX_CONNECTIONS_PER_IP) {
             if *mine == 0 {
                 open.remove(&ip);
             }
@@ -108,7 +112,8 @@ fn bucket_by_id(id: u8) -> Bucket {
         0 => Bucket::Game,
         1 => Bucket::Account,
         2 => Bucket::Register,
-        _ => Bucket::Login,
+        3 => Bucket::Login,
+        _ => Bucket::Save,
     }
 }
 
@@ -120,12 +125,21 @@ mod tests {
     fn limits() {
         let g = Guard::default();
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        let slots: Vec<_> = (0..MAX_CONNECTIONS_PER_IP).map(|_| g.connect(ip).unwrap()).collect();
-        assert!(g.connect(ip).is_none());
+        let slots: Vec<_> = (0..MAX_CONNECTIONS_PER_IP).map(|_| g.connect(ip, true).unwrap()).collect();
+        assert!(g.connect(ip, true).is_none());
         drop(slots);
-        assert!(g.connect(ip).is_some());
+        assert!(g.connect(ip, true).is_some());
         assert!((0..3).all(|_| g.allow(ip, Bucket::Register)));
         assert!(!g.allow(ip, Bucket::Register));
         assert!(g.allow("127.0.0.1".parse().unwrap(), Bucket::Register));
+    }
+
+    #[test]
+    fn shared_proxy() {
+        let g = Guard::default();
+        let lo: IpAddr = "127.0.0.1".parse().unwrap();
+        let slots: Vec<_> = (0..MAX_CONNECTIONS_PER_IP * 2).map(|_| g.connect(lo, false).unwrap()).collect();
+        assert!(g.connect(lo, true).is_none());
+        assert_eq!(slots.len(), MAX_CONNECTIONS_PER_IP * 2);
     }
 }

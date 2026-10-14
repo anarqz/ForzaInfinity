@@ -1,5 +1,5 @@
 //! FH2Online accounts: "name#12345", created from the game through the hook
-//! (POST /fh2online/v1/register). Each account is a player (users row, server-allocated XUID);
+//! (POST /infinity/v1/register). Each account is a player (users row, server-allocated XUID);
 //! the hook then sends X-Fh2-Token on every request and the token, not the game's own XUID,
 //! says who is playing.
 //!

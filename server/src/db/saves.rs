@@ -30,8 +30,12 @@ pub const SAVE_FILES: &[&str] = &[
 ];
 /// Uploads kept per account (the newest is the save).
 const KEEP: i64 = 3;
-/// Largest file inside a save once unpacked (PlayerDatabase is 6 MB).
-const MAX_FILE: u32 = 32 << 20;
+/// Largest bundle taken: a real save is about 28 KB (6.5 MB unpacked, mostly zeros).
+pub const MAX_BUNDLE: usize = 512 << 10;
+/// Largest file inside a save once unpacked (PlayerDatabase is 6 291 464 bytes, always).
+const MAX_FILE: u32 = 8 << 20;
+/// Largest save once unpacked, all files together.
+const MAX_UNPACKED: u64 = 16 << 20;
 
 pub struct SaveInfo {
     pub revision: u64,
@@ -42,6 +46,10 @@ pub struct SaveInfo {
 
 /// Checks a bundle's layout; returns its revision.
 pub fn check_bundle(data: &[u8]) -> Result<u64, String> {
+    if data.len() > MAX_BUNDLE {
+        return Err("save too big".into());
+    }
+    let mut unpacked = 0u64;
     let mut at = 0usize;
     let mut take = |n: usize| -> Result<&[u8], String> {
         let end = at.checked_add(n).filter(|&e| e <= data.len()).ok_or("truncated bundle")?;
@@ -68,8 +76,13 @@ pub fn check_bundle(data: &[u8]) -> Result<u64, String> {
         let raw = u32::from_le_bytes(take(4)?.try_into().unwrap());
         let stored = u32::from_le_bytes(take(4)?.try_into().unwrap());
         let method = take(1)?[0];
-        if raw > MAX_FILE || method > 2 || (method == 0 && stored != raw) {
+        // a packed file never takes more room than it unpacks to (the hook stores it as is then)
+        if raw > MAX_FILE || method > 2 || (method == 0 && stored != raw) || stored > raw {
             return Err("invalid save file".into());
+        }
+        unpacked += raw as u64;
+        if unpacked > MAX_UNPACKED {
+            return Err("save too big".into());
         }
         take(stored as usize)?;
     }
@@ -80,23 +93,6 @@ pub fn check_bundle(data: &[u8]) -> Result<u64, String> {
         return Err("trailing data in the bundle".into());
     }
     Ok(revision)
-}
-
-/// The cars a new profile may start with (the game's own first-car choice, IEAutoShowCars):
-/// Camaro SS 69, Supra RZ 98, BMW Z4 11.
-pub const STARTER_CARS: [i64; 3] = [289, 461, 1218];
-
-/// The starting save of a new profile with `car`: templates/starter-<car>.bundle and .commit
-/// (tools/make_starter_saves.py). None for any other car or a missing or malformed template.
-pub fn starter_template(root: &std::path::Path, car: i64) -> Option<(u64, String, Vec<u8>)> {
-    if !STARTER_CARS.contains(&car) {
-        return None;
-    }
-    let dir = root.join("templates");
-    let data = std::fs::read(dir.join(format!("starter-{car}.bundle"))).ok()?;
-    let commit = std::fs::read_to_string(dir.join(format!("starter-{car}.commit"))).ok()?.trim().to_owned();
-    let revision = check_bundle(&data).ok()?;
-    valid_commit(&commit).then_some((revision, commit, data))
 }
 
 pub fn valid_commit(hash: &str) -> bool {
@@ -170,16 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn starters() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        for car in STARTER_CARS {
-            assert!(starter_template(root, car).is_some(), "template for {car}");
-        }
-        assert!(starter_template(root, 999).is_none());
-        assert!(starter_template(root, 0).is_none());
-    }
-
-    #[test]
     fn bundles() {
         assert_eq!(check_bundle(&bundle(&[("commit", b"x"), ("data/SaveState", b"abc")])), Ok(7));
         assert!(check_bundle(&bundle(&[("data/SaveState", b"abc")])).is_err());
@@ -188,5 +174,41 @@ mod tests {
         long.push(0);
         assert!(check_bundle(&long).is_err());
         assert!(check_bundle(b"FH2SAVE1").is_err());
+    }
+
+    /// A bundle whose files declare (raw size, stored bytes, method).
+    fn declared(files: &[(&str, u32, &[u8], u8)]) -> Vec<u8> {
+        let mut out = b"FH2SAVE1".to_vec();
+        out.extend_from_slice(&7u64.to_le_bytes());
+        out.extend_from_slice(&(files.len() as u32).to_le_bytes());
+        for (name, raw, stored, method) in files {
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&raw.to_le_bytes());
+            out.extend_from_slice(&(stored.len() as u32).to_le_bytes());
+            out.push(*method);
+            out.extend_from_slice(stored);
+        }
+        out
+    }
+
+    #[test]
+    fn size_limits() {
+        // a real save: 6 MB database packed small
+        assert!(check_bundle(&declared(&[("commit", 1, b"x", 0), ("data/PlayerDatabase", 6_291_464, &[0; 64], 2)])).is_ok());
+        // too big to take at all
+        assert!(check_bundle(&vec![0u8; MAX_BUNDLE + 1]).is_err());
+        // one file declaring more than MAX_FILE unpacked
+        assert!(check_bundle(&declared(&[("commit", 1, b"x", 0), ("data/PlayerDatabase", 9 << 20, &[0; 64], 2)])).is_err());
+        // all files together declaring more than MAX_UNPACKED
+        let big = [
+            ("commit", 1, &b"x"[..], 0),
+            ("data/PlayerDatabase", 8 << 20, &[0u8; 64][..], 2),
+            ("data/SaveState", 8 << 20, &[0u8; 64][..], 2),
+            ("data/ProfileData", 1 << 20, &[0u8; 64][..], 2),
+        ];
+        assert!(check_bundle(&declared(&big)).is_err());
+        // "packed" bytes larger than what they unpack to
+        assert!(check_bundle(&declared(&[("commit", 1, b"x", 0), ("data/SaveState", 10, &[0; 64], 2)])).is_err());
     }
 }

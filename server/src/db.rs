@@ -24,6 +24,7 @@ pub mod clubs;
 pub mod integrity;
 pub mod notifications;
 pub mod saves;
+pub mod stats;
 pub mod storefront;
 pub use clubs::{ClubFields, ROLE_COLEADER, ROLE_LEADER, ROLE_MEMBER};
 
@@ -747,13 +748,33 @@ impl Store {
         Ok(next as u64)
     }
 
-    /// Removes a player and everything that is only theirs.
+    /// Removes a player and everything that is theirs: the account and its devices, profile,
+    /// save, scores, ghosts, drivatar, liveries, tunes, storefront files (and the likes,
+    /// downloads and reports on them), libraries, friendships and requests both ways, club
+    /// membership (the club passes on as when the leader leaves), notifications to them and the
+    /// messages they sent. Their likes and downloads of other players' files go too, and those
+    /// files' counters are recounted. One transaction: all or nothing.
     pub fn delete_user(&self, xuid: u64) -> bool {
         self.leave_club(xuid, clubs::ACTION_REMOVED);
         let x = xuid as i64;
         self.with(|db| {
-            let n = db.execute("DELETE FROM users WHERE xuid = ?1", [x])?;
+            let tx = db.unchecked_transaction()?;
+            let n = tx.execute("DELETE FROM users WHERE xuid = ?1", [x])?;
             for sql in [
+                // what points at the player's shared files, then the files
+                "DELETE FROM storefront_likes WHERE file_id IN (SELECT id FROM storefront_files WHERE xuid = ?1) OR xuid = ?1",
+                "DELETE FROM storefront_downloads WHERE file_id IN (SELECT id FROM storefront_files WHERE xuid = ?1) OR xuid = ?1",
+                "DELETE FROM storefront_reports WHERE file_id IN (SELECT id FROM storefront_files WHERE xuid = ?1) OR xuid = ?1",
+                "DELETE FROM storefront_files WHERE xuid = ?1",
+                "DELETE FROM followed_creators WHERE xuid = ?1 OR creator = ?1",
+                "DELETE FROM livery_groups WHERE xuid = ?1",
+                "DELETE FROM versioned_groups WHERE xuid = ?1",
+                "DELETE FROM car_setups WHERE xuid = ?1",
+                "DELETE FROM liveries WHERE xuid = ?1",
+                "DELETE FROM tunes WHERE xuid = ?1",
+                "DELETE FROM scores WHERE xuid = ?1",
+                "DELETE FROM xp WHERE xuid = ?1",
+                "DELETE FROM transactions WHERE xuid = ?1",
                 "DELETE FROM friends WHERE xuid = ?1 OR friend = ?1",
                 "DELETE FROM presence WHERE xuid = ?1",
                 "DELETE FROM profile WHERE xuid = ?1",
@@ -763,8 +784,11 @@ impl Store {
                 "DELETE FROM events WHERE xuid = ?1",
                 "DELETE FROM club_invites WHERE xuid = ?1 OR sender = ?1",
                 "DELETE FROM club_requests WHERE xuid = ?1",
+                "DELETE FROM club_history WHERE xuid = ?1",
+                "DELETE FROM club_notices WHERE xuid = ?1",
                 "DELETE FROM user_settings WHERE xuid = ?1",
-                "DELETE FROM notifications WHERE xuid = ?1",
+                // their inbox, and what they sent to others (messages, rival times)
+                "DELETE FROM notifications WHERE xuid = ?1 OR json_extract(params, '$.senderXuid') = ?1",
                 "DELETE FROM accounts WHERE xuid = ?1",
                 "DELETE FROM devices WHERE xuid = ?1",
                 "DELETE FROM web_keys WHERE xuid = ?1",
@@ -772,8 +796,14 @@ impl Store {
                 "DELETE FROM integrity WHERE xuid = ?1",
                 "DELETE FROM friend_requests WHERE from_xuid = ?1 OR to_xuid = ?1",
             ] {
-                db.execute(sql, [x])?;
+                tx.execute(sql, [x])?;
             }
+            tx.execute_batch(
+                "UPDATE storefront_files SET
+                     likes = (SELECT COUNT(*) FROM storefront_likes WHERE file_id = storefront_files.id),
+                     downloads = (SELECT COUNT(*) FROM storefront_downloads WHERE file_id = storefront_files.id)",
+            )?;
+            tx.commit()?;
             Ok(n > 0)
         })
         .unwrap_or(false)

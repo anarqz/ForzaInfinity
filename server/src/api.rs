@@ -58,17 +58,17 @@ pub fn is_local(request: &Request) -> bool {
         || path.starts_with("/api/")
         || path == "/ui"
         || path.starts_with("/ui/")
-        || path.starts_with(ACCOUNT_PREFIX)
+        || account_route(path).is_some()
 }
 
 /// Rate limits of the non-game endpoints (the manager is loopback and never limited).
 pub fn allowed(app: &App, request: &Request) -> bool {
     let path = request.path_and_query.split('?').next().unwrap_or("");
-    let bucket = match path.strip_prefix(ACCOUNT_PREFIX) {
+    let bucket = match account_route(path) {
         Some("register") => Bucket::Register,
         Some("weblogin" | "login") => Bucket::Login,
-        // the boot sync, then one upload per new save revision
-        Some(p) if p.starts_with("save") => Bucket::Account,
+        // uploading a save: the hook sends at most one a minute
+        Some("save") if request.method == "PUT" => Bucket::Save,
         Some(_) => Bucket::Account,
         None => Bucket::Game,
     };
@@ -97,14 +97,21 @@ fn clip(text: &str, max: usize) -> String {
     text.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '#').take(max).collect()
 }
 
-/// Account endpoints the hook calls directly (not proxied game traffic).
-const ACCOUNT_PREFIX: &str = "/fh2online/v1/";
+/// Account endpoints the hook calls directly (not proxied game traffic): /infinity/v1/...
+const ACCOUNT_PREFIX: &str = "/infinity/v1/";
+/// The prefix hooks before fh2online.33 call; still answered the same.
+const LEGACY_ACCOUNT_PREFIX: &str = "/fh2online/v1/";
+
+/// The route under the account prefix ("register", "save/info", ...), or None.
+fn account_route(path: &str) -> Option<&str> {
+    path.strip_prefix(ACCOUNT_PREFIX).or_else(|| path.strip_prefix(LEGACY_ACCOUNT_PREFIX))
+}
 
 /// POST register {name, discriminator, device} -> {xuid, gamertag, token} (one account per
 /// device; `device` = SHA-256 hex of the full fingerprint + this server's host);
 /// GET me (X-Fh2-Token) -> {xuid, gamertag}; GET info -> what the server is.
 fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
-    let route = &path[ACCOUNT_PREFIX.len()..];
+    let route = account_route(path).unwrap_or("");
     if request.body.len() > MAX_ACCOUNT_BODY && route != "save" {
         return json_reply(413, &json!({ "error": "too large" }));
     }
@@ -117,28 +124,70 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
         };
     }
     match (request.method.as_str(), route) {
-        ("GET", "info") => json_reply(200, &json!({ "name": "FH2Online", "api": 1, "registration": "open" })),
+        ("GET", "info") => {
+            let (online, queued) = app.admission.counts();
+            json_reply(
+                200,
+                &json!({
+                    "name": "ForzaInfinity",
+                    "api": 1,
+                    "registration": if app.registration_open { "open" } else { "closed" },
+                    "online": online,
+                    "queued": queued,
+                    "capacity": app.admission.capacity(),
+                }),
+            )
+        }
+        // The caller's slot or place in line (asking keeps the place; see admission.rs):
+        // {state: "playing" | "waiting" | "full", position, waiting, online, capacity, etaSeconds,
+        // retrySeconds}
+        ("GET", "queue") => match token_account() {
+            Some(a) if !a.banned => {
+                let s = app.admission.arrive(a.xuid);
+                let (state, position) = match s.place {
+                    crate::admission::Place::Playing => ("playing", 0),
+                    crate::admission::Place::Waiting(n) => ("waiting", n),
+                    crate::admission::Place::Full => ("full", 0),
+                };
+                json_reply(
+                    200,
+                    &json!({
+                        "state": state,
+                        "position": position,
+                        "waiting": s.waiting,
+                        "online": s.online,
+                        "capacity": s.capacity,
+                        "etaSeconds": s.eta_s,
+                        "retrySeconds": s.retry_s,
+                    }),
+                )
+            }
+            Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
+        },
+        // server-wide totals for the public page (any site may read them); Cloudflare keeps a
+        // copy for 15 s (infra/cloudflare.tf), so a crowd on the page never reaches the VM
+        ("GET", "stats") => response(
+            200,
+            "application/json; charset=utf-8",
+            "Access-Control-Allow-Origin: *\r\nCache-Control: public, max-age=15, s-maxage=15\r\n",
+            &serde_json::to_vec(&app.stats()).unwrap_or_default(),
+        ),
+        ("POST", "register") if !app.registration_open => {
+            json_reply(403, &json!({ "error": "This server is not taking new profiles right now." }))
+        }
         ("POST", "register") => {
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
             let name = body["name"].as_str().unwrap_or("").trim();
             let discriminator = body["discriminator"].as_str().unwrap_or("").trim();
             let device = body["device"].as_str().unwrap_or("").trim();
-            // the starting save: only one of the game's three first cars, from its template
-            let car = body["starterCar"].as_i64().unwrap_or(0);
-            let Some((revision, commit, starter)) = crate::db::saves::starter_template(&app.root, car) else {
-                let error = if crate::db::saves::STARTER_CARS.contains(&car) {
-                    "This server has no starting save for that car."
-                } else {
-                    "Choose one of the starter cars."
-                };
-                return json_reply(400, &json!({ "error": error }));
-            };
+            // the profile's save is the player's own offline one: the hook uploads it (PUT save)
+            // right after, and deletes the account (POST delete) if that fails
             match app.store.register_account(name, discriminator, device) {
                 Ok((account, token)) => {
                     let gamertag = account.gamertag();
                     let web_key = app.store.rotate_web_key(account.xuid).unwrap_or_default();
-                    app.store.put_save(account.xuid, revision, &commit, &starter);
-                    app.store.add_event(account.xuid, "account", &format!("Conta {gamertag} criada (carro {car})"), json!({}));
+                    app.store.add_event(account.xuid, "account", &format!("Conta {gamertag} criada"), json!({}));
                     app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
                     json_reply(
                         200,
@@ -148,6 +197,21 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
                 Err(e) => json_reply(400, &json!({ "error": e })),
             }
         }
+        // The player deletes their own account from the game (Settings > INFINITY): everything
+        // they have on the server goes (Store::delete_user); their offline save stays.
+        ("POST", "delete") => match token_account() {
+            Some(a) => {
+                let gamertag = a.gamertag();
+                if app.store.delete_user(a.xuid) {
+                    println!("      account {gamertag} deleted by its player");
+                    app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
+                    json_reply(200, &json!({ "deleted": true }))
+                } else {
+                    json_reply(500, &json!({ "error": "Could not delete the account." }))
+                }
+            }
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
+        },
         // a new site key, asked from the game's options (the old one stops working)
         ("POST", "webkey") => match token_account() {
             Some(a) if !a.banned => match app.store.rotate_web_key(a.xuid) {
@@ -256,6 +320,9 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
             None => json_reply(404, &json!({ "error": "No cloud save yet." })),
         },
         ("PUT", "save") => {
+            if request.body.len() > saves::MAX_BUNDLE {
+                return json_reply(413, &json!({ "error": "save too big" }));
+            }
             let commit = request.header("x-fh2-save-commit").unwrap_or("");
             if !saves::valid_commit(commit) {
                 return json_reply(400, &json!({ "error": "invalid commit" }));
@@ -279,7 +346,7 @@ pub fn hello(app: &App) -> Value {
 
 pub fn handle(app: &App, request: &Request) -> Outcome {
     let path = request.path_and_query.split('?').next().unwrap_or("").to_owned();
-    if path.starts_with(ACCOUNT_PREFIX) {
+    if account_route(&path).is_some() {
         let reply = account_api(app, request, &path);
         let status = std::str::from_utf8(&reply[..reply.len().min(12)]).unwrap_or("").get(9..12).unwrap_or("?").to_owned();
         println!("      {:<5} {:<60} {:>6} bytes -> {status} ({})", request.method, path, request.body.len(), request.client_ip());
@@ -570,9 +637,12 @@ fn valid_gamertag(tag: &str) -> bool {
         && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ')
 }
 
+/// `extra`: more header lines, each ending in CRLF; one of them may set Cache-Control (the
+/// default is no-store).
 fn response(status: u16, content_type: &str, extra: &str, body: &[u8]) -> Vec<u8> {
+    let cache = if extra.to_ascii_lowercase().contains("cache-control:") { "" } else { "Cache-Control: no-store\r\n" };
     let mut out = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n{extra}\r\n",
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{cache}{extra}\r\n",
         crate::reason(status),
         body.len()
     )
