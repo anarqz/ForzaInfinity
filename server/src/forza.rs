@@ -532,6 +532,8 @@ fn submit_xp(ctx: &Ctx, params: &Value) -> Value {
 
 fn best_score(ctx: &Ctx, params: &Value) -> Value {
     let int = |k: &str| params[k].as_i64().unwrap_or(-1);
+    // asked before every race: remember the real events (rival challenges point at them)
+    ctx.store.record_race_event(int("scoreboardType"), int("scoreType"), int("gameScoreboardId"), int("trackId"), int("carClassId"));
     let rows = ctx.store.leaderboard(
         int("scoreboardType"),
         int("scoreType"),
@@ -727,6 +729,9 @@ fn random_rival(ctx: &Ctx, params: &Value) -> Value {
     let mut rand = rng();
     let int = |k: &str| params[k].as_i64().unwrap_or(-1);
     let (board, score_type, track) = (int("scoreboardType"), int("scoreType"), int("trackId"));
+    if let Some(reply) = challenge_rival(ctx, params) {
+        return reply;
+    }
     let mine = ctx.store.leaderboard(board, score_type, Some(track), None).into_iter().find(|r| r.xuid == ctx.xuid);
     let lower = crate::db::lower_is_better(score_type);
     let base = match &mine {
@@ -785,6 +790,54 @@ fn random_rival(ctx: &Ctx, params: &Value) -> Value {
         "bounty": bounty,
     });
     json!({ "rival": { "scoreData": row, "bounty": bounty } })
+}
+
+/// GetRival for an event the player was challenged on (Meus Rivais -> "Ir para"), or with an
+/// explicit rivalXuid: the friend's time instead of a random rival.
+fn challenge_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
+    let int = |k: &str| params[k].as_i64().unwrap_or(-1);
+    let (board, score_type, track) = (int("scoreboardType"), int("scoreType"), int("trackId"));
+    let rival_xuid = params["rivalXuid"].as_u64().unwrap_or(0);
+    // the friend's own best on this route, if they raced it
+    let best = |x: u64| ctx.store.leaderboard(board, score_type, Some(track), None).into_iter().find(|r| r.xuid == x);
+    let (xuid, score, car, class, ghost) = if let Some(p) = ctx.store.pending_challenge(ctx.xuid, track, Some(int("rivalEventId"))) {
+        let from = p["senderXuid"].as_u64().unwrap_or(0);
+        let ghost = best(from).and_then(|r| ctx.store.ghost_id(from, board, score_type, r.data["gameScoreboardId"].as_i64().unwrap_or(-1), track));
+        (from, p["score"].as_f64()?, p["carId"].as_i64().unwrap_or(461), p["carClassId"].as_i64().unwrap_or(0), ghost.unwrap_or(0))
+    } else if rival_xuid != 0 {
+        let r = best(rival_xuid)?;
+        let ghost = ctx.store.ghost_id(rival_xuid, board, score_type, r.data["gameScoreboardId"].as_i64().unwrap_or(-1), track);
+        (rival_xuid, r.score, r.data["carId"].as_i64().unwrap_or(461), r.data["carClassId"].as_i64().unwrap_or(0), ghost.unwrap_or(0))
+    } else {
+        return None;
+    };
+    ctx.store.record_race_event(board, score_type, int("rivalEventId"), track, int("pivotId"));
+    let cat = ctx.catalog.car(car);
+    let bounty = 9600;
+    let mut user = user_data(ctx, xuid);
+    if user["wzGamerTag"].as_str().unwrap_or("").is_empty() {
+        user["wzGamerTag"] = json!(generated_gamertag(xuid));
+    }
+    ctx.event(
+        "rival",
+        format!("Desafio em {}: {} com {}", ctx.track_name(track), user["wzGamerTag"].as_str().unwrap_or(""), format_score(score, score_type)),
+        json!({ "rival": xuid.to_string(), "score": score, "trackId": track }),
+    );
+    let row = json!({
+        "position": 1,
+        "rank": 1,
+        "user": user,
+        "score": score,
+        "submittedTime": iso_utc(crate::unix_ms()),
+        "carId": car,
+        "carClassId": if class > 0 { class } else { cat.map(|c| c.class_id).unwrap_or(0) },
+        "carPerformanceIndex": cat.map(|c| c.pi as f64 / 1000.0).unwrap_or(0.5),
+        "usedSTM": false, "usedTCS": false, "usedABS": true, "usedAutoBrake": false,
+        "usedAutoShifting": true, "usedClutch": false, "isClean": true,
+        "ghostFileId": ghost,
+        "bounty": bounty,
+    });
+    Some(json!({ "rival": { "scoreData": row, "bounty": bounty } }))
 }
 
 fn create_tune(ctx: &Ctx, params: &Value) -> Value {

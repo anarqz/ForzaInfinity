@@ -41,7 +41,11 @@ pub const SCHEMA: &str = "
         id INTEGER PRIMARY KEY AUTOINCREMENT, xuid INTEGER NOT NULL, type INTEGER NOT NULL,
         struct TEXT NOT NULL, params TEXT NOT NULL, sent INTEGER NOT NULL,
         read INTEGER NOT NULL DEFAULT 0, cleared INTEGER NOT NULL DEFAULT 0);
-    CREATE INDEX IF NOT EXISTS notifications_user ON notifications (xuid, id);";
+    CREATE INDEX IF NOT EXISTS notifications_user ON notifications (xuid, id);
+    CREATE TABLE IF NOT EXISTS race_events (
+        scoreboard_type INTEGER NOT NULL, score_type INTEGER NOT NULL, game_scoreboard_id INTEGER NOT NULL,
+        track_id INTEGER NOT NULL, car_class_id INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+        PRIMARY KEY (scoreboard_type, game_scoreboard_id, track_id));";
 
 pub struct Notification {
     pub id: i64,
@@ -161,6 +165,48 @@ impl Store {
     pub fn clear_notification(&self, xuid: u64, id: i64) -> bool {
         self.with(|db| db.execute("UPDATE notifications SET cleared = 1 WHERE id = ?1 AND xuid = ?2", params![id, xuid as i64]))
             .is_some_and(|n| n > 0)
+    }
+
+    /// A race event the game asked about (GetBestScore / GetRival before a race): the real
+    /// (board, event, route) triples a rival challenge can point at.
+    pub fn record_race_event(&self, board: i64, score_type: i64, event: i64, track: i64, class: i64) {
+        if track < 0 {
+            return;
+        }
+        self.with(|db| {
+            db.execute(
+                "INSERT INTO race_events (scoreboard_type, score_type, game_scoreboard_id, track_id, car_class_id, last_seen)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (scoreboard_type, game_scoreboard_id, track_id) DO UPDATE SET
+                    score_type = ?2, car_class_id = CASE WHEN ?5 >= 0 THEN ?5 ELSE car_class_id END, last_seen = ?6",
+                params![board, score_type, event, track, class, unix_ms()],
+            )
+        });
+    }
+
+    /// The most recent race event: (scoreboard type, score type, event id, track, car class).
+    pub fn last_race_event(&self) -> Option<(i64, i64, i64, i64, i64)> {
+        self.with(|db| {
+            use rusqlite::OptionalExtension;
+            db.query_row(
+                "SELECT scoreboard_type, score_type, game_scoreboard_id, track_id, car_class_id FROM race_events
+                 WHERE game_scoreboard_id >= 0 ORDER BY last_seen DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()
+        })
+        .flatten()
+    }
+
+    /// A pending "your rival beat your time" for this player on a route: its parameters.
+    pub fn pending_challenge(&self, xuid: u64, track: i64, event: Option<i64>) -> Option<Value> {
+        self.notifications(xuid, 512)
+            .into_iter()
+            .rev()
+            .filter(|n| n.kind == TIME_BEATEN)
+            .map(|n| n.params)
+            .find(|p| p["trackId"].as_i64() == Some(track) && event.is_none_or(|e| e < 0 || p["timeTrialId"].as_i64() == Some(e)))
     }
 
     /// Deletes one notification (manager).
