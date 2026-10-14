@@ -176,9 +176,16 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         }
         // The PermissionsLoader (game 0x140f09930) sends this at boot; until it gets an answer the
         // game treats the LSP as down (sessionObj+0x1131 == 0) and locks online features with
-        // IDS_Popup_FeatureLocked_LSPDown_Message. No method overrides, no banned feature areas.
+        // IDS_Popup_FeatureLocked_LSPDown_Message. Features also look their method up in this
+        // table (FUN_14126c2b0): a missing id reads as access 4 ("FH2 server unavailable", e.g.
+        // Meus Rivais -> "Ir para"), and rivals need 0x51/0x54/0x59/0x5b allowed to upload times
+        // and ghosts (FUN_140a41c90). So every id the table holds (0x100) is enabled, access 0.
         (false, "User", "GetPermissionsTable") => json!({
-            "permissions": [], "featureAreasBanMask": 0, "userFlags": 0,
+            "permissions": (0..0x100)
+                .map(|id| json!({ "methodId": id, "tier": 0, "isEnabled": true, "access": 0 }))
+                .collect::<Vec<_>>(),
+            "featureAreasBanMask": 0,
+            "userFlags": 0,
         }),
         // Lists that are empty until the server has the content (storefront, clubs, drivatars).
         (false, "Storefront", "GetFileKeywords")
