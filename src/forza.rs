@@ -65,6 +65,8 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
             json!({})
         }
         (false, "Scoreboard", "GetRival") => random_rival(ctx, params),
+        (false, "Scoreboard", "UploadFile") => upload_file(ctx, params),
+        (false, "Scoreboard", "DownloadFile") => download_file(ctx, params),
         (false, "Drivatar", "SaveDrivatarInformation") => save_drivatar(ctx, params),
         (false, "Drivatar", "GetDrivatarInformationForRace") => drivatars_for_race(ctx, params),
         (false, "Drivatar", "GetDrivatarsForCache") => {
@@ -282,7 +284,56 @@ fn submit_score(ctx: &Ctx, params: &Value) -> Value {
         ),
         json!({ "scoreId": score_id, "scoreType": score_type, "data": data }),
     );
-    json!({ "scoreId": score_id, "uploadFiles": false })
+    // Ask for the ghost (Scoreboard.UploadFile) only for a new personal best on this event.
+    json!({ "scoreId": score_id, "uploadFiles": ctx.store.is_personal_best(&score_id) })
+}
+
+/// Scoreboard.UploadFile: the ghost/replay of a score, kept only if that score is still the
+/// player's best on its event.
+fn upload_file(ctx: &Ctx, params: &Value) -> Value {
+    let score_id = params["scoreId"].as_str().unwrap_or("");
+    let data: Vec<u8> = params["data"]
+        .as_str()
+        .map(|h| (0..h.len() / 2).filter_map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()).collect())
+        .unwrap_or_default();
+    match ctx.store.save_ghost(score_id, &data) {
+        Some((id, key)) => {
+            let track = key["trackId"].as_i64().unwrap_or(-1);
+            let car = key["carId"].as_i64().unwrap_or(-1);
+            ctx.event(
+                "ghost",
+                format!(
+                    "Fantasma salvo ({} KB): {} com {}{}",
+                    (data.len() + 1023) / 1024,
+                    format_score(key["score"].as_f64().unwrap_or(0.0), key["scoreType"].as_i64().unwrap_or(0)),
+                    ctx.car_name(car),
+                    if track >= 0 { format!(" em {}", ctx.track_name(track)) } else { String::new() }
+                ),
+                json!({ "ghostId": id, "bytes": data.len(), "event": key }),
+            );
+        }
+        None => ctx.event(
+            "ghost",
+            format!("Fantasma descartado ({} KB): não é o seu melhor tempo nesse evento", (data.len() + 1023) / 1024),
+            json!({ "scoreId": score_id, "bytes": data.len() }),
+        ),
+    }
+    json!({})
+}
+
+/// Scoreboard.DownloadFile: a stored ghost by the id the leaderboards hand out (ghostFileId).
+fn download_file(ctx: &Ctx, params: &Value) -> Value {
+    let id = params["id"].as_i64().unwrap_or(0);
+    let max = params["maxSize"].as_i64().unwrap_or(i64::MAX).max(0) as usize;
+    match ctx.store.ghost(id) {
+        Some(data) if data.len() <= max && data.len() <= 0x80000 => {
+            ctx.event("ghost", format!("Fantasma #{id} enviado ao jogo ({} KB)", (data.len() + 1023) / 1024), json!({ "ghostId": id }));
+            let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
+            json!({ "data": hex })
+        }
+        Some(data) => json!({ "__xtsw_error": { "code": 1, "message": format!("ghost too big ({} bytes, max {max})", data.len()) } }),
+        None => json!({ "__xtsw_error": { "code": 1, "message": "no such ghost" } }),
+    }
 }
 
 fn submit_xp(ctx: &Ctx, params: &Value) -> Value {
@@ -328,6 +379,13 @@ fn rows_anthem(ctx: &Ctx, params: &Value) -> Value {
             "usedSTM": d["usedSTM"], "usedTCS": d["usedTCS"], "usedABS": d["usedABS"],
             "usedAutoBrake": d["usedAutoBrake"], "usedAutoShifting": d["usedAutoShifting"],
             "usedClutch": d["usedClutch"], "isClean": d["isClean"],
+            "ghostFileId": ctx.store.ghost_id(
+                r.xuid,
+                d["scoreboardType"].as_i64().unwrap_or(-1),
+                params["scoreType"].as_i64().unwrap_or(-1),
+                d["gameScoreboardId"].as_i64().unwrap_or(-1),
+                d["trackId"].as_i64().unwrap_or(-1),
+            ).unwrap_or(0),
         })
     };
     let page: Vec<Value> =

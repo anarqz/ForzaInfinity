@@ -64,6 +64,13 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT, xuid INTEGER NOT NULL, time INTEGER NOT NULL,
                  kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS events_user ON events (xuid, id);
+             CREATE TABLE IF NOT EXISTS ghosts (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, xuid INTEGER NOT NULL,
+                 scoreboard_type INTEGER NOT NULL, score_type INTEGER NOT NULL,
+                 game_scoreboard_id INTEGER NOT NULL, track_id INTEGER NOT NULL,
+                 score_id TEXT NOT NULL, score REAL NOT NULL, car_id INTEGER NOT NULL,
+                 time INTEGER NOT NULL, data BLOB NOT NULL,
+                 UNIQUE (xuid, scoreboard_type, score_type, game_scoreboard_id, track_id));
              CREATE TABLE IF NOT EXISTS drivatars (
                  xuid INTEGER PRIMARY KEY, data TEXT NOT NULL, updated INTEGER NOT NULL,
                  saves INTEGER NOT NULL DEFAULT 0);
@@ -300,6 +307,104 @@ impl Store {
         .flatten()
     }
 
+    /// True when `score_id` is this player's best on its event (board, score type, event, track).
+    pub fn is_personal_best(&self, score_id: &str) -> bool {
+        self.with(|db| {
+            let row = db
+                .query_row(
+                    "SELECT xuid, scoreboard_type, score_type, game_scoreboard_id, track_id FROM scores WHERE score_id = ?1",
+                    [score_id],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?)),
+                )
+                .optional()?;
+            let Some((xuid, sb, st, gs, track)) = row else { return Ok(false) };
+            let order = if lower_is_better(st) { "ASC" } else { "DESC" };
+            let best: Option<String> = db
+                .query_row(
+                    &format!(
+                        "SELECT score_id FROM scores WHERE xuid = ?1 AND scoreboard_type = ?2 AND score_type = ?3
+                           AND game_scoreboard_id = ?4 AND track_id = ?5 ORDER BY score {order}, id ASC LIMIT 1"
+                    ),
+                    params![xuid, sb, st, gs, track],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(best.as_deref() == Some(score_id))
+        })
+        .unwrap_or(false)
+    }
+
+    /// Scoreboard.UploadFile: keeps the ghost only if its score is still the player's best on
+    /// that event, replacing the previous one (the ghost id of an event stays the same).
+    /// Returns (ghost id, event key description) or None when the score is unknown/not best.
+    pub fn save_ghost(&self, score_id: &str, data: &[u8]) -> Option<(i64, Value)> {
+        if !self.is_personal_best(score_id) {
+            return None;
+        }
+        self.with(|db| {
+            let (xuid, sb, st, gs, track, score, car): (i64, i64, i64, i64, i64, f64, i64) = db.query_row(
+                "SELECT xuid, scoreboard_type, score_type, game_scoreboard_id, track_id, score, car_id FROM scores WHERE score_id = ?1",
+                [score_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            )?;
+            db.execute(
+                "INSERT INTO ghosts (xuid, scoreboard_type, score_type, game_scoreboard_id, track_id, score_id, score, car_id, time, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT (xuid, scoreboard_type, score_type, game_scoreboard_id, track_id)
+                 DO UPDATE SET score_id = ?6, score = ?7, car_id = ?8, time = ?9, data = ?10",
+                params![xuid, sb, st, gs, track, score_id, score, car, unix_ms(), data],
+            )?;
+            let id: i64 = db.query_row(
+                "SELECT id FROM ghosts WHERE xuid = ?1 AND scoreboard_type = ?2 AND score_type = ?3 AND game_scoreboard_id = ?4 AND track_id = ?5",
+                params![xuid, sb, st, gs, track],
+                |r| r.get(0),
+            )?;
+            Ok((id, json!({ "scoreboardType": sb, "scoreType": st, "gameScoreboardId": gs, "trackId": track, "score": score, "carId": car })))
+        })
+    }
+
+    pub fn ghost(&self, id: i64) -> Option<Vec<u8>> {
+        self.with(|db| db.query_row("SELECT data FROM ghosts WHERE id = ?1", [id], |r| r.get(0)).optional()).flatten()
+    }
+
+    /// Ghost id of a player's best on an event, if uploaded.
+    pub fn ghost_id(&self, xuid: u64, scoreboard_type: i64, score_type: i64, game_scoreboard_id: i64, track_id: i64) -> Option<i64> {
+        self.with(|db| {
+            db.query_row(
+                "SELECT id FROM ghosts WHERE xuid = ?1 AND scoreboard_type = ?2 AND score_type = ?3 AND game_scoreboard_id = ?4 AND track_id = ?5",
+                params![xuid as i64, scoreboard_type, score_type, game_scoreboard_id, track_id],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+        .flatten()
+    }
+
+    /// The player's ghosts (no data), for the web UI.
+    pub fn ghosts(&self, xuid: u64, catalog: &Catalog) -> Vec<Value> {
+        self.with(|db| {
+            let mut stmt = db.prepare(
+                "SELECT id, scoreboard_type, score_type, game_scoreboard_id, track_id, score, car_id, time, length(data)
+                 FROM ghosts WHERE xuid = ?1 ORDER BY time DESC",
+            )?;
+            let rows = stmt
+                .query_map([xuid as i64], |r| {
+                    let track: i64 = r.get(4)?;
+                    let car: i64 = r.get(6)?;
+                    Ok(json!({
+                        "id": r.get::<_, i64>(0)?, "scoreboardType": r.get::<_, i64>(1)?, "scoreType": r.get::<_, i64>(2)?,
+                        "gameScoreboardId": r.get::<_, i64>(3)?, "trackId": track, "track": catalog.tracks.get(&track),
+                        "score": r.get::<_, f64>(5)?, "carId": car, "car": catalog.car(car),
+                        "time": r.get::<_, i64>(7)?, "bytes": r.get::<_, i64>(8)?,
+                    }))
+                })?
+                .flatten()
+                .collect();
+            Ok(rows)
+        })
+        .unwrap_or_default()
+    }
+
     /// Drivatar.SaveDrivatarInformation: what the game learned about how this player drives
     /// ({info, curveTypes, segmentInformation}). The latest upload replaces the previous one.
     pub fn save_drivatar(&self, xuid: u64, data: &Value) {
@@ -513,6 +618,7 @@ impl Store {
             "xp": xp,
             "tunes": tunes,
             "events": self.events(xuid, 100),
+            "ghosts": self.ghosts(xuid, catalog),
             "drivatar": self.drivatar(xuid).map(|(d, updated, saves)| json!({
                 "updated": updated,
                 "saves": saves,
