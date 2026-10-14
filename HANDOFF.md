@@ -16,7 +16,9 @@ Funcionando e testado no jogo (PC):
 - Teste das edições de XAML/fluxo: `python hook\tests\ui_edits_test.py <zig> <Mount>` (compila as funções reais do `azimuth_ui.c` e valida o XML).
 
 - Perfil novo (fh2online.29, não testado no jogo ainda): "Create profile" pede o carro inicial (Camaro SS 69 = 289, Supra RZ 98 = 461, BMW Z4 11 = 1218; o servidor recusa outros) e o servidor grava como save na nuvem o template `server/templates/starter-<carro>.bundle`, gerado por `tools/make_starter_saves.py` a partir do save offline (depois do 1º campeonato, 50.000 CR, `IntroducedMultiplayer` ligado para pular o vídeo do online). O boot seguinte baixa esse save. Formato: `SaveState` XML; `PlayerDatabase` = `ssmc` + u32 tamanho + SQLite + zeros até 6.291.464; `ProfileData` com campos binários (Credits, MostValuableCar).
-- A linha de status da pausa consulta o servidor (1 s) toda vez que a pausa abre.
+- Criação de perfil testada e funcionando no jogo (2026-10-14).
+- Linha de status da pausa (fh2online.30): o jogo monta a página de pausa uma vez e a guarda, então o texto vem de uma string do jogo (a mais longa da tabela `KinectSplitscreen`, nunca exibida no PC) que uma thread reescreve a cada 5 s com o estado do servidor. Falta confirmar no jogo que o texto muda sem reiniciar.
+- Travas de integridade no servidor (`server/src/forza/gates.rs`, `db/integrity.rs`): crescimento de créditos/ganhos (250 mil + 500 mil por hora), XP (150 mil + 400 mil/h), nível (3 + 10/h), recorde de velocidade acima de 1,3× o carro mais rápido da garagem, tempo de corrida impossível para o carro, carros inexistentes, muitos carros de uma vez, XP reportado acima de 400 mil/h. Um sync recusado não é gravado (o jogo recebe OK) e gera um strike, visível no perfil do painel (`integrity`).
 
 Pendente:
 - Testar o perfil novo no jogo: este PC já tem conta (uma por PC), então é preciso apagar a conta de teste `Alex#72178` no servidor e o `Token` no `FH2Online_Accounts.ini`, ou testar num PC/Deck sem conta.
