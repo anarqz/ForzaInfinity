@@ -1,4 +1,5 @@
 [
-  { "host": "profile.xboxlive.com",
-    "response": { "status": 503, "headers": { "Content-Type": "text/plain" }, "body": "desligado: a resposta embutida derrubou o jogo (game+0x124f916)" } }
+  { "_comment": "Resposta de drivatar ainda nao testada no jogo. Apague esta regra para testar; se o jogo quebrar, recoloque.",
+    "class": "Forza.WebServices.Drivatar", "xmethod": "GetDrivatarInformationForRace",
+    "response": { "status": 503, "headers": { "Content-Type": "text/plain" }, "body": "desligado ate testar" } }
 ]
