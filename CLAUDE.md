@@ -11,5 +11,9 @@ Projeto do Alex: devolver os serviços online do Forza Horizon 2, que roda no PC
 - `server/` é Rust só com std (sem tokio/axum, que exigem `dlltool` no toolchain GNU).
 - Troque o DLL instalado só com o jogo fechado, e confira o SHA-256 depois de copiar.
 - Não apague o `azimuth-tls.dll.stock` (backup do original) em `azimuth-windows\data\bin`.
-- Commits no fork vão para a branch `fh2online`, com remote `upstream`.
-- Próxima tarefa: extrair o esquema `Forza.WebServices` do executável do jogo e implementar o `User.Logon` no servidor.
+- Repositórios:
+  - `FH2Online/` é o monorepo (branch `main`): server, web, tools, notes e docs.
+  - `hook/` é um submódulo: o fork `git@github.com:anarqz/ForzaInfinity.git` (`origin`), branch `fh2online`. O ExtraOptions original fica em `upstream`.
+  - Depois de um commit no hook: push em `origin fh2online` e commit do novo ponteiro do submódulo no monorepo.
+- `notes/decomp*/` (código decompilado do jogo) fica fora do git.
+- Planejamento: `MILESTONES.md`. Estado e endereços: `HANDOFF.md`.
