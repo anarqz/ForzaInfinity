@@ -3,7 +3,7 @@
 #   dist/ForzaInfinity.zip    the package players download (hook + installers + INI template)
 #   dist/<each file>          the same files loose, uploaded next to the zip so that
 #                             install.sh / install.ps1 run straight from the release URL
-# Usage: tools/package_release.sh [--zig <zig>] [--server <host:port>] [--dll <prebuilt dll>]
+# Usage: tools/package_release.sh [--zig <zig>] [--server <host:port | https://host>] [--dll <prebuilt dll>]
 #   --server bakes a default server address into the installers (they still ask).
 # Then attach every file in dist/ to a GitHub release (the landing links to releases/latest).
 set -euo pipefail
@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
 done
-if [ -n "$SERVER" ] && ! [[ "$SERVER" =~ ^[A-Za-z0-9.-]+:[0-9]{1,5}$ ]]; then echo "--server must be host:port" >&2; exit 2; fi
+if [ -n "$SERVER" ] && ! [[ "$SERVER" =~ ^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?|[A-Za-z0-9.-]+:[0-9]{1,5})$ ]]; then echo "--server must be host:port or https://host" >&2; exit 2; fi
 
 DIST="$ROOT/dist"
 STAGE="$DIST/ForzaInfinity"
@@ -39,7 +39,7 @@ for f in Install.cmd Uninstall.cmd install.ps1 uninstall.ps1 install.sh uninstal
 done
 chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh"
 if [ -n "$SERVER" ]; then
-    sed -i "s/__DEFAULT_SERVER__/$SERVER/" "$STAGE/install.sh" "$STAGE/install.ps1"
+    sed -i "s|__DEFAULT_SERVER__|$SERVER|" "$STAGE/install.sh" "$STAGE/install.ps1"
 fi
 {
     printf 'ForzaInfinity %s\r\n\r\n' "$VERSION"

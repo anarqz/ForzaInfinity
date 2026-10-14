@@ -3,7 +3,7 @@
 # ForzaInfinity azimuth-tls.dll into Azimuth (keeping the original as azimuth-tls.dll.stock)
 # and points it at a server.
 #   ./install.sh                         finds azimuth.exe and asks for the server
-#   ./install.sh <azimuth folder> <host:port>
+#   ./install.sh <azimuth folder> <host:port | https://host>
 #   curl -fsSL https://github.com/anarqz/ForzaInfinity/releases/latest/download/install.sh | bash
 set -euo pipefail
 DEFAULT_SERVER='__DEFAULT_SERVER__'
@@ -37,7 +37,7 @@ if [ -z "$AZIMUTH" ]; then
         fi
     fi
 fi
-is_azimuth "$AZIMUTH" || fail "Azimuth was not found. Run: ./install.sh <folder with azimuth.exe> <host:port>"
+is_azimuth "$AZIMUTH" || fail "Azimuth was not found. Run: ./install.sh <folder with azimuth.exe> <host:port | https://host>"
 BIN="$AZIMUTH/data/bin"
 
 if ps -eo args | grep -qi '[a]zimuth\.exe'; then fail "Close Forza Horizon 2 (Azimuth) first, then run the installer again."; fi
@@ -47,15 +47,15 @@ SERVER="${2:-}"
 if [ -z "$SERVER" ]; then
     DEFAULT=""; case "$DEFAULT_SERVER" in __*) ;; *) DEFAULT="$DEFAULT_SERVER" ;; esac
     if [ "$GUI" = 1 ]; then
-        SERVER="$(zenity --entry --title=ForzaInfinity --width=420 --text='ForzaInfinity server address (host:port), from whoever runs your server:' --entry-text="$DEFAULT" 2>/dev/null || true)"
-    elif [ -r /dev/tty ]; then
-        read -r -p "ForzaInfinity server (host:port) [${DEFAULT}]: " SERVER </dev/tty; SERVER="${SERVER:-$DEFAULT}"
+        SERVER="$(zenity --entry --title=ForzaInfinity --width=420 --text='ForzaInfinity server address (host:port or https://host), from whoever runs your server:' --entry-text="$DEFAULT" 2>/dev/null || true)"
+    elif (exec </dev/tty) 2>/dev/null; then # a terminal we can really read (not just a node)
+        read -r -p "ForzaInfinity server (host:port or https://host) [${DEFAULT}]: " SERVER </dev/tty; SERVER="${SERVER:-$DEFAULT}"
     else
         SERVER="$DEFAULT"
     fi
 fi
 SERVER="$(echo "$SERVER" | tr -d '[:space:]')"
-[[ "$SERVER" =~ ^[A-Za-z0-9.-]+:[0-9]{1,5}$ ]] || fail "The server must look like host:port (for example 192.168.0.10:8081), not '$SERVER'."
+[[ "$SERVER" =~ ^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?|[A-Za-z0-9.-]+:[0-9]{1,5})$ ]] || fail "The server must look like host:port (for example 192.168.0.10:8081) or https://host, not '$SERVER'."
 
 # 3. the DLL (next to this script, else the latest release)
 DLL="$HERE/azimuth-tls.dll"
@@ -80,7 +80,7 @@ if [ -f "$INI" ]; then
 else
     TEMPLATE="$HERE/FH2_ExtraOptions.ini"
     if [ ! -f "$TEMPLATE" ]; then TEMPLATE="$TMP/template.ini"; curl -fsSL "$RELEASE/FH2_ExtraOptions.ini" -o "$TEMPLATE"; fi
-    sed "s/__SERVER__/$SERVER/" "$TEMPLATE" > "$INI"
+    sed "s|__SERVER__|$SERVER|" "$TEMPLATE" > "$INI"
 fi
 
 say "ForzaInfinity is installed in $AZIMUTH.
