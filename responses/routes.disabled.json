@@ -1,0 +1,4 @@
+[
+  { "host": "profile.xboxlive.com",
+    "response": { "status": 503, "headers": { "Content-Type": "text/plain" }, "body": "desligado: a resposta embutida derrubou o jogo (game+0x124f916)" } }
+]
