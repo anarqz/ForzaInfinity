@@ -63,7 +63,10 @@ impl Store {
              CREATE TABLE IF NOT EXISTS events (
                  id INTEGER PRIMARY KEY AUTOINCREMENT, xuid INTEGER NOT NULL, time INTEGER NOT NULL,
                  kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL);
-             CREATE INDEX IF NOT EXISTS events_user ON events (xuid, id);",
+             CREATE INDEX IF NOT EXISTS events_user ON events (xuid, id);
+             CREATE TABLE IF NOT EXISTS transactions (
+                 id TEXT PRIMARY KEY, xuid INTEGER NOT NULL, time INTEGER NOT NULL,
+                 method TEXT NOT NULL, body BLOB NOT NULL);",
         )
         .map_err(|e| e.to_string())?;
         Ok(Store { db: Mutex::new(db) })
@@ -273,6 +276,24 @@ impl Store {
         rows
     }
 
+    /// The full reply (12-byte header + results) sent to a request carrying X-TransactionId,
+    /// so Transaction.Reconcile can hand it back if the client missed it.
+    pub fn save_transaction(&self, id: &str, xuid: u64, method: &str, body: &[u8]) {
+        self.with(|db| {
+            db.execute(
+                "INSERT OR REPLACE INTO transactions (id, xuid, time, method, body) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![transaction_key(id), xuid as i64, unix_ms(), method, body],
+            )
+        });
+    }
+
+    pub fn transaction(&self, id: &str) -> Option<Vec<u8>> {
+        self.with(|db| {
+            db.query_row("SELECT body FROM transactions WHERE id = ?1", [transaction_key(id)], |r| r.get(0)).optional()
+        })
+        .flatten()
+    }
+
     pub fn add_xp(&self, xuid: u64, xp: f64) {
         self.touch_user(xuid);
         self.with(|db| db.execute("INSERT INTO xp (xuid, time, xp) VALUES (?1, ?2, ?3)", params![xuid as i64, unix_ms(), xp]));
@@ -465,6 +486,11 @@ impl Store {
         })
         .unwrap_or_default()
     }
+}
+
+/// The header sends "248398cef9d0...", Reconcile a GUID "248398ce-f9d0-...": compare bare hex.
+fn transaction_key(id: &str) -> String {
+    id.chars().filter(char::is_ascii_hexdigit).map(|c| c.to_ascii_lowercase()).collect()
 }
 
 pub fn lower_is_better(score_type: i64) -> bool {
