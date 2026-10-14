@@ -64,6 +64,9 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT, xuid INTEGER NOT NULL, time INTEGER NOT NULL,
                  kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS events_user ON events (xuid, id);
+             CREATE TABLE IF NOT EXISTS liveries (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, xuid INTEGER NOT NULL, time INTEGER NOT NULL,
+                 name TEXT NOT NULL, car_id INTEGER NOT NULL, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS transactions (
                  id TEXT PRIMARY KEY, xuid INTEGER NOT NULL, time INTEGER NOT NULL,
                  method TEXT NOT NULL, body BLOB NOT NULL);",
@@ -297,6 +300,20 @@ impl Store {
     pub fn add_xp(&self, xuid: u64, xp: f64) {
         self.touch_user(xuid);
         self.with(|db| db.execute("INSERT INTO xp (xuid, time, xp) VALUES (?1, ?2, ?3)", params![xuid as i64, unix_ms(), xp]));
+    }
+
+    /// OnlineProfile.UpdateLivery (with layer data) and ContentVersioning.CreateVersionedLivery
+    /// (the id the game keeps) both land here; returns the row id.
+    pub fn add_livery(&self, xuid: u64, name: &str, car_id: i64, data: &Value) -> i64 {
+        self.touch_user(xuid);
+        self.with(|db| {
+            db.execute(
+                "INSERT INTO liveries (xuid, time, name, car_id, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![xuid as i64, unix_ms(), name, car_id, data.to_string()],
+            )?;
+            Ok(db.last_insert_rowid())
+        })
+        .unwrap_or(0)
     }
 
     pub fn add_tune(&self, xuid: u64, car_id: i64, data: &Value) -> i64 {

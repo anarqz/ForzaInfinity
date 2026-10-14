@@ -53,6 +53,30 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         (false, "Scoreboard", "GetBestScore") => best_score(ctx, params),
         (false, "Scoreboard", "GetRowsAnthem") => rows_anthem(ctx, params),
         (false, "ContentVersioning", "CreateVersionedTuneFromStructs") => create_tune(ctx, params),
+        (false, "ContentVersioning", "CreateVersionedLivery") => {
+            let car = params["carId"].as_i64().unwrap_or(-1);
+            let id = ctx.store.add_livery(ctx.xuid, params["name"].as_str().unwrap_or(""), car, params);
+            json!({ "versionedLiveryId": id })
+        }
+        (false, "OnlineProfile", "UpdateLivery") => {
+            let car = params["carId"].as_i64().unwrap_or(-1);
+            ctx.store.add_livery(ctx.xuid, params["name"].as_str().unwrap_or(""), car, params);
+            ctx.event("livery", format!("Pintura salva para {}", ctx.car_name(car)), json!({ "name": params["name"], "carId": car }));
+            json!({})
+        }
+        // No other players' scores to race against yet. An Xls error is the same "no rival"
+        // the game gets from a 503 today, without looking like a server failure.
+        (false, "Scoreboard", "GetRival") => json!({ "__xtsw_error": { "code": 1, "message": "no rival" } }),
+        // Empty drivatar list: the game falls back to its offline AI. Off by default in
+        // responses/routes.json until tested in game (null results have crashed it before).
+        (false, "Drivatar", "GetDrivatarInformationForRace") => json!({
+            "playerData": {
+                "GamerTag": ctx.store.gamertag(ctx.xuid), "Xuid": ctx.xuid,
+                "UserSkillLevel": params["skillSelection"],
+            },
+            "drivatarInfos": [],
+            "currentTime": iso_utc(crate::unix_ms()),
+        }),
         (false, "GameplayLog", "Write") => {
             ctx.event("gameplay", "Log de gameplay recebido", params.clone());
             json!({})
@@ -69,6 +93,8 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         (false, "Storefront", "GetFileKeywords")
         | (false, "Storefront", "GetLiveriesForDrivatar")
         | (false, "Storefront", "GetFeaturedLiveriesForRandomCars")
+        | (false, "Storefront", "GetCuratedContent")
+        | (false, "Storefront", "GetMyFileList")
         | (false, "CarClub", "GetClubKeywords")
         | (false, "CarClub", "GetRecommendedClubs")
         | (false, "User", "GetOwnedProducts")
