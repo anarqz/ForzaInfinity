@@ -2,6 +2,31 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-14, noite (hook fh2online.32, PC Linux): leia primeiro
+
+O projeto saiu do PC Windows "diablo" para um PC **Debian 12** (RTX 3070, `192.168.68.40`). Servidor e jogo rodam aqui; a tabela "Onde está tudo" abaixo é a do Windows.
+- **Jogo:** `Forza Horizon 2/` na raiz do repo (fora do git): `azimuth.exe`, `data/` e `Anthem_1.0.0.64_x64__8wekyb3d8bbwe/`. Atalho não-Steam (appid 3861404636) com **Proton 11.0**; abre com `steam steam://rungameid/16584606628276338688`. Conta deste PC: `Anarqz#72178`.
+- **Servidor:** `server/run.sh` (equivalente do `run.bat`): `0.0.0.0:8081`, log em `server/logs/`, `--gamedb` do jogo local. Firewall nftables: a 8081 é liberada para a LAN com `nft add rule` (não recarregar `/etc/nftables.conf`: ele começa com `flush ruleset` e apaga as regras do Docker).
+- **Steam Deck:** `deck@192.168.68.93`, jogo em `/run/media/deck/SN01T/piShop/Forza Horizon 2`, hook .32, `Server=192.168.68.40:8081`, conta `alex#08723` (amigo de `Anarqz#72178`).
+- **Ferramentas:** `~/tools` (JDK 21, Ghidra 12.1.4, Zig 0.15.2), Rust em `~/.cargo`. Projetos Ghidra em `~/re`: `FH2_RE` (azimuth.exe, análise completa) e `FH2_RE_game` (exe do jogo e `Microsoft.Xbox.Services.dll`, sem análise); `~/re/decomp.sh` decompila por endereço (achar o início da função pelo `.pdata`).
+- **Sistema:** driver NVIDIA 580 do repositório da NVIDIA (o 535 do Debian não tem `VK_KHR_maintenance5`, exigido pelo DXVK do Proton 11); `xpad` ligado ao receptor 8BitDo Ultimate 2C `2dc8:310a` por regra udev (o kernel 6.1 não reconhece).
+
+Feito e testado no jogo nesta sessão:
+- **Hook .31:** save na nuvem no Proton. O Wine não tem XPRESS nem `RtlDecompressBufferEx`, então o hook tem codec próprio (`adapters/azimuth_codec.c`): decodifica XPRESS Huffman (saves antigos e templates) e envia no **método 2** (LZ com varints). Teste: `python tests/codec_test.py <zig> <bundles/sqlite>`. Perfil novo agora cai direto no mundo aberto.
+- **Hook .32:** o gravador de clipes do Game DVR (`FUN_14054e560`) retorna na entrada; antes a tarefa PPL pedia `ApplicationClipCapture` e derrubava o jogo (`0xc0000409`) em momentos marcantes das corridas.
+- **Servidor:**
+  - placares de radar/zona/habilidade por evento (`GetRows`, `pivotId`);
+  - `UpdateAll` mescla as seções (o jogo manda só o que mudou; antes apagava o resto e zerava as travas);
+  - Meus Rivais como "TIME TO BEAT" do melhor tempo de cada amigo em cada rota (`notifications::sync_rivals`), só corridas por tempo;
+  - nomes oficiais das pistas e palavras-chave lidos das tabelas LSB2 do jogo (`strtable.rs`, `stringtables/EN.zip`);
+  - filtro de palavras do Xbox (`resultCode` numérico) para criar clube;
+  - drivatars dos amigos com a pintura do carro: pintura registrada sem camadas, ou pintura base gerada da cor de fábrica (`base_livery`);
+  - Storefront entre amigos (`forza/storefront.rs`, `db/storefront.rs`): compartilhar, RECOMMENDED, busca, baixar, curtidas, downloads (contados pelo carro que passa a usar o conteúdo), meus arquivos, denúncias com 3 strikes de jogadores diferentes.
+
+Pendente:
+- **Pinturas com camadas** de outros jogadores: o Azimuth para em `CreatePlacementTexture2D requires GPU-write/CPU-map/unknown placement semantics` (`azimuth.exe` `FUN_1400ea0b0` só aceita dois formatos). Por isso os drivatars levam só pinturas sem camadas. Uma queda no PC às 16:23 em `game+0x10ccd7a` (classe `Material`, recurso nulo) pode ter a mesma origem: o Supra do PC usa o design de 4 camadas baixado do Alex. Dumps em `Forza Horizon 2/data/logs/`.
+- **Online ao vivo (V2):** ver M7 no `MILESTONES.md`. A V1 fica no assíncrono.
+
 ## Estado em 2026-10-14 (hook fh2online.28): leia primeiro
 
 Funcionando e testado no jogo (PC):

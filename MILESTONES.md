@@ -5,7 +5,7 @@ O jogo é só o título. Tudo o que o Xbox One fazia por ele (sistema, SDK, Xbox
 - **no servidor (`server/`):** os serviços Forza (`Forza.WebServices`, `Xls.WebServices`) e os serviços Xbox Live que o jogo chama por HTTP (profile, presence, people, achievements, sessiondirectory…);
 - **no hook (`hook/`, fork `anarqz/ForzaHorizon2_ExtraOptions`):** as APIs do console que o Azimuth deixa offline ou fecha na hora (conectividade, telas do sistema, privilégios, party…). Também as telas do sistema que o jogo espera abrir: cartão de perfil, seletor de amigos, mensagens e convites.
 
-O multiplayer em tempo real (vários jogadores no mesmo mapa) **está fora do escopo por enquanto**.
+**V1** (M0–M6) é o online assíncrono: amigos, clubes, rivais, corridas contra fantasmas, placares, pinturas e Storefront. O multiplayer em tempo real (vários jogadores no mesmo mapa) é a **V2** (M7), que só começa depois da V1.
 
 Legenda: ✅ feito · 🟡 em andamento / parcial · ⬜ a fazer
 
@@ -61,20 +61,33 @@ Decisão (2026-10-13): **sem UI dentro do jogo**. O jogo só consome (amigos, pr
 - ⬜ Grupos e mensagens (`Xls.Notifications.SendTextNotification` / `RetrieveForUser`).
 - ⬜ Convites para clube (`Xls.User.AcceptClubInvites`).
 
-## M5: Competição assíncrona entre amigos ⬜
-- ⬜ Rivais com os tempos e fantasmas reais dos amigos, em vez de aleatórios.
-- ⬜ Placares por evento (amigos e global) e Time Trials.
-- ⬜ Bucket List, desafios e `GetCompareStatsForRelatedUsers` com dados reais.
-- ⬜ Drivatars dos amigos nas corridas offline.
-- ⬜ Storefront: compartilhar pinturas, tunes e fotos entre jogadores.
+## M5: Competição assíncrona entre amigos 🟡
+- ✅ Meus Rivais: o melhor tempo de cada amigo em cada rota que o jogador ainda não bateu ("TIME TO BEAT"), sincronizado a cada `RetrieveForUser`; "Ir para" corre contra o fantasma do amigo. Só corridas por tempo numa rota: o jogo não tem rival para radar, zona ou habilidade.
+- ✅ Placares de amigos (`GetRows`, `GetRowsAnthem`): radares, zonas e habilidade separados por evento (`pivotId`).
+- ✅ Drivatars dos amigos nas corridas e nos encontros de carros, com a pintura do carro (pintura registrada sem camadas, ou a cor de fábrica gerada pelo servidor).
+- ✅ Storefront entre amigos e clube (designs, grupos de vinil, ajustes): compartilhar, RECOMMENDED DESIGNS, busca, baixar, curtidas, downloads, meus arquivos, remover; denúncias com 3 strikes de jogadores diferentes.
+- ⬜ Pinturas com camadas de outros jogadores nos encontros e drivatars: o Azimuth para em `CreatePlacementTexture2D` (formato de textura que não emula). Hoje esses carros aparecem na cor de fábrica.
+- ⬜ Presentes de design/ajuste para um amigo (`GiftLivery`, `GiftTuning`, `GiftLayerGroup`, `Gifting.*`).
+- ⬜ Time Trials, fotos e replays na Storefront, Bucket List e desafios.
 
 ## M6: Manager web 🟡
 - ✅ Perfil ao vivo por WebSocket: XP, garagem, placares, fantasmas, feed, tráfego.
 - ⬜ Administração: jogadores, amigos, grupos, moderação, ajustes da economia.
 - ⬜ Conquistas e estatísticas completas.
 
-## Fora de escopo (por enquanto)
-- Multiplayer em tempo real no mesmo mapa: `Windows.Xbox.Networking` (SecureDeviceAssociation, QoS), `Windows.Xbox.Multiplayer` (party) e sessões P2P. O Azimuth stuba tudo isso como offline. Vai exigir substituir essas APIs no hook e ter um relay de rede.
+## M7: Online ao vivo (V2) ⬜
+Só depois da V1. Levantamento de 2026-10-14 (ONLINE ROAD TRIP mostra "UNABLE TO CONNECT TO THE LIVE CONFIGURATION SERVERS", `Lobby.str` 0xf3f0):
+- O online ao vivo do FH2 rodava em **servidores dedicados do Xbox Live Compute**. Fluxo, pelo exe e pelo `Microsoft.Xbox.Services.dll`:
+  1. `GameServerPlatform`: `POST gameserverds.xboxlive.com/titles/1368890819/variants` (`{"locale":"en-us","maxVariants":8,"publisherOnly":false}`; resposta `variants[]` com `variantId`, `name`, `isPublisher`, `rank`, `gameVariantSchemaId`, e `variantSchemas[]` com `variantSchemaId`, `name`, `schemaContent`) e `GET …/qosservers` (`qosServers[]` com `serverFullQualifiedDomainName`, `secureDeviceAddressBase64`, `targetLocation`). Hoje os dois caem no mesmo stub de variants vazio (`responses/hosts/gameserverds.xboxlive.com/_default.json`): é isso que dá o erro.
+  2. Medição de latência: `Windows.Xbox.Networking.QualityOfService` / `MeasureQualityOfServiceResult`.
+  3. Alocação do servidor: `AllocateClusterAsync` (`ClusterResult`; mensagem "AllocateClusterAsync returned an unexpected GameServerFulfillmentState").
+  4. Sessão do Xbox Live: `Microsoft.Xbox.Services.Multiplayer.MultiplayerSession` (sessiondirectory / MPSD).
+  5. Conexão criptografada até o servidor: `Windows.Xbox.Networking.SecureDeviceAssociation` (`SecureDeviceAssociationTemplate`, `SecureDeviceAddress`). Também `Windows.Xbox.Multiplayer` (party). O Azimuth stuba tudo isso como offline.
+- O servidor dedicado do Forza nunca foi distribuído: o protocolo de jogo ao vivo tem de ser reescrito a partir do que o jogo envia e espera. Corridas do servidor reportam por `Forza.WebServices.Hopper.SubmitServerRaceResults`.
+- Plano:
+  - **A:** responder os passos 1 a 4 (variants, QoS, alocação apontando para o nosso servidor, sessões); no hook, fazer `SecureDeviceAssociation` e QoS funcionarem até ele; capturar os primeiros pacotes do jogo.
+  - **B:** engenharia reversa do protocolo (handshake, entrada na sessão, estado dos carros).
+  - **C:** servidor ao vivo que retransmite os estados entre jogadores (Road Trip, depois free roam online).
 
 ---
 

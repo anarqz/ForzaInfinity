@@ -4,7 +4,8 @@
 //!
 //! Bundle (little endian): "FH2SAVE1", u64 revision, u32 count, then per file
 //! u16 name length, name (one of SAVE_FILES), u32 raw size, u32 stored size, u8 method
-//! (0 stored, 1 XPRESS Huffman), stored bytes.
+//! (0 stored, 1 XPRESS Huffman from older hooks on Windows, 2 the hook's LZ: azimuth_codec.c),
+//! stored bytes.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -67,7 +68,7 @@ pub fn check_bundle(data: &[u8]) -> Result<u64, String> {
         let raw = u32::from_le_bytes(take(4)?.try_into().unwrap());
         let stored = u32::from_le_bytes(take(4)?.try_into().unwrap());
         let method = take(1)?[0];
-        if raw > MAX_FILE || method > 1 || (method == 0 && stored != raw) {
+        if raw > MAX_FILE || method > 2 || (method == 0 && stored != raw) {
             return Err("invalid save file".into());
         }
         take(stored as usize)?;

@@ -18,6 +18,7 @@ use crate::{db::Store, gamedb::Catalog};
 mod clubs;
 mod gates;
 mod notifications;
+mod storefront;
 pub use notifications::challenge_target;
 
 /// The Car Club keywords (id, category, text) the server offers.
@@ -72,6 +73,9 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
     if let Some(reply) = clubs::handle(ctx, xls, short, method, params) {
         return Some(reply);
     }
+    if let Some(reply) = storefront::handle(ctx, xls, short, method, params) {
+        return Some(reply);
+    }
     if xls && short == "Notifications" {
         if let Some(reply) = notifications::handle(ctx, method, params) {
             return Some(reply);
@@ -86,11 +90,43 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         (false, "Scoreboard", "SubmitXpScore") => submit_xp(ctx, params),
         (false, "Scoreboard", "GetBestScore") => best_score(ctx, params),
         (false, "Scoreboard", "GetRowsAnthem") => rows_anthem(ctx, params),
+        (false, "Scoreboard", "GetRows") => score_rows(ctx, params),
         (false, "ContentVersioning", "CreateVersionedTuneFromStructs") => create_tune(ctx, params),
         (false, "ContentVersioning", "CreateVersionedLivery") => {
             let car = params["carId"].as_i64().unwrap_or(-1);
             let id = ctx.store.add_livery(ctx.xuid, params["name"].as_str().unwrap_or(""), car, params);
+            // keep the design's own copy (from the UpdateLivery of that name just before), so the
+            // versioned livery outlives library edits and pruning
+            if let Some((_, full)) = ctx.store.livery(id) {
+                ctx.store.set_livery_data(id, &full);
+            }
             json!({ "versionedLiveryId": id })
+        }
+        // A friend's car paint (drivatars in races and car meets carry its id as LiveryId).
+        (false, "ContentVersioning", "RetrieveVersionedLiveryById") => {
+            let id = params["versionedLiveryId"].as_i64().unwrap_or(0);
+            if id >= BASE_LIVERY_IDS {
+                let (car, colour) = ((id - BASE_LIVERY_IDS) / 256, (id - BASE_LIVERY_IDS) % 256);
+                return Some(match base_livery(car, colour) {
+                    Some(data) => json!({ "versionedLiveryData": {
+                        "profileId": 0, "carId": car, "numberOfLayers": 0, "creatorXuid": 0,
+                        "data": data, "liveryThumbnail": "", "liveryThumbnailSmall": "",
+                    } }),
+                    None => json!({ "__xtsw_error": { "code": 1, "message": "no such livery" } }),
+                });
+            }
+            match ctx.store.livery(id).filter(|(owner, _)| ctx.can_see(*owner)) {
+                Some((owner, p)) => json!({ "versionedLiveryData": {
+                    "profileId": 0,
+                    "carId": p["carId"],
+                    "numberOfLayers": p["numberOfLayers"],
+                    "creatorXuid": if p["creatorXuid"].as_u64().unwrap_or(0) != 0 { p["creatorXuid"].clone() } else { json!(owner) },
+                    "data": p["data"],
+                    "liveryThumbnail": "",
+                    "liveryThumbnailSmall": "",
+                } }),
+                None => json!({ "__xtsw_error": { "code": 1, "message": "no such livery" } }),
+            }
         }
         (false, "OnlineProfile", "UpdateLivery") => {
             let car = params["carId"].as_i64().unwrap_or(-1);
@@ -193,11 +229,19 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
             "userFlags": 0,
         }),
         // Lists that are empty until the server has the content (storefront, clubs, drivatars).
-        (false, "Storefront", "GetFileKeywords")
-        | (false, "Storefront", "GetLiveriesForDrivatar")
+        // The two keywords a shared file must have (the share screen offers only these).
+        (false, "Storefront", "GetFileKeywords") => {
+            let max = params["maxKeywordResults"].as_i64().filter(|&n| n > 0).unwrap_or(128) as usize;
+            let keywords: Vec<Value> = FILE_KEYWORDS
+                .iter()
+                .enumerate()
+                .take(max)
+                .map(|(i, (k, bucket))| json!({ "Keyword": k, "KeywordId": i + 1, "Bucket": bucket }))
+                .collect();
+            json!({ "keywords": keywords })
+        }
+        (false, "Storefront", "GetLiveriesForDrivatar")
         | (false, "Storefront", "GetFeaturedLiveriesForRandomCars")
-        | (false, "Storefront", "GetCuratedContent")
-        | (false, "Storefront", "GetMyFileList")
         | (false, "User", "GetOwnedProducts")
         | (false, "Scoreboard", "GetTimeTrials")
         | (false, "Storefront", "GetFeaturedPhotos")
@@ -263,12 +307,14 @@ pub fn live_service(ctx: &Ctx, req: &LiveRequest) -> Option<Value> {
             .collect();
         return Some(json!({ "totalCount": people.len(), "people": people }));
     }
-    // The Xbox text filter, asked before the game posts text (club notice board, messages):
-    // everything passes. resultCode 0 = Success.
+    // The Xbox text filter, asked before the game posts text (club name and tag, notice board,
+    // messages): everything passes. resultCode 0 = Success, and it must be a JSON number: XSAPI
+    // (Microsoft.Xbox.Services.dll FUN_1801b2a00 -> FUN_1800467c0) throws 0x83750005 on any other
+    // type, and the game then says the Xbox text check is off.
     if host == "client-strings.xboxlive.com" && path.ends_with("/strings/validate") {
         let body: Value = serde_json::from_slice(req.body).unwrap_or(Value::Null);
         let n = body["stringstoVerify"].as_array().map(Vec::len).unwrap_or(0);
-        let results: Vec<Value> = (0..n).map(|_| json!({ "resultCode": "0", "offendingString": "" })).collect();
+        let results: Vec<Value> = (0..n).map(|_| json!({ "resultCode": 0, "offendingString": "" })).collect();
         return Some(json!({ "verifyStringResult": results }));
     }
     // Rich presence (RP_SPLASH, RP_FREEROAM, ...): the game posts it every few seconds.
@@ -463,7 +509,25 @@ fn garage_cars(ctx: &Ctx) -> Vec<i64> {
     ctx.store.tables(ctx.xuid).get("garageCars").and_then(Value::as_array).map(|rows| rows.iter().filter_map(|r| r["carId"].as_i64()).collect()).unwrap_or_default()
 }
 
+/// OnlineProfile.UpdateAll sends only what changed: each section is a list holding the section,
+/// or empty when it did not change. The stored profile is the last one with those sections
+/// replaced.
+fn merge_profile(old: &Value, update: &Value) -> Value {
+    let mut merged = if old.is_object() { old.clone() } else { json!({}) };
+    if let Some(sections) = update.as_object() {
+        for (name, value) in sections {
+            let unchanged = value.as_array().is_some_and(|a| a.is_empty());
+            if !unchanged || merged.get(name).is_none() {
+                merged[name] = value.clone();
+            }
+        }
+    }
+    merged
+}
+
 fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
+    let merged = merge_profile(&ctx.store.profile_data(ctx.xuid), params);
+    let params = &merged;
     // integrity: credits / XP / level growth and top speed within reason (gates.rs)
     let now = crate::unix_ms();
     let checked = gates::progress(params).and_then(|p| {
@@ -517,6 +581,7 @@ fn profile_update_tables(ctx: &Ctx, params: &Value) -> Value {
     }
     let summary = ctx.store.apply_tables(ctx.xuid, params);
     ctx.store.set_garage_baseline(ctx.xuid, garage_cars(ctx).len() as i64);
+    storefront::count_downloads(ctx, params);
     let cars = params["garageCars"].as_array().map(Vec::len).unwrap_or(0);
     let removed = params["deleteGarageCars"].as_array().map(Vec::len).unwrap_or(0);
     let title = if cars + removed > 0 {
@@ -561,7 +626,7 @@ fn submit_score(ctx: &Ctx, params: &Value) -> Value {
         ),
         json!({ "scoreId": score_id, "scoreType": score_type, "data": data }),
     );
-    notifications::rivals_beaten(ctx, score_type, data);
+    // friends see this time in Meus Rivais on their next poll (notifications::sync_rivals)
     // Ask for the ghost (Scoreboard.UploadFile) only for a new personal best on this event.
     json!({ "scoreId": score_id, "uploadFiles": ctx.store.is_personal_best(&score_id) })
 }
@@ -652,14 +717,25 @@ fn best_score(ctx: &Ctx, params: &Value) -> Value {
     }
 }
 
-/// A leaderboard of the player and their friends: there are no public boards.
+/// Scoreboard.GetRowsAnthem: the board shown right after an event (view 5).
 fn rows_anthem(ctx: &Ctx, params: &Value) -> Value {
+    let mut out = score_rows(ctx, params);
+    out["totalRowCount"] = out["available"].clone();
+    out
+}
+
+/// A leaderboard of the player and their friends: there are no public boards. Boards without a
+/// track (speed traps and zones: scoreboardType 9, skills: 4) name their event in pivotId, which
+/// is the gameScoreboardId the scores were submitted with; track boards are the whole route.
+/// Also Scoreboard.GetRows (VIEW SCOREBOARD).
+fn score_rows(ctx: &Ctx, params: &Value) -> Value {
     let track = params["trackId"].as_i64().filter(|t| *t >= 0);
+    let event = if track.is_none() { params["pivotId"].as_i64() } else { None };
     let mut rows = ctx.store.leaderboard(
         params["scoreboardType"].as_i64().unwrap_or(-1),
         params["scoreType"].as_i64().unwrap_or(-1),
         track,
-        None,
+        event,
     );
     let mut circle = ctx.friend_ids();
     circle.push(ctx.xuid);
@@ -691,7 +767,7 @@ fn rows_anthem(ctx: &Ctx, params: &Value) -> Value {
         .position(|r| r.xuid == ctx.xuid)
         .map(|i| row_json(i + 1, &rows[i]))
         .unwrap_or_else(|| json!({ "user": user_data(ctx, ctx.xuid) }));
-    json!({ "rows": page, "userRow": user_row, "available": rows.len(), "totalRowCount": rows.len() })
+    json!({ "rows": page, "userRow": user_row, "available": rows.len() })
 }
 
 /// Transaction.Reconcile: the client asks for the reply to a transactional request it did not
@@ -745,12 +821,40 @@ fn racing_info(ctx: &Ctx, owner: u64, bucket: i64, car: Option<i64>) -> Option<V
     let (data, _, _) = ctx.store.drivatar(owner)?;
     let car = car.or_else(|| drivatar_car(ctx, owner, bucket))?;
     let take = |v: &Value, max: usize| Value::Array(v.as_array().map(|a| a.iter().take(max).cloned().collect()).unwrap_or_default());
+    // the car's paint, fetched by the game with ContentVersioning.RetrieveVersionedLiveryById:
+    // the versioned livery its garage entry points at, else (a car never repainted, like a
+    // starting car) a base livery in its manufacturer colour; 0 = the car's colour 0
+    let livery = if owner == ctx.xuid {
+        0
+    } else {
+        let tables = ctx.store.tables(owner);
+        let entries: Vec<&Value> = tables
+            .get("garageCars")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|c| c["carId"].as_i64() == Some(car))
+            .collect();
+        // Only a livery without layers: building a layered one for someone else's car stops
+        // Azimuth ("CreatePlacementTexture2D requires GPU-write/CPU-map/unknown placement
+        // semantics", 2026-10-14, a friend's 4-layer design in a car meet). Such a car shows
+        // its manufacturer colour instead.
+        // (the livery may be another player's: a design downloaded from the storefront)
+        let stored = entries.iter().filter_map(|c| c["versionedLiveryId"].as_i64()).find(|&id| {
+            id > 0
+                && ctx.store.livery(id).is_some_and(|(x, p)| {
+                    (x == owner || ctx.can_see(x)) && p["numberOfLayers"].as_i64().unwrap_or(0) == 0
+                })
+        });
+        let colour = entries.first().and_then(|c| c["defaultManufacturerColorIndex"].as_i64()).unwrap_or(0);
+        stored.unwrap_or(if (1..=255).contains(&colour) { BASE_LIVERY_IDS + car * 256 + colour } else { 0 })
+    };
     Some(json!({
         "GamerTag": ctx.store.gamertag(owner),
-        "IsFriend": false,
+        "IsFriend": owner != ctx.xuid && ctx.friend_ids().contains(&owner),
         "Xuid": owner,
         "CarId": car,
-        "LiveryId": 0,
+        "LiveryId": livery,
         "TuneId": 0,
         "BucketId": bucket.max(0),
         "Segments": take(&data["segmentInformation"], 200),
@@ -759,6 +863,50 @@ fn racing_info(ctx: &Ctx, owner: u64, bucket: i64, car: Option<i64>) -> Option<V
         "UserSkillLevel": 1,
         "wristbandLevel": 0,
     }))
+}
+
+/// Storefront keywords: (text, bucket). Bucket 0 fills KEYWORD 1 (what the file is), 1 fills
+/// KEYWORD 2 (its style). Ids are the position + 1, kept stable: shared files store them. The
+/// texts are the game's own (Storefront.str); which ones went with each file type was the
+/// service's, so every type gets the same list.
+const FILE_KEYWORDS: &[(&str, u8)] = &[
+    ("RACING", 0), ("RACE CAR", 0), ("DRIFTING", 0), ("DRAG", 0), ("REPLICA", 0), ("REAL WORLD", 0),
+    ("ORIGINAL", 0), ("ANIME", 0), ("CARTOON", 0), ("VIDEO GAME", 0), ("SUPER HERO", 0), ("SCI-FI", 0),
+    ("FANTASY", 0), ("HORROR", 0), ("FUNNY", 0), ("ARTISTIC", 0), ("LOGO", 0), ("LICENSE PLATE", 0),
+    ("GRIP", 0), ("GOOD HANDLING", 0), ("GOOD FOR SPEED", 0), ("ACTION SHOT", 0), ("CLOSE UP", 0), ("OTHER", 0),
+    ("RETRO", 1), ("VINTAGE", 1), ("CLASSIC", 1), ("MODERN", 1), ("JDM", 1), ("EUROPEAN", 1),
+    ("AMERICAN MUSCLE", 1), ("EXOTIC", 1), ("SUPERCAR", 1), ("REALISTIC", 1), ("DARK", 1), ("LIGHT", 1),
+    ("PRETTY", 1), ("CUTE", 1), ("CRAZY", 1), ("SCARY", 1), ("BEGINNER", 1), ("EXPERT", 1),
+    ("BLACK AND WHITE", 1), ("HIGH CONTRAST", 1), ("SATURATED", 1), ("OTHER", 1),
+];
+
+/// Livery ids from here up are base liveries made by the server (car * 256 + colour), not stored.
+const BASE_LIVERY_IDS: i64 = 1 << 40;
+/// A car's base livery as the game uploads it (UpdateLivery "BaseLivery_<car>_<date>", made
+/// when a car is bought): [u32 packed size][u32 raw size][zlib of 1034 bytes]. This one is car
+/// 461 in colour 0; only the car (u16 at 16) and the manufacturer colour (u32 at 20, and one
+/// byte at 255, 335, 375 and 415) differ between cars (compared with car 1304 in colour 3).
+const BASE_LIVERY_461_0: &str = "4f0000000a040000789c2bcb294a66644080b3304e6551590e2b032ae803e2f4cab21c8448833d0336403761902bb1aa42966764c4a70401f0a8fb0f04c4a823d63c6aab23d67da3ea46d561a863600465130008165073";
+
+/// The base livery of `car` painted in its manufacturer colour `colour` (hex, as a blob).
+fn base_livery(car: i64, colour: i64) -> Option<String> {
+    let packed: Vec<u8> = (0..BASE_LIVERY_461_0.len() / 2)
+        .map(|i| u8::from_str_radix(&BASE_LIVERY_461_0[2 * i..2 * i + 2], 16).unwrap_or(0))
+        .collect();
+    let mut raw = miniz_oxide::inflate::decompress_to_vec_zlib(packed.get(8..)?).ok()?;
+    if raw.len() != 1034 || !(0..=u16::MAX as i64).contains(&car) || !(0..=255).contains(&colour) {
+        return None;
+    }
+    raw[16..18].copy_from_slice(&(car as u16).to_le_bytes());
+    raw[20..24].copy_from_slice(&(colour as u32).to_le_bytes());
+    for at in [255, 335, 375, 415] {
+        raw[at] = colour as u8;
+    }
+    let zlib = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6);
+    let mut out = (zlib.len() as u32).to_le_bytes().to_vec();
+    out.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+    out.extend_from_slice(&zlib);
+    Some(out.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// The race grid: playerData is the player's own drivatar (what the server learned so far,
@@ -843,7 +991,8 @@ fn challenge_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
     let (board, score_type, track) = (int("scoreboardType"), int("scoreType"), int("trackId"));
     let rival_xuid = params["rivalXuid"].as_u64().unwrap_or(0);
     let best = |x: u64| ctx.store.leaderboard(board, score_type, Some(track), None).into_iter().find(|r| r.xuid == x);
-    let (xuid, score, car, class) = if let Some(p) = ctx.store.pending_challenge(ctx.xuid, track, Some(int("rivalEventId"))) {
+    let sender = (rival_xuid != 0).then_some(rival_xuid);
+    let (xuid, score, car, class) = if let Some(p) = ctx.store.pending_challenge(ctx.xuid, track, Some(int("rivalEventId")), sender) {
         let from = p["senderXuid"].as_u64().unwrap_or(0);
         (from, p["score"].as_f64()?, p["carId"].as_i64().unwrap_or(461), p["carClassId"].as_i64().unwrap_or(0))
     } else if rival_xuid != 0 {
@@ -982,5 +1131,30 @@ mod tests {
     fn iso() {
         assert_eq!(iso_utc(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(iso_utc(1_791_932_302_627), "2026-10-13T22:58:22.627Z");
+    }
+
+    #[test]
+    fn base_livery_matches_the_game() {
+        // the base livery the game made for car 1304 in colour 3 (a save backup)
+        let real = "540000000a040000789c2bcb294a66644000095606066610a3b2a82c87950115f401717a65590e42a4c19e011ba09b30c895585521cb3332e2946746e6e051f71f08885147ac79d45647acfb46d58daac350c7c008ca260074394fd1";
+        let raw = |h: &str| {
+            let b: Vec<u8> = (0..h.len() / 2).map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap()).collect();
+            miniz_oxide::inflate::decompress_to_vec_zlib(&b[8..]).unwrap()
+        };
+        assert_eq!(raw(&base_livery(1304, 3).unwrap()), raw(real));
+        assert_eq!(raw(&base_livery(461, 0).unwrap()), raw(BASE_LIVERY_461_0));
+    }
+
+    #[test]
+    fn partial_update_all() {
+        let full = json!({ "compareStats": [{ "carsInGarage": 1 }], "playerHistory": [{ "credits": 50000 }], "hudOptions": [{}] });
+        // a partial UpdateAll: only playerHistory changed
+        let partial = json!({ "compareStats": [], "playerHistory": [{ "credits": 61000 }], "hudOptions": [], "miscStats": [] });
+        let merged = merge_profile(&full, &partial);
+        assert_eq!(merged["compareStats"][0]["carsInGarage"], 1);
+        assert_eq!(merged["playerHistory"][0]["credits"], 61000);
+        assert!(merged["hudOptions"][0].is_object());
+        assert_eq!(merged["miscStats"], json!([]));
+        assert_eq!(merge_profile(&Value::Null, &partial), partial);
     }
 }

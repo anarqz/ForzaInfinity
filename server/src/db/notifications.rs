@@ -199,14 +199,41 @@ impl Store {
         .flatten()
     }
 
-    /// A pending "your rival beat your time" for this player on a route: its parameters.
-    pub fn pending_challenge(&self, xuid: u64, track: i64, event: Option<i64>) -> Option<Value> {
+    /// A pending rival time for this player on a route (from `sender` when given): its parameters.
+    pub fn pending_challenge(&self, xuid: u64, track: i64, event: Option<i64>, sender: Option<u64>) -> Option<Value> {
         self.notifications(xuid, 512)
             .into_iter()
             .rev()
             .filter(|n| n.kind == TIME_BEATEN)
             .map(|n| n.params)
-            .find(|p| p["trackId"].as_i64() == Some(track) && event.is_none_or(|e| e < 0 || p["timeTrialId"].as_i64() == Some(e)))
+            .find(|p| {
+                p["trackId"].as_i64() == Some(track)
+                    && event.is_none_or(|e| e < 0 || p["timeTrialId"].as_i64() == Some(e))
+                    && sender.is_none_or(|s| p["senderXuid"].as_u64() == Some(s))
+            })
+    }
+
+    /// Every rival-time notification of a player still within the TTL, cleared ones included
+    /// (so one the player deleted is not sent again): (id, cleared, params).
+    pub fn rival_notifications(&self, xuid: u64) -> Vec<(i64, bool, Value)> {
+        let since = unix_ms() - TTL_MS;
+        self.with(|db| {
+            let mut stmt = db.prepare(
+                "SELECT id, cleared, params FROM notifications WHERE xuid = ?1 AND type = ?2 AND sent >= ?3",
+            )?;
+            let rows = stmt
+                .query_map(params![xuid as i64, TIME_BEATEN, since], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)? != 0,
+                        serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(Value::Null),
+                    ))
+                })?
+                .flatten()
+                .collect::<Vec<_>>();
+            Ok(rows)
+        })
+        .unwrap_or_default()
     }
 
     /// Deletes one notification (manager).
