@@ -99,17 +99,17 @@ fn club_row(r: &rusqlite::Row) -> rusqlite::Result<Club> {
 pub fn validate(fields: &ClubFields) -> Result<(), String> {
     let tag = fields.tag.trim();
     if !(2..=4).contains(&tag.chars().count()) || !tag.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err("tag: 2 a 4 letras ou dígitos".into());
+        return Err("tag: 2 to 4 letters or digits".into());
     }
     let name = fields.name.trim();
     if name.is_empty() || name.chars().count() > 24 {
-        return Err("nome: 1 a 24 caracteres".into());
+        return Err("name: 1 to 24 characters".into());
     }
     if fields.description.chars().count() > 200 {
-        return Err("descrição: até 200 caracteres".into());
+        return Err("description: up to 200 characters".into());
     }
     if !(0..=3).contains(&fields.privacy) {
-        return Err("privacidade: 0 a 3".into());
+        return Err("privacy: 0 to 3".into());
     }
     Ok(())
 }
@@ -194,10 +194,10 @@ impl Store {
     pub fn create_club(&self, owner: u64, fields: &ClubFields) -> Result<i64, String> {
         validate(fields)?;
         if self.membership(owner).is_some() {
-            return Err("o jogador já está em um clube".into());
+            return Err("the player is already in a club".into());
         }
         if self.club_by_tag(&fields.tag).is_some() {
-            return Err("essa tag já existe".into());
+            return Err("that tag already exists".into());
         }
         let now = unix_ms();
         let id = self
@@ -369,10 +369,10 @@ impl Store {
 
     pub fn invite_to_club(&self, club: i64, sender: u64, xuid: u64) -> Result<i64, String> {
         if self.membership(xuid).map(|m| m.0) == Some(club) {
-            return Err("o jogador já está no clube".into());
+            return Err("the player is already in the club".into());
         }
         if !self.accepts_club_invites(xuid) {
-            return Err("o jogador não aceita convites de clube".into());
+            return Err("the player does not accept club invites".into());
         }
         self.with(|db| {
             db.execute(
@@ -431,7 +431,7 @@ impl Store {
     pub fn accept_club_invite(&self, xuid: u64, club: i64, invitation: i64) -> Result<(), String> {
         let found = self.club_invites_for(xuid).into_iter().any(|(id, c, _, _)| c == club && (id == invitation || invitation <= 0));
         if !found {
-            return Err("convite não encontrado".into());
+            return Err("invite not found".into());
         }
         if self.club(club).is_none() {
             return Err("clube desconhecido".into());

@@ -2,6 +2,25 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-14 (hook fh2online.28): leia primeiro
+
+Funcionando e testado no jogo (PC):
+- Conta Infinity (`Nome#12345`), token por PC, login em outro PC com nome + chave do site (o PC antigo é desconectado), save na nuvem (`azimuth_cloud.c`: upload a cada revisão nova, download no boot).
+- Servidor endurecido (`guard.rs`: limites de conexão/tamanho/taxa; painel só localhost; identidade só pelo `X-Fh2-Token`; tudo restrito a amigos; sem rankings públicos). `server\run.bat` escuta em `0.0.0.0:8081` e espelha o log em `server\logs\`.
+- `azimuth_ui.c` edita em memória o que o jogo lê do zip (`FUN_1411ecbd0`, desvio com trampolim):
+  - Configurações: CRÉDITOS (original) + INFINITY em 1x1;
+  - pausa: linha de status centralizada no topo;
+  - tela INFINITY: a própria página de Configurações relida com outros tiles (PROFILE, ADD FRIEND, TEST CONNECTION, SITE KEY, SWITCH PROFILE, ABOUT, LEAVE INFINITY).
+- Navegação para o INFINITY: a página só aceita as saídas que a classe registra (`FUN_140da7720`), então o tile usa `team_credits` e o `pause.xml` desvia por um estado `BoolSwitchSticky` com nome literal `Fh2InfinityOpen` (respondido pelo hook do slot `+0x20` da vtable `0x142d29a90`). Ida e volta passam pela cena com spinner, para forçar a página a ser relida. Foco inicial: slot `+0x498` da vtable de Configurações.
+- Textos do Infinity (hook e mensagens do servidor visíveis no jogo) em inglês. O painel web segue em português.
+- Teste das edições de XAML/fluxo: `python hook\tests\ui_edits_test.py <zig> <Mount>` (compila as funções reais do `azimuth_ui.c` e valida o XML).
+
+Pendente:
+- Perfil inicial pronto (decidido: começar depois do 1º campeonato, derivado do save offline deste PC; escolha entre Camaro SS 69 (289), Supra RZ 98 (461) e BMW Z4 11 (1218), da tabela `IEAutoShowCars`). Save: `SaveState` é XML, `PlayerDatabase` é SQLite após 8 bytes (`ssmc`), tabelas `NewProfile_*` no `gamedbRC.slt`. Scripts em `notes/decomp_work` (`savepeek.py`, `savedump.py`, `gamedbq.py`).
+- Steam Deck (`deck@192.168.68.93`, jogo em `/run/media/SN01T/piShop/Forza Horizon 2`, perfil `anarqz#08723`) ainda com fh2online.17.
+- O perfil de teste `Alex#72178` tem uma cópia do progresso offline (do teste do save na nuvem); backup em `FH2\saves-backup-20261014-131022`.
+- Regras de trabalho com o usuário: não controlar teclado, controle nem o jogo dele; cópias de arquivo, builds e reinício do servidor são permitidos.
+
 ## Objetivo
 
 Fazer o Forza Horizon 2 (Xbox One, rodando no PC pelo Azimuth 0.9.7) voltar a ter serviços online, com um backend nosso em Rust.

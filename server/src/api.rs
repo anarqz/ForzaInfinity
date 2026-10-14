@@ -112,8 +112,8 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
     if route.starts_with("save") {
         return match token_account() {
             Some(a) if !a.banned => save_api(app, request, route, a.xuid),
-            Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
-            None => json_reply(401, &json!({ "error": "Token desconhecido." })),
+            Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
         };
     }
     match (request.method.as_str(), route) {
@@ -141,10 +141,10 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
         ("POST", "webkey") => match token_account() {
             Some(a) if !a.banned => match app.store.rotate_web_key(a.xuid) {
                 Some(key) => json_reply(200, &json!({ "webKey": key })),
-                None => json_reply(500, &json!({ "error": "Erro ao gerar a chave." })),
+                None => json_reply(500, &json!({ "error": "Could not make a key." })),
             },
-            Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
-            None => json_reply(401, &json!({ "error": "Token desconhecido." })),
+            Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
         },
         // befriend "Name#12345" from the game: friends (and rivals) once both added each other
         ("POST", "friends") => match token_account() {
@@ -154,12 +154,12 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
                 let target = tag.rsplit_once('#').and_then(|(n, d)| app.store.account_by_name(n, d));
                 match target {
                     _ if app.store.friend_requests_since(me.xuid, 3_600_000) >= 20 => {
-                        json_reply(429, &json!({ "error": "Muitos pedidos de amizade. Tente de novo mais tarde." }))
+                        json_reply(429, &json!({ "error": "Too many friend requests. Try again later." }))
                     }
-                    None => json_reply(404, &json!({ "error": format!("Não existe o perfil {} neste servidor.", clip(tag, 15)) })),
-                    Some(t) if t.xuid == me.xuid => json_reply(400, &json!({ "error": "Esse é o seu próprio perfil." })),
+                    None => json_reply(404, &json!({ "error": format!("There is no profile {} on this server.", clip(tag, 15)) })),
+                    Some(t) if t.xuid == me.xuid => json_reply(400, &json!({ "error": "That is your own profile." })),
                     Some(t) if app.store.friends(me.xuid).iter().any(|f| f.0 == t.xuid && f.2) => {
-                        json_reply(200, &json!({ "message": format!("Você e {} já são amigos e rivais.", t.gamertag()) }))
+                        json_reply(200, &json!({ "message": format!("You and {} are already friends and rivals.", t.gamertag()) }))
                     }
                     Some(t) => {
                         let mine = me.gamertag();
@@ -167,27 +167,27 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
                         if app.store.request_friend(me.xuid, t.xuid) {
                             for (to, other) in [(t.xuid, &mine), (me.xuid, &theirs)] {
                                 app.store.notify(to, crate::db::notifications::MESSAGE, json!({
-                                    "Message": format!("Você e {other} agora são amigos e rivais. Comparem tempos nas corridas de fantasma!"),
+                                    "Message": format!("You and {other} are now friends and rivals. Compare times in ghost races!"),
                                     "SRAUri": "",
                                 }));
                             }
                             app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
-                            json_reply(200, &json!({ "message": format!("Você e {theirs} agora são amigos e rivais!"), "friends": true }))
+                            json_reply(200, &json!({ "message": format!("You and {theirs} are now friends and rivals!"), "friends": true }))
                         } else {
                             app.store.notify(t.xuid, crate::db::notifications::MESSAGE, json!({
-                                "Message": format!("{mine} quer ser seu amigo. Adicione {mine} em Configurações > Infinity para virarem rivais."),
+                                "Message": format!("{mine} wants to be your friend. Add {mine} in Settings > Infinity to become rivals."),
                                 "SRAUri": "",
                             }));
                             json_reply(200, &json!({
-                                "message": format!("Pedido enviado para {theirs}. Quando {theirs} adicionar você também, vocês viram amigos e rivais."),
+                                "message": format!("Request sent to {theirs}. Once {theirs} adds you too, you become friends and rivals."),
                                 "friends": false,
                             }))
                         }
                     }
                 }
             }
-            Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
-            None => json_reply(401, &json!({ "error": "Token desconhecido." })),
+            Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
         },
         // the game on another PC: name#12345 + web key -> a new token (the old PC goes offline)
         ("POST", "login") => {
@@ -213,14 +213,14 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
             let key = body["webKey"].as_str().unwrap_or("");
             match app.store.account_by_web_key(gamertag, key) {
                 Some(a) if !a.banned => json_reply(200, &json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag() })),
-                Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
-                None => json_reply(401, &json!({ "error": "Nome ou chave incorretos." })),
+                Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+                None => json_reply(401, &json!({ "error": "Wrong profile or key." })),
             }
         }
         ("GET", "me") => match token_account() {
-            Some(a) if a.banned => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
+            Some(a) if a.banned => json_reply(403, &json!({ "error": "Account suspended on this server." })),
             Some(a) => json_reply(200, &json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag() })),
-            None => json_reply(401, &json!({ "error": "Token desconhecido." })),
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
         },
         _ => json_reply(404, &json!({ "error": "not found" })),
     }
@@ -238,23 +238,23 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
                 200,
                 &json!({ "revision": s.revision.to_string(), "commit": s.commit, "bytes": s.bytes, "updated": s.created }),
             ),
-            None => json_reply(404, &json!({ "error": "Nenhum save na nuvem ainda." })),
+            None => json_reply(404, &json!({ "error": "No cloud save yet." })),
         },
         ("GET", "save") => match app.store.save_data(xuid) {
             Some(data) => response(200, "application/octet-stream", "", &data),
-            None => json_reply(404, &json!({ "error": "Nenhum save na nuvem ainda." })),
+            None => json_reply(404, &json!({ "error": "No cloud save yet." })),
         },
         ("PUT", "save") => {
             let commit = request.header("x-fh2-save-commit").unwrap_or("");
             if !saves::valid_commit(commit) {
-                return json_reply(400, &json!({ "error": "commit inválido" }));
+                return json_reply(400, &json!({ "error": "invalid commit" }));
             }
             match saves::check_bundle(&request.body) {
                 Ok(revision) if app.store.put_save(xuid, revision, commit, &request.body) => {
                     app.store.add_event(xuid, "save", &format!("Save na nuvem atualizado (revisão {revision})"), json!({ "bytes": request.body.len() }));
                     json_reply(200, &json!({ "revision": revision.to_string(), "commit": commit.to_ascii_lowercase() }))
                 }
-                Ok(_) => json_reply(500, &json!({ "error": "Erro ao guardar o save." })),
+                Ok(_) => json_reply(500, &json!({ "error": "Could not store the save." })),
                 Err(e) => json_reply(400, &json!({ "error": e })),
             }
         }
@@ -269,7 +269,10 @@ pub fn hello(app: &App) -> Value {
 pub fn handle(app: &App, request: &Request) -> Outcome {
     let path = request.path_and_query.split('?').next().unwrap_or("").to_owned();
     if path.starts_with(ACCOUNT_PREFIX) {
-        return Outcome::Reply(account_api(app, request, &path));
+        let reply = account_api(app, request, &path);
+        let status = std::str::from_utf8(&reply[..reply.len().min(12)]).unwrap_or("").get(9..12).unwrap_or("?").to_owned();
+        println!("      {:<5} {:<60} {:>6} bytes -> {status} ({})", request.method, path, request.body.len(), request.client_ip());
+        return Outcome::Reply(reply);
     }
     if !manager_allowed(request) {
         return Outcome::Reply(json_reply(404, &json!({ "error": "not found" })));

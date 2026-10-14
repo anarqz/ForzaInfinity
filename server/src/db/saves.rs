@@ -43,40 +43,40 @@ pub struct SaveInfo {
 pub fn check_bundle(data: &[u8]) -> Result<u64, String> {
     let mut at = 0usize;
     let mut take = |n: usize| -> Result<&[u8], String> {
-        let end = at.checked_add(n).filter(|&e| e <= data.len()).ok_or("pacote truncado")?;
+        let end = at.checked_add(n).filter(|&e| e <= data.len()).ok_or("truncated bundle")?;
         let slice = &data[at..end];
         at = end;
         Ok(slice)
     };
     if take(8)? != b"FH2SAVE1" {
-        return Err("formato de save desconhecido".into());
+        return Err("unknown save format".into());
     }
     let revision = u64::from_le_bytes(take(8)?.try_into().unwrap());
     let count = u32::from_le_bytes(take(4)?.try_into().unwrap());
     if count == 0 || count as usize > SAVE_FILES.len() {
-        return Err("número de arquivos inválido".into());
+        return Err("invalid file count".into());
     }
     let mut seen = Vec::new();
     for _ in 0..count {
         let name_len = u16::from_le_bytes(take(2)?.try_into().unwrap()) as usize;
-        let name = std::str::from_utf8(take(name_len)?).map_err(|_| "nome inválido")?;
+        let name = std::str::from_utf8(take(name_len)?).map_err(|_| "invalid name")?;
         if !SAVE_FILES.contains(&name) || seen.contains(&name.to_owned()) {
-            return Err(format!("arquivo inesperado no save: {}", name.chars().take(40).collect::<String>()));
+            return Err(format!("unexpected file in the save: {}", name.chars().take(40).collect::<String>()));
         }
         seen.push(name.to_owned());
         let raw = u32::from_le_bytes(take(4)?.try_into().unwrap());
         let stored = u32::from_le_bytes(take(4)?.try_into().unwrap());
         let method = take(1)?[0];
         if raw > MAX_FILE || method > 1 || (method == 0 && stored != raw) {
-            return Err("arquivo do save inválido".into());
+            return Err("invalid save file".into());
         }
         take(stored as usize)?;
     }
     if !seen.iter().any(|n| n == "commit") {
-        return Err("save sem commit".into());
+        return Err("save without a commit".into());
     }
     if at != data.len() {
-        return Err("dados sobrando no pacote".into());
+        return Err("trailing data in the bundle".into());
     }
     Ok(revision)
 }

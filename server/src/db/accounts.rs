@@ -111,20 +111,20 @@ impl Store {
     /// Creates the account and its first device token. Err: a message for the player.
     pub fn register_account(&self, name: &str, discriminator: &str, device: &str) -> Result<(Account, String), String> {
         if !valid_name(name) {
-            return Err("O nome deve ter de 1 a 9 letras ou números e começar com uma letra.".into());
+            return Err("The name must have 1 to 9 letters or digits and start with a letter.".into());
         }
         if !valid_discriminator(discriminator) {
-            return Err("Fingerprint inválido (esperado 5 dígitos).".into());
+            return Err("Invalid fingerprint (5 digits expected).".into());
         }
         if !valid_device(device) {
-            return Err("Identificador do dispositivo inválido.".into());
+            return Err("Invalid device id.".into());
         }
         let device = token_hash(&device.to_ascii_lowercase());
         if let Some(existing) = self.account_by_device(&device) {
-            return Err(format!("Este PC já tem a conta {} neste servidor.", existing.gamertag()));
+            return Err(format!("This PC already has the account {} on this server.", existing.gamertag()));
         }
         if self.account_by_name(name, discriminator).is_some() {
-            return Err(format!("{name}#{discriminator} já existe neste servidor."));
+            return Err(format!("{name}#{discriminator} already exists on this server."));
         }
         let gamertag = format!("{name}#{discriminator}");
         let xuid = self.create_user(&gamertag)?;
@@ -140,7 +140,7 @@ impl Store {
                 params![token_hash(&token), xuid as i64, now],
             )
         })
-        .ok_or("Erro ao salvar a conta.")?;
+        .ok_or("Could not save the account.")?;
         Ok((Account { xuid, name: name.into(), discriminator: discriminator.into(), banned: false }, token))
     }
 
@@ -241,9 +241,9 @@ impl Store {
     /// (account, token, new web key). The PC that created an account stays the only one that
     /// could create it: logging in never frees a PC to create another account.
     pub fn log_in_elsewhere(&self, gamertag: &str, web_key: &str) -> Result<(Account, String, String), String> {
-        let account = self.account_by_web_key(gamertag, web_key).ok_or("Nome ou chave incorretos.")?;
+        let account = self.account_by_web_key(gamertag, web_key).ok_or("Wrong profile or key.")?;
         if account.banned {
-            return Err("Conta suspensa neste servidor.".into());
+            return Err("Account suspended on this server.".into());
         }
         let token = new_token();
         let now = unix_ms();
@@ -254,8 +254,8 @@ impl Store {
                 params![token_hash(&token), account.xuid as i64, now],
             )
         })
-        .ok_or("Erro ao salvar o acesso.")?;
-        let key = self.rotate_web_key(account.xuid).ok_or("Erro ao gerar a chave.")?;
+        .ok_or("Could not save the sign-in.")?;
+        let key = self.rotate_web_key(account.xuid).ok_or("Could not make a key.")?;
         Ok((account, token, key))
     }
 

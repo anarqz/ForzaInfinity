@@ -31,13 +31,13 @@ fn hex(bytes: &[u8]) -> String {
 /// notification falls in: (notificationType >> 8) & 0x7f.
 pub fn categories() -> Value {
     let list: [(i64, &str, &str); 7] = [
-        (2, "Mensagens", "Mensagens de outros jogadores e do servidor"),
-        (4, "Rivais", "Desafios: amigos que bateram seus tempos"),
-        (7, "Clube", "Convites, membros e mural do seu clube"),
-        (5, "Presentes", "Créditos, carros e itens recebidos"),
-        (3, "Recompensas", "Pagamentos de Drivatar e de conteúdo compartilhado"),
-        (1, "Novidades", "Novidades do FH2Online"),
-        (6, "Avisos", "Avisos da conta"),
+        (2, "Messages", "Messages from other players and the server"),
+        (4, "Rivals", "Challenges: friends who beat your times"),
+        (7, "Club", "Your club's invites, members and notice board"),
+        (5, "Gifts", "Credits, cars and items received"),
+        (3, "Rewards", "Drivatar and shared content payouts"),
+        (1, "News", "ForzaInfinity news"),
+        (6, "Notices", "Account notices"),
     ];
     Value::Array(
         list.iter()
