@@ -51,6 +51,8 @@ pub fn handle(ctx: &Ctx, method: &str, params: &Value) -> Option<Value> {
     Some(match method {
         "StartNewSession" => json!({ "nonce": 1, "nextRetrieveSeconds": POLL_SECONDS }),
         "RetrieveForUser" => {
+            // polled every 30 s while the game runs: the player is online
+            ctx.store.touch_user(me);
             sync_rivals(ctx);
             let max = params["maxResults"].as_i64().filter(|&n| n > 0).unwrap_or(64);
             let budget = params["cbParameterBlockSize"].as_i64().filter(|&n| n > 0).unwrap_or(0x10000) as usize;

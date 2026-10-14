@@ -6,6 +6,10 @@ server/logs/
 captures/
 web/node_modules/
 web/dist/
+landing/node_modules/
+landing/dist/
+landing/.env
+dist/
 bin/*.dll
 *.tar.gz
 
@@ -22,3 +26,5 @@ __pycache__/
 
 WIP
 Forza\ Horizon\ 2
+
+.env

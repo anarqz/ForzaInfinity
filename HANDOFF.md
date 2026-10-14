@@ -2,6 +2,39 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-15, madrugada (servidor público no GCP, fila de 150 vagas): leia primeiro
+
+- **Servidor público:** `https://infinity.anarqz.dev`, banco vazio. Detalhes e operação em `infra/README.md`.
+  - GCP: projeto `forza-infinity-online` (org 14mb.io, faturamento em BRL, alerta de orçamento de R$ 30). VM e2-micro em us-east1, sem portas abertas: SSH só pelo IAP.
+  - Cloudflare: Tunnel até `127.0.0.1:8081`, regra de limite de taxa nas rotas de conta e save, e cache de 15 s no `/stats`.
+  - O banco fica num disco próprio (`infinity-data`, com `prevent_destroy`), com snapshot diário (7 dias) e `.backup` diário no bucket (30 dias).
+  - Terraform em `infra/` (`tf.sh` usa o login do gcloud e as credenciais da Cloudflare do `.env` da raiz, fora do git). `deploy.sh` compila aqui e instala pelo IAP.
+- **Servidor atrás de proxy:** `--behind-proxy` (o proxy local não conta no limite de conexões por IP), IP do cliente pelo `CF-Connecting-IP`, `--registration open|closed`. As respostas podem ter `Cache-Control` próprio (antes era sempre `no-store`).
+- **Fila** (`server/src/admission.rs`, `--max-players`, padrão 150, 0 = sem limite):
+  - Vaga por conta, liberada depois de 5 min sem pedidos. Fila por ordem de chegada; quem não pergunta por 90 s sai dela.
+  - Sem vaga, todo pedido do jogo recebe 503, como sem conta, e o jogo fica offline.
+  - `GET /infinity/v1/queue` (com token) devolve a posição, quantos esperam, online, capacidade, previsão e intervalo para perguntar de novo. `/info` e `/stats` trazem `online`, `queued`, `capacity` e `full`.
+  - Testes: 3000 contas para 150 vagas; só a cabeça da fila entra.
+  - **Ainda sem efeito no jogo:** o hook .33 não conhece a fila; quem espera só vê o jogo offline. O hook .34 deve mostrar a posição. **Pendente:** descobrir se o jogo volta a ficar online sozinho (refaz o `Logon`) quando a vaga sai, ou se precisa reiniciar. As capturas não respondem: todos os 15 `Logon` registrados deram 200. Teste proposto: o servidor local com `--max-players 1`, a vaga ocupada pela conta do Deck, o PC na fila, e depois liberar.
+- **Landing:** redesenhada (abertura de festival ao entardecer, avisos de marco, maquetes, números ao vivo, abas de instalação, FAQ). Mostra "N/150 online" ou "Servidor cheio · N na fila". Vai para `https://anarqz.github.io/ForzaInfinity/` (decidido: fica no GitHub Pages). Para publicar: push da branch `landing`, Pages com origem "GitHub Actions" e as variáveis `STATS_URL` e `SERVER_ADDRESS`.
+- **Hook .33** instalado no PC e no Deck (SHA `068b67b8…`, backups `.fh2online32`).
+
+## Estado em 2026-10-14, fim da noite (hook fh2online.33 compilado, não instalado)
+
+Plano combinado: tudo na `main`; a branch `landing` publica a página. Release do GitHub e GitHub Pages só quando o Alex mandar.
+- **Rotas:** a API de contas passou a `/infinity/v1/...`; `/fh2online/v1/...` continua aceito para os hooks antigos. `info` responde `ForzaInfinity`.
+- **Perfil novo a partir do save offline** (hook .33 + servidor): "Create profile" pede só o nome; o hook envia a revisão mais recente de `data/saves/player-1/User_9000000000000` como primeiro save (`azimuth_cloud_upload_offline`); se falhar, apaga a conta recém-criada. Templates de carro e `tools/make_starter_saves.py` removidos.
+- **Excluir perfil:** INFINITY › LEAVE INFINITY › Delete profile (dupla confirmação) → `POST /infinity/v1/delete` → `Store::delete_user` apaga tudo do jogador numa transação (inclusive Storefront, amizades nos dois sentidos, mensagens enviadas) e recalcula os contadores dos arquivos de outros. Testado numa cópia do banco: nenhum registro sobra.
+- **Limites de save:** 512 KB por envio, 8 MB por arquivo e 16 MB descomprimido, bytes guardados nunca maiores que os declarados (`db/saves.rs`, teste `size_limits`); balde próprio no guard (5 de rajada, 1 a cada 30 s). O hook usa os mesmos limites.
+- **`GET /infinity/v1/stats`:** totais do servidor (CORS aberto, cache de 30 s, `db/stats.rs`). "Online" = visto nos últimos 5 min (`RetrieveForUser` marca o `last_seen`).
+- **Landing** (`landing/`, React + Vite, visual de painel do Xbox One sem marcas da Microsoft): números ao vivo, instalação em 3 passos, recursos, docs, EN/PT. Workflow do Pages em `.github/workflows/landing.yml` (variáveis `STATS_URL`, `SERVER_ADDRESS`). Para publicar, o servidor precisa de um endereço público com HTTPS.
+- **Instaladores** (`release/`): `Install.cmd`/`install.ps1` e `install.sh` (com `curl … | bash`), desinstaladores, modelo do INI. `tools/package_release.sh [--server host:port]` monta `dist/`. `install.sh` e `install.ps1 -Quiet` testados em instalações falsas (o PowerShell 7 está em `~/tools/pwsh`); as janelas do Windows (seletor de pasta, caixa do servidor) não foram testadas.
+- **Docs:** README novo (inglês), `docs/INSTALL.md`, `docs/SERVER.md`, `docs/DEVELOPMENT.md`, `landing/README.md`.
+
+Pendente:
+- Instalar o .33 no PC e no Deck (jogo fechado; o Deck estava fora da rede) e testar no jogo, com uma conta descartável: criar perfil a partir do save offline e excluir perfil.
+- O jogo do PC parou de apresentar quadros às 19:30 UTC (`graphics watchdog`, GPU ociosa, sem erro no hook): compatível com a tela do KDE bloqueada (Wayland para de liberar quadros, v-sync segura o Present). Não é bug conhecido do projeto.
+
 ## Estado em 2026-10-14, noite (hook fh2online.32, PC Linux): leia primeiro
 
 O projeto saiu do PC Windows "diablo" para um PC **Debian 12** (RTX 3070, `192.168.68.40`). Servidor e jogo rodam aqui; a tabela "Onde está tudo" abaixo é a do Windows.

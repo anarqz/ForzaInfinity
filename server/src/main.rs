@@ -28,8 +28,12 @@
 //! only this machine (loopback, not through a reverse proxy).
 //!
 //! Abuse limits (guard.rs): connections per address, header and body sizes, request rates.
-//! Behind a reverse proxy (TLS), the proxy must send X-Forwarded-For: it names the client.
+//! Behind a reverse proxy (TLS) on this machine, the proxy must send X-Forwarded-For (or
+//! CF-Connecting-IP, from cloudflared): it names the client. With --behind-proxy, connections
+//! from that proxy are not held to the per-address connection limit (every player comes
+//! through it); the rate limits still go by the client it names.
 
+mod admission;
 mod api;
 mod db;
 mod forza;
@@ -76,6 +80,38 @@ struct App {
     hub: live::Hub,
     /// Built web UI (web/dist), served at /ui/.
     web: PathBuf,
+    /// The public totals (/infinity/v1/stats) and when they were computed.
+    stats: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
+    /// A proxy on this machine relays every player (--behind-proxy).
+    behind_proxy: bool,
+    /// New accounts are taken (--registration closed turns them away).
+    registration_open: bool,
+    /// Player slots and the waiting line (--max-players).
+    admission: admission::Admission,
+}
+
+impl App {
+    /// Server-wide totals, recomputed at most every 30 s (a public page polls them).
+    fn stats(&self) -> serde_json::Value {
+        let mut cached = self.stats.lock().unwrap_or_else(|p| p.into_inner());
+        let value = match &*cached {
+            Some((at, value)) if at.elapsed() < std::time::Duration::from_secs(30) => value.clone(),
+            _ => {
+                let value = self.store.server_stats();
+                *cached = Some((std::time::Instant::now(), value.clone()));
+                value
+            }
+        };
+        // who holds a slot and who waits: live, from memory
+        let mut value = value;
+        let (online, queued) = self.admission.counts();
+        let capacity = self.admission.capacity();
+        value["online"] = json!(online);
+        value["queued"] = json!(queued);
+        value["capacity"] = json!(capacity);
+        value["full"] = json!(capacity > 0 && online >= capacity);
+        value
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -139,17 +175,21 @@ impl Request {
 
     /// Came through a reverse proxy on this machine.
     fn proxied(&self) -> bool {
-        self.headers.iter().any(|(n, _)| matches!(n.as_str(), "x-forwarded-for" | "forwarded" | "x-real-ip"))
+        self.headers
+            .iter()
+            .any(|(n, _)| matches!(n.as_str(), "x-forwarded-for" | "forwarded" | "x-real-ip" | "cf-connecting-ip"))
     }
 
-    /// The client: the peer, or the last X-Forwarded-For entry when a local proxy relays it.
+    /// The client: the peer, or what a local proxy names: CF-Connecting-IP (cloudflared), else
+    /// the last X-Forwarded-For entry.
     fn client_ip(&self) -> IpAddr {
         if !self.peer.is_loopback() || !self.proxied() {
             return self.peer;
         }
-        self.header("x-forwarded-for")
-            .and_then(|v| v.rsplit(',').next())
-            .and_then(|v| v.trim().parse().ok())
+        let named = |v: &str| v.trim().parse::<IpAddr>().ok();
+        self.header("cf-connecting-ip")
+            .and_then(named)
+            .or_else(|| self.header("x-forwarded-for").and_then(|v| v.rsplit(',').next()).and_then(named))
             // a proxied request without a usable address still must not count as loopback
             .unwrap_or(IpAddr::from([0, 0, 0, 0]))
     }
@@ -186,10 +226,22 @@ fn main() {
     let mut web = None;
     let mut db_path = None;
     let mut capture_on = false;
+    let mut behind_proxy = false;
+    let mut registration_open = true;
+    let mut max_players = 150;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--capture" => capture_on = true,
+            "--behind-proxy" => behind_proxy = true,
+            "--max-players" => max_players = args.next().expect("--max-players N").parse().expect("bad number"),
+            "--registration" => {
+                registration_open = match args.next().as_deref() {
+                    Some("open") => true,
+                    Some("closed") => false,
+                    _ => panic!("--registration open|closed"),
+                }
+            }
             "--listen" => listen = args.next().expect("--listen ADDR").parse().expect("bad address"),
             "--root" => root = PathBuf::from(args.next().expect("--root DIR")),
             "--gamedb" => gamedb_path = Some(PathBuf::from(args.next().expect("--gamedb FILE"))),
@@ -197,7 +249,7 @@ fn main() {
             "--db" => db_path = Some(PathBuf::from(args.next().expect("--db FILE"))),
             "-h" | "--help" => {
                 println!(
-                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist] [--capture]"
+                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist] [--capture] [--behind-proxy] [--registration open|closed] [--max-players 150 (0: no limit)]"
                 );
                 return;
             }
@@ -221,7 +273,7 @@ fn main() {
         std::process::exit(1);
     });
 
-    println!("FH2Online test server on http://{listen}");
+    println!("ForzaInfinity server on http://{listen}");
     println!("  responses: {}", root.join("responses").display());
     match &capture_path {
         Some(p) => println!("  capture:   {}", p.display()),
@@ -261,7 +313,21 @@ fn main() {
         catalog,
         hub: live::Hub::default(),
         web,
+        stats: Mutex::new(None),
+        behind_proxy,
+        registration_open,
+        admission: admission::Admission::new(max_players),
     });
+    match max_players {
+        0 => println!("  players:   no limit"),
+        n => println!("  players:   {n} at once, then a waiting line"),
+    }
+    if behind_proxy {
+        println!("  proxy:     players come through a proxy on this machine");
+    }
+    if !registration_open {
+        println!("  accounts:  registration closed");
+    }
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -284,7 +350,9 @@ fn main() {
 fn serve_connection(app: &App, stream: TcpStream) -> std::io::Result<()> {
     let peer = stream.peer_addr()?.ip();
     let mut writer = stream.try_clone()?;
-    let Some(_slot) = app.guard.connect(peer) else {
+    // the local proxy carries everyone: only the total limit applies to it
+    let shared = app.behind_proxy && peer.is_loopback();
+    let Some(_slot) = app.guard.connect(peer, !shared) else {
         let _ = writer.write_all(&plain_reply(503, "too many connections"));
         return Ok(());
     };
@@ -422,6 +490,15 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
     if xuid == 0 && target.forza_class.is_some() {
         println!("#{seq:<4} {:<5} {} -> 503 (no account)", request.method, target.forza_method.as_deref().unwrap_or("?"));
         return plain_reply(503, "no FH2Online account");
+    }
+    // a slot, or the line: without a slot the game gets the same answer as without an account
+    // and plays offline; the hook shows the place in line (GET /infinity/v1/queue)
+    if xuid != 0 {
+        let status = app.admission.arrive(xuid);
+        if status.place != admission::Place::Playing {
+            println!("#{seq:<4} {:<5} -> 503 (waiting: {:?})", request.method, status.place);
+            return plain_reply(503, "server full");
+        }
     }
     let ctx = forza::Ctx {
         store: &app.store,
