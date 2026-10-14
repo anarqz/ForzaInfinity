@@ -372,8 +372,15 @@ fn permissions() -> Value {
 /// services starts before it succeeds.
 fn user_logon(ctx: &Ctx, params: &Value) -> Value {
     let login = &params["loginData"];
-    let xuid = login["xuid"].as_u64().unwrap_or(ctx.xuid);
-    let gamertag = login["gamerTag"].as_str().unwrap_or("").to_owned();
+    // With an account (X-Fh2-Token) the server's identity wins over what the game reports.
+    let (xuid, gamertag) = match ctx.store.account(ctx.xuid) {
+        Some(account) => (account.xuid, account.gamertag()),
+        None => (login["xuid"].as_u64().unwrap_or(ctx.xuid), login["gamerTag"].as_str().unwrap_or("").to_owned()),
+    };
+    // without its token, an account's XUID is not accepted
+    if ctx.store.account(ctx.xuid).is_none() && ctx.store.account(xuid).is_some() {
+        return json!({ "__xtsw_error": { "code": 1, "message": "this XUID belongs to an account: log on with its token" } });
+    }
     ctx.store.record_logon(xuid, &gamertag, login);
     // The checkpoint of the last UpdateAllTables we stored: equal to the client's means "nothing
     // to resend"; otherwise the game uploads its tables again (we merge them).

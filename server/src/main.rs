@@ -340,10 +340,19 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
     let target = resolve_target(request);
     let (spec, mut source, specific) = find_spec(&app.root, &request.method, &target);
     let delay = spec.as_ref().and_then(|s| s.delay_ms);
+    let (xuid, banned) = request_identity(&app.store, request);
+    if banned {
+        println!("#{seq:<4} {:<5} refused: account suspended", request.method);
+        let body = b"account suspended";
+        let mut out = format!("HTTP/1.1 403 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n", reason(403), body.len())
+            .into_bytes();
+        out.extend_from_slice(body);
+        return out;
+    }
     let ctx = forza::Ctx {
         store: &app.store,
         catalog: &app.catalog,
-        xuid: request_xuid(request),
+        xuid,
         events: Default::default(),
     };
 
@@ -779,8 +788,23 @@ fn unix_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// The player behind a request: X-UserId ("0x9000000000000") on Forza RPCs. Xbox Live calls
-/// carry only the token, so they get 0.
+/// Who is playing: the account of X-Fh2-Token (sent by the hook once the player has an
+/// account on this server), else the game's own X-UserId. An X-UserId naming a registered
+/// account without its token counts as unknown (0), so nobody plays as someone else.
+/// Returns (xuid, banned).
+fn request_identity(store: &db::Store, request: &Request) -> (u64, bool) {
+    if let Some(account) = request.header("x-fh2-token").and_then(|t| store.account_by_token(t)) {
+        return (account.xuid, account.banned);
+    }
+    let xuid = request_xuid(request);
+    if xuid != 0 && store.account(xuid).is_some() {
+        return (0, false);
+    }
+    (xuid, false)
+}
+
+/// X-UserId ("0x9000000000000") on Forza RPCs. Xbox Live calls carry only the Xbox token, so
+/// they get 0.
 fn request_xuid(request: &Request) -> u64 {
     request
         .header("x-userid")

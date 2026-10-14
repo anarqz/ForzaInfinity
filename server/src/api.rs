@@ -50,7 +50,46 @@ pub fn is_local(request: &Request) -> bool {
         return false;
     }
     let path = request.path_and_query.split('?').next().unwrap_or("");
-    path == "/" || path == "/ws" || path.starts_with("/api/") || path == "/ui" || path.starts_with("/ui/")
+    path == "/"
+        || path == "/ws"
+        || path.starts_with("/api/")
+        || path == "/ui"
+        || path.starts_with("/ui/")
+        || path.starts_with(ACCOUNT_PREFIX)
+}
+
+/// Account endpoints the hook calls directly (not proxied game traffic).
+const ACCOUNT_PREFIX: &str = "/fh2online/v1/";
+
+/// POST register {name, discriminator, device} -> {xuid, gamertag, token} (one account per
+/// device; `device` = SHA-256 hex of the full fingerprint + this server's host);
+/// GET me (X-Fh2-Token) -> {xuid, gamertag}; GET info -> what the server is.
+fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
+    let token_account = || request.header("x-fh2-token").and_then(|t| app.store.account_by_token(t));
+    match (request.method.as_str(), &path[ACCOUNT_PREFIX.len()..]) {
+        ("GET", "info") => json_reply(200, &json!({ "name": "FH2Online", "api": 1, "registration": "open" })),
+        ("POST", "register") => {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let name = body["name"].as_str().unwrap_or("").trim();
+            let discriminator = body["discriminator"].as_str().unwrap_or("").trim();
+            let device = body["device"].as_str().unwrap_or("").trim();
+            match app.store.register_account(name, discriminator, device) {
+                Ok((account, token)) => {
+                    let gamertag = account.gamertag();
+                    app.store.add_event(account.xuid, "account", &format!("Conta {gamertag} criada"), json!({}));
+                    app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
+                    json_reply(200, &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token }))
+                }
+                Err(e) => json_reply(400, &json!({ "error": e })),
+            }
+        }
+        ("GET", "me") => match token_account() {
+            Some(a) if a.banned => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
+            Some(a) => json_reply(200, &json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag() })),
+            None => json_reply(401, &json!({ "error": "Token desconhecido." })),
+        },
+        _ => json_reply(404, &json!({ "error": "not found" })),
+    }
 }
 
 pub fn hello(app: &App) -> Value {
@@ -59,6 +98,9 @@ pub fn hello(app: &App) -> Value {
 
 pub fn handle(app: &App, request: &Request) -> Outcome {
     let path = request.path_and_query.split('?').next().unwrap_or("").to_owned();
+    if path.starts_with(ACCOUNT_PREFIX) {
+        return Outcome::Reply(account_api(app, request, &path));
+    }
     if request.method != "GET" && request.method != "HEAD" {
         return Outcome::Reply(change(app, request, &path));
     }
@@ -128,6 +170,11 @@ fn change(app: &App, request: &Request, path: &str) -> Vec<u8> {
         ("DELETE", ["users", x]) => match xuid(x) {
             Some(x) if app.store.delete_user(x) => Ok(json!({ "deleted": x.to_string() })),
             _ => Err((404, "jogador desconhecido".into())),
+        },
+        // Suspend / restore an FH2Online account (its token is refused while suspended).
+        ("POST" | "DELETE", ["users", x, "ban"]) => match xuid(x) {
+            Some(x) if app.store.set_banned(x, request.method == "POST") => Ok(json!({ "banned": request.method == "POST" })),
+            _ => Err((404, "conta desconhecida".into())),
         },
         ("POST", ["users", x, "friends"]) => {
             let other = body["xuid"].as_str().map(str::to_owned).unwrap_or_else(|| body["xuid"].to_string());
