@@ -24,13 +24,18 @@
 //!
 //! Player data lives in SQLite (db.rs, `data/fh2online.sqlite`). Requests that do not come from
 //! the hook (no `X-Fh2-Original-Url`) to `/api/*`, `/ws` and `/ui/*` are the manager: a JSON
-//! API, a WebSocket feed and the built web UI (api.rs, live.rs, ../web).
+//! API, a WebSocket feed and the built web UI (api.rs, live.rs, ../web). The manager answers
+//! only this machine (loopback, not through a reverse proxy).
+//!
+//! Abuse limits (guard.rs): connections per address, header and body sizes, request rates.
+//! Behind a reverse proxy (TLS), the proxy must send X-Forwarded-For: it names the client.
 
 mod api;
 mod db;
 mod forza;
 mod gamedb;
 mod gamerpic;
+mod guard;
 mod live;
 mod xtsw;
 
@@ -38,7 +43,7 @@ use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -52,11 +57,17 @@ use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-const MAX_BODY: usize = 64 << 20;
+/// Largest request body (the biggest game upload, a ghost, is ~30 KB).
+const MAX_BODY: usize = 2 << 20;
+/// Largest request line or header line, and how many headers a request may have.
+const MAX_LINE: u64 = 8 << 10;
+const MAX_HEADERS: usize = 64;
 
 struct App {
     root: PathBuf,
-    capture: Mutex<File>,
+    /// captures/*.jsonl, only with --capture (development: it keeps every body).
+    capture: Option<Mutex<File>>,
+    guard: guard::Guard,
     counter: AtomicU64,
     schema: xtsw::Schema,
     store: db::Store,
@@ -116,11 +127,35 @@ struct Request {
     /// Header names lower-cased, in arrival order.
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    /// The address the connection came from.
+    peer: IpAddr,
 }
 
 impl Request {
     fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
+    }
+
+    /// Came through a reverse proxy on this machine.
+    fn proxied(&self) -> bool {
+        self.headers.iter().any(|(n, _)| matches!(n.as_str(), "x-forwarded-for" | "forwarded" | "x-real-ip"))
+    }
+
+    /// The client: the peer, or the last X-Forwarded-For entry when a local proxy relays it.
+    fn client_ip(&self) -> IpAddr {
+        if !self.peer.is_loopback() || !self.proxied() {
+            return self.peer;
+        }
+        self.header("x-forwarded-for")
+            .and_then(|v| v.rsplit(',').next())
+            .and_then(|v| v.trim().parse().ok())
+            // a proxied request without a usable address still must not count as loopback
+            .unwrap_or(IpAddr::from([0, 0, 0, 0]))
+    }
+
+    /// From this machine directly (not relayed): the only callers the manager answers.
+    fn local_admin(&self) -> bool {
+        self.peer.is_loopback() && !self.proxied()
     }
 }
 
@@ -149,9 +184,11 @@ fn main() {
     let mut gamedb_path = None;
     let mut web = None;
     let mut db_path = None;
+    let mut capture_on = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--capture" => capture_on = true,
             "--listen" => listen = args.next().expect("--listen ADDR").parse().expect("bad address"),
             "--root" => root = PathBuf::from(args.next().expect("--root DIR")),
             "--gamedb" => gamedb_path = Some(PathBuf::from(args.next().expect("--gamedb FILE"))),
@@ -159,7 +196,7 @@ fn main() {
             "--db" => db_path = Some(PathBuf::from(args.next().expect("--db FILE"))),
             "-h" | "--help" => {
                 println!(
-                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist]"
+                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist] [--capture]"
                 );
                 return;
             }
@@ -170,10 +207,14 @@ fn main() {
         }
     }
 
-    fs::create_dir_all(root.join("captures")).unwrap();
     fs::create_dir_all(root.join("responses")).unwrap();
-    let capture_path = root.join("captures").join(format!("server-{}.jsonl", unix_ms()));
-    let capture = OpenOptions::new().create(true).append(true).open(&capture_path).unwrap();
+    let capture_path = capture_on.then(|| {
+        fs::create_dir_all(root.join("captures")).unwrap();
+        root.join("captures").join(format!("server-{}.jsonl", unix_ms()))
+    });
+    let capture = capture_path
+        .as_ref()
+        .map(|p| Mutex::new(OpenOptions::new().create(true).append(true).open(p).unwrap()));
     let listener = TcpListener::bind(listen).unwrap_or_else(|e| {
         eprintln!("cannot listen on {listen}: {e}");
         std::process::exit(1);
@@ -181,7 +222,10 @@ fn main() {
 
     println!("FH2Online test server on http://{listen}");
     println!("  responses: {}", root.join("responses").display());
-    println!("  capture:   {}", capture_path.display());
+    match &capture_path {
+        Some(p) => println!("  capture:   {}", p.display()),
+        None => println!("  capture:   off (--capture to record requests)"),
+    }
 
     let schema = xtsw::Schema::load_embedded();
     println!("  schema:    {} classes, {} types", schema.services.len(), schema.types.len());
@@ -208,7 +252,8 @@ fn main() {
 
     let app = Arc::new(App {
         root,
-        capture: Mutex::new(capture),
+        capture,
+        guard: guard::Guard::default(),
         counter: AtomicU64::new(0),
         schema,
         store,
@@ -236,13 +281,23 @@ fn main() {
 }
 
 fn serve_connection(app: &App, stream: TcpStream) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+    let peer = stream.peer_addr()?.ip();
     let mut writer = stream.try_clone()?;
+    let Some(_slot) = app.guard.connect(peer) else {
+        let _ = writer.write_all(&plain_reply(503, "too many connections"));
+        return Ok(());
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     let mut reader = BufReader::new(stream);
     // Keep-alive: serve requests until the client closes the connection.
-    while let Some(request) = read_request(&mut reader)? {
+    while let Some(request) = read_request(&mut reader, peer)? {
         let keep_alive = !request.header("connection").is_some_and(|v| v.eq_ignore_ascii_case("close"));
         if api::is_local(&request) {
+            if !api::allowed(app, &request) {
+                writer.write_all(&plain_reply(429, "slow down"))?;
+                break;
+            }
             match api::handle(app, &request) {
                 api::Outcome::Reply(bytes) => {
                     writer.write_all(&bytes)?;
@@ -258,6 +313,10 @@ fn serve_connection(app: &App, stream: TcpStream) -> std::io::Result<()> {
             }
             continue;
         }
+        if !app.guard.allow(request.client_ip(), guard::Bucket::Game) {
+            writer.write_all(&plain_reply(429, "slow down"))?;
+            break;
+        }
         let bytes = handle(app, &request);
         writer.write_all(&bytes)?;
         writer.flush()?;
@@ -268,32 +327,41 @@ fn serve_connection(app: &App, stream: TcpStream) -> std::io::Result<()> {
     Ok(())
 }
 
-fn read_request(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Request>> {
-    let mut line = String::new();
-    if reader.read_line(&mut line)? == 0 {
+/// One line of at most MAX_LINE bytes; Ok(None) at end of stream.
+fn read_line(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::new();
+    if reader.by_ref().take(MAX_LINE).read_until(b'\n', &mut buf)? == 0 {
         return Ok(None);
     }
+    if !buf.ends_with(b"\n") {
+        return Err(std::io::Error::other("line too long"));
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+fn read_request(reader: &mut BufReader<TcpStream>, peer: IpAddr) -> std::io::Result<Option<Request>> {
+    let Some(line) = read_line(reader)? else { return Ok(None) };
     let mut parts = line.trim_end().splitn(3, ' ');
     let method = parts.next().unwrap_or("").to_owned();
     let path_and_query = parts.next().unwrap_or("/").to_owned();
-    if method.is_empty() {
+    if method.is_empty() || method.len() > 8 || !method.bytes().all(|b| b.is_ascii_uppercase()) {
         return Ok(None);
     }
     let mut headers = Vec::new();
     loop {
-        let mut h = String::new();
-        if reader.read_line(&mut h)? == 0 {
-            return Ok(None);
-        }
+        let Some(h) = read_line(reader)? else { return Ok(None) };
         let h = h.trim_end_matches(['\r', '\n']);
         if h.is_empty() {
             break;
+        }
+        if headers.len() >= MAX_HEADERS {
+            return Err(std::io::Error::other("too many headers"));
         }
         if let Some((name, value)) = h.split_once(':') {
             headers.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
         }
     }
-    let mut request = Request { method, path_and_query, headers, body: Vec::new() };
+    let mut request = Request { method, path_and_query, headers, body: Vec::new(), peer };
     if request.header("transfer-encoding").is_some_and(|v| v.to_ascii_lowercase().contains("chunked")) {
         request.body = read_chunked(reader)?;
     } else if let Some(length) = request.header("content-length").and_then(|v| v.parse::<usize>().ok()) {
@@ -310,16 +378,15 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> std::io::Result<Option<Req
 fn read_chunked(reader: &mut BufReader<TcpStream>) -> std::io::Result<Vec<u8>> {
     let mut body = Vec::new();
     loop {
-        let mut size_line = String::new();
-        reader.read_line(&mut size_line)?;
+        let size_line = read_line(reader)?.unwrap_or_default();
         let size = usize::from_str_radix(size_line.trim().split(';').next().unwrap_or("0"), 16)
             .map_err(|_| std::io::Error::other("bad chunk size"))?;
         if size == 0 {
             // Trailers until the blank line.
-            loop {
-                let mut t = String::new();
-                if reader.read_line(&mut t)? == 0 || t.trim().is_empty() {
-                    break;
+            for _ in 0..MAX_HEADERS {
+                match read_line(reader)? {
+                    Some(t) if !t.trim().is_empty() => continue,
+                    _ => break,
                 }
             }
             return Ok(body);
@@ -348,6 +415,12 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
             .into_bytes();
         out.extend_from_slice(body);
         return out;
+    }
+    // Without an FH2Online account (or with Online=0 in the hook) the Forza services are down:
+    // the game plays offline and nothing is written under a shared or claimed identity.
+    if xuid == 0 && target.forza_class.is_some() {
+        println!("#{seq:<4} {:<5} {} -> 503 (no account)", request.method, target.forza_method.as_deref().unwrap_or("?"));
+        return plain_reply(503, "no FH2Online account");
     }
     let ctx = forza::Ctx {
         store: &app.store,
@@ -378,7 +451,7 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
                 .find_map(|kv| kv.strip_prefix("xuid="))
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(ctx.xuid);
-            let (png, from) = gamerpic::get(&app.root, xuid, &app.store.gamertag(xuid));
+            let (png, from) = gamerpic::get(&app.root, xuid);
             source = Some(format!("builtin:gamerpic:{}", gamerpic_source(&from)));
             let mut headers = BTreeMap::new();
             headers.insert("Content-Type".into(), "image/png".into());
@@ -414,38 +487,13 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
         source.as_deref().unwrap_or("builtin")
     );
 
-    let record = json!({
-        "seq": seq,
-        "time_ms": unix_ms(),
-        "client_request_id": request.header("x-fh2-request-id"),
-        "method": request.method,
-        "original_url": target.original_url,
-        "host": target.host,
-        "path": target.path,
-        "query": target.query,
-        "forza_class": target.forza_class,
-        "forza_method": target.forza_method,
-        "request_headers": headers_json(&request.headers),
-        "request_body_b64": B64.encode(&request.body),
-        "request_body_text": std::str::from_utf8(&request.body).ok().filter(|t| !t.is_empty()),
-        "request_xtsw": request_xtsw,
-        "response_source": source,
-        "response_status": status,
-        "response_headers": out_headers,
-        "response_body_b64": B64.encode(&out_body),
-        "response_xtsw": response_xtsw,
-    });
-    if let Ok(mut line) = serde_json::to_vec(&record) {
-        line.push(b'\n');
-        if let Ok(mut file) = app.capture.lock() {
-            let _ = file.write_all(&line);
-            let _ = file.flush();
-        }
+    if let Some(capture) = &app.capture {
+        capture_request(capture, seq, request, &target, &request_xtsw, &source, status, &out_headers, &out_body, &response_xtsw);
     }
 
     // Transactional requests: keep the exact reply for Transaction.Reconcile.
     if let (Some(tx), Some(_)) = (request.header("x-transactionid"), &response_xtsw) {
-        if (200..300).contains(&status) {
+        if (200..300).contains(&status) && ctx.xuid != 0 {
             app.store.save_transaction(tx, ctx.xuid, &label, &out_body);
         }
     }
@@ -494,6 +542,64 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
     );
     response.extend_from_slice(&out_body);
     response
+}
+
+/// One line of captures/*.jsonl (the account token is never written).
+#[allow(clippy::too_many_arguments)]
+fn capture_request(
+    capture: &Mutex<File>,
+    seq: u64,
+    request: &Request,
+    target: &Target,
+    request_xtsw: &Option<Value>,
+    source: &Option<String>,
+    status: u16,
+    out_headers: &BTreeMap<String, String>,
+    out_body: &[u8],
+    response_xtsw: &Option<Value>,
+) {
+    let headers: Vec<(String, String)> = request
+        .headers
+        .iter()
+        .map(|(n, v)| (n.clone(), if n == "x-fh2-token" { "(hidden)".into() } else { v.clone() }))
+        .collect();
+    let record = json!({
+        "seq": seq,
+        "time_ms": unix_ms(),
+        "client_request_id": request.header("x-fh2-request-id"),
+        "method": request.method,
+        "original_url": target.original_url,
+        "host": target.host,
+        "path": target.path,
+        "query": target.query,
+        "forza_class": target.forza_class,
+        "forza_method": target.forza_method,
+        "request_headers": headers_json(&headers),
+        "request_body_b64": B64.encode(&request.body),
+        "request_body_text": std::str::from_utf8(&request.body).ok().filter(|t| !t.is_empty()),
+        "request_xtsw": request_xtsw,
+        "response_source": source,
+        "response_status": status,
+        "response_headers": out_headers,
+        "response_body_b64": B64.encode(out_body),
+        "response_xtsw": response_xtsw,
+    });
+    if let Ok(mut line) = serde_json::to_vec(&record) {
+        line.push(b'\n');
+        if let Ok(mut file) = capture.lock() {
+            let _ = file.write_all(&line);
+            let _ = file.flush();
+        }
+    }
+}
+
+fn plain_reply(status: u16, text: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{text}",
+        reason(status),
+        text.len()
+    )
+    .into_bytes()
 }
 
 struct ForzaAnswer {
@@ -742,6 +848,8 @@ fn reason(status: u16) -> &'static str {
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        413 => "Payload Too Large",
+        429 => "Too Many Requests",
         500 => "Internal Server Error",
         503 => "Service Unavailable",
         _ => "Status",
@@ -779,7 +887,6 @@ fn truncate(s: &str, n: usize) -> String {
 fn gamerpic_source(from: &gamerpic::Source) -> &'static str {
     match from {
         gamerpic::Source::Manual => "manual",
-        gamerpic::Source::Xbox => "xbox",
         gamerpic::Source::Placeholder => "placeholder",
     }
 }
@@ -789,31 +896,11 @@ fn unix_ms() -> i64 {
 }
 
 /// Who is playing: the account of X-Fh2-Token (sent by the hook once the player has an
-/// account on this server), else the game's own X-UserId. An X-UserId naming a registered
-/// account without its token counts as unknown (0), so nobody plays as someone else.
-/// Returns (xuid, banned).
+/// account on this server and is online), else nobody (0). The game's own X-UserId is never
+/// trusted: every Azimuth install reports the same one. Returns (xuid, banned).
 fn request_identity(store: &db::Store, request: &Request) -> (u64, bool) {
-    if let Some(account) = request.header("x-fh2-token").and_then(|t| store.account_by_token(t)) {
-        return (account.xuid, account.banned);
+    match request.header("x-fh2-token").and_then(|t| store.account_by_token(t)) {
+        Some(account) => (account.xuid, account.banned),
+        None => (0, false),
     }
-    let xuid = request_xuid(request);
-    if xuid != 0 && store.account(xuid).is_some() {
-        return (0, false);
-    }
-    (xuid, false)
-}
-
-/// X-UserId ("0x9000000000000") on Forza RPCs. Xbox Live calls carry only the Xbox token, so
-/// they get 0.
-fn request_xuid(request: &Request) -> u64 {
-    request
-        .header("x-userid")
-        .and_then(|v| {
-            let v = v.trim();
-            match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
-                Some(hex) => u64::from_str_radix(hex, 16).ok(),
-                None => v.parse().ok(),
-            }
-        })
-        .unwrap_or(0)
 }

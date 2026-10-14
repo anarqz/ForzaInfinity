@@ -36,7 +36,10 @@ use std::{fs, path::Path};
 
 use serde_json::{Value, json};
 
-use crate::{App, Request, unix_ms};
+use crate::{App, Request, guard::Bucket, unix_ms};
+
+/// Account requests carry a few short fields.
+const MAX_ACCOUNT_BODY: usize = 4 << 10;
 
 pub enum Outcome {
     Reply(Vec<u8>),
@@ -58,6 +61,37 @@ pub fn is_local(request: &Request) -> bool {
         || path.starts_with(ACCOUNT_PREFIX)
 }
 
+/// Rate limits of the non-game endpoints (the manager is loopback and never limited).
+pub fn allowed(app: &App, request: &Request) -> bool {
+    let path = request.path_and_query.split('?').next().unwrap_or("");
+    let bucket = match path.strip_prefix(ACCOUNT_PREFIX) {
+        Some("register") => Bucket::Register,
+        Some("weblogin" | "login") => Bucket::Login,
+        // the boot sync, then one upload per new save revision
+        Some(p) if p.starts_with("save") => Bucket::Account,
+        Some(_) => Bucket::Account,
+        None => Bucket::Game,
+    };
+    app.guard.allow(request.client_ip(), bucket)
+}
+
+/// The manager answers this machine only, under a local Host (a web page elsewhere cannot
+/// reach it through DNS rebinding) and, from a browser, a local Origin (no cross-site posts).
+fn manager_allowed(request: &Request) -> bool {
+    let local_host = |h: &str| {
+        let host = match h.strip_prefix('[') {
+            Some(v6) => v6.split(']').next().unwrap_or(""),
+            None => h.split(':').next().unwrap_or(""),
+        };
+        matches!(host.to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "::1")
+    };
+    let origin_ok = match request.header("origin") {
+        None => true,
+        Some(o) => o.split_once("://").is_some_and(|(_, rest)| local_host(rest.split('/').next().unwrap_or(""))),
+    };
+    request.local_admin() && request.header("host").is_some_and(local_host) && origin_ok
+}
+
 /// Player text echoed back: at most `max` chars, letters/digits/'#' only.
 fn clip(text: &str, max: usize) -> String {
     text.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '#').take(max).collect()
@@ -70,8 +104,19 @@ const ACCOUNT_PREFIX: &str = "/fh2online/v1/";
 /// device; `device` = SHA-256 hex of the full fingerprint + this server's host);
 /// GET me (X-Fh2-Token) -> {xuid, gamertag}; GET info -> what the server is.
 fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
+    let route = &path[ACCOUNT_PREFIX.len()..];
+    if request.body.len() > MAX_ACCOUNT_BODY && route != "save" {
+        return json_reply(413, &json!({ "error": "too large" }));
+    }
     let token_account = || request.header("x-fh2-token").and_then(|t| app.store.account_by_token(t));
-    match (request.method.as_str(), &path[ACCOUNT_PREFIX.len()..]) {
+    if route.starts_with("save") {
+        return match token_account() {
+            Some(a) if !a.banned => save_api(app, request, route, a.xuid),
+            Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
+            None => json_reply(401, &json!({ "error": "Token desconhecido." })),
+        };
+    }
+    match (request.method.as_str(), route) {
         ("GET", "info") => json_reply(200, &json!({ "name": "FH2Online", "api": 1, "registration": "open" })),
         ("POST", "register") => {
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -130,7 +175,7 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
                             json_reply(200, &json!({ "message": format!("Você e {theirs} agora são amigos e rivais!"), "friends": true }))
                         } else {
                             app.store.notify(t.xuid, crate::db::notifications::MESSAGE, json!({
-                                "Message": format!("{mine} quer ser seu amigo. Adicione {mine} em Configurações > Multiplayer para virarem rivais."),
+                                "Message": format!("{mine} quer ser seu amigo. Adicione {mine} em Configurações > Infinity para virarem rivais."),
                                 "SRAUri": "",
                             }));
                             json_reply(200, &json!({
@@ -144,6 +189,23 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
             Some(_) => json_reply(403, &json!({ "error": "Conta suspensa neste servidor." })),
             None => json_reply(401, &json!({ "error": "Token desconhecido." })),
         },
+        // the game on another PC: name#12345 + web key -> a new token (the old PC goes offline)
+        ("POST", "login") => {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let gamertag = body["gamertag"].as_str().unwrap_or("");
+            let key = body["webKey"].as_str().unwrap_or("");
+            match app.store.log_in_elsewhere(gamertag, key) {
+                Ok((account, token, web_key)) => {
+                    let gamertag = account.gamertag();
+                    app.store.add_event(account.xuid, "account", &format!("{gamertag} entrou em outro PC"), json!({}));
+                    json_reply(
+                        200,
+                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key }),
+                    )
+                }
+                Err(e) => json_reply(401, &json!({ "error": e })),
+            }
+        }
         // site login check: name#12345 + web key
         ("POST", "weblogin") => {
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
@@ -164,6 +226,42 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
     }
 }
 
+/// The account's cloud save (db/saves.rs), for the hook:
+///   GET save/info -> {revision, commit, bytes, updated} or 404 (none yet);
+///   GET save      -> the bundle (application/octet-stream);
+///   PUT save      -> stores the bundle; X-Fh2-Save-Commit = SHA-256 of its commit file.
+fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
+    use crate::db::saves;
+    match (request.method.as_str(), route) {
+        ("GET", "save/info") => match app.store.save_info(xuid) {
+            Some(s) => json_reply(
+                200,
+                &json!({ "revision": s.revision.to_string(), "commit": s.commit, "bytes": s.bytes, "updated": s.created }),
+            ),
+            None => json_reply(404, &json!({ "error": "Nenhum save na nuvem ainda." })),
+        },
+        ("GET", "save") => match app.store.save_data(xuid) {
+            Some(data) => response(200, "application/octet-stream", "", &data),
+            None => json_reply(404, &json!({ "error": "Nenhum save na nuvem ainda." })),
+        },
+        ("PUT", "save") => {
+            let commit = request.header("x-fh2-save-commit").unwrap_or("");
+            if !saves::valid_commit(commit) {
+                return json_reply(400, &json!({ "error": "commit inválido" }));
+            }
+            match saves::check_bundle(&request.body) {
+                Ok(revision) if app.store.put_save(xuid, revision, commit, &request.body) => {
+                    app.store.add_event(xuid, "save", &format!("Save na nuvem atualizado (revisão {revision})"), json!({ "bytes": request.body.len() }));
+                    json_reply(200, &json!({ "revision": revision.to_string(), "commit": commit.to_ascii_lowercase() }))
+                }
+                Ok(_) => json_reply(500, &json!({ "error": "Erro ao guardar o save." })),
+                Err(e) => json_reply(400, &json!({ "error": e })),
+            }
+        }
+        _ => json_reply(404, &json!({ "error": "not found" })),
+    }
+}
+
 pub fn hello(app: &App) -> Value {
     json!({ "type": "hello", "time": unix_ms(), "users": app.store.users() })
 }
@@ -173,7 +271,14 @@ pub fn handle(app: &App, request: &Request) -> Outcome {
     if path.starts_with(ACCOUNT_PREFIX) {
         return Outcome::Reply(account_api(app, request, &path));
     }
+    if !manager_allowed(request) {
+        return Outcome::Reply(json_reply(404, &json!({ "error": "not found" })));
+    }
     if request.method != "GET" && request.method != "HEAD" {
+        // JSON only: a plain form post from a web page cannot pass as a manager request
+        if !request.header("content-type").is_some_and(|c| c.to_ascii_lowercase().starts_with("application/json")) {
+            return Outcome::Reply(json_reply(415, &json!({ "error": "expected application/json" })));
+        }
         return Outcome::Reply(change(app, request, &path));
     }
     if path == "/ws" {
@@ -206,7 +311,7 @@ pub fn handle(app: &App, request: &Request) -> Outcome {
         },
         ["gamerpic", xuid] => {
             let xuid = xuid.trim_end_matches(".png").parse::<u64>().unwrap_or(0);
-            let (png, from) = crate::gamerpic::get(&app.root, xuid, &app.store.gamertag(xuid));
+            let (png, from) = crate::gamerpic::get(&app.root, xuid);
             let extra = format!("X-Gamerpic-Source: {}\r\n", crate::gamerpic_source(&from));
             response(200, "image/png", &extra, &png)
         }
