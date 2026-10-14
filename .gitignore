@@ -1,3 +1,16 @@
-target/
+# Build outputs and local data
+server/target/
+server/captures/
+server/data/
 captures/
-data/
+web/node_modules/
+web/dist/
+bin/*.dll
+*.tar.gz
+
+# Decompiled game code stays local (it is the game's, not ours)
+notes/decomp/
+notes/decomp-game/
+
+# Python caches
+__pycache__/
