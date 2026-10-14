@@ -7,6 +7,9 @@ use super::{Ctx, iso_utc, user_data};
 use crate::db::{ClubFields, ROLE_COLEADER, ROLE_LEADER, ROLE_MEMBER};
 use crate::db::clubs::{Club, PRIVACY_FRIENDS, PRIVACY_INVITE_ONLY, PRIVACY_OPEN};
 
+/// Club ladder reward tiers: (XP to reach, credits).
+pub const LADDER_TIERS: &[(f32, i32)] = &[(5_000.0, 5_000), (20_000.0, 10_000), (50_000.0, 25_000), (100_000.0, 50_000), (250_000.0, 100_000)];
+
 /// ForzaCarClubKeyword.Category: which selector a keyword goes in.
 pub const CATEGORY_REGION: i64 = 0;
 pub const CATEGORY_ATTITUDE: i64 = 1;
@@ -71,7 +74,7 @@ pub fn club_data(ctx: &Ctx, club: &Club, viewer: u64) -> Value {
         "attitudeKeyword": keyword(club.attitude),
         "interestKeyword": keyword(club.interest),
         "clubPrivacy": club.privacy,
-        "clubXP": club.xp,
+        "clubXP": ctx.store.club_xp(club.id),
         "clubXPRank": rank(ctx, club),
     })
 }
@@ -216,6 +219,37 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 .map(|c| club_data(ctx, c, me))
                 .collect();
             json!({ "totalClubs": list.len(), "clubDetailsList": list })
+        }
+
+        // The club ladder: members ranked by the XP they earned while in the club, with the
+        // reward tiers (topTierCount = tiers reached).
+        (false, "Scoreboard", "GetLadderRows") => {
+            let club = param_i64(params, "clubId");
+            let ladder = ctx.store.club_ladder(club);
+            let tiers: Vec<Value> = LADDER_TIERS
+                .iter()
+                .take(params["maxTiers"].as_i64().filter(|&n| n > 0).unwrap_or(5) as usize)
+                .enumerate()
+                .map(|(i, &(xp, credits))| json!({ "xpThreshold": xp, "creditRewardAmount": credits, "tierNumber": i + 1 }))
+                .collect();
+            let row = |rank: usize, xuid: u64, score: f64| {
+                json!({
+                    "rank": rank,
+                    "user": member_data(ctx, xuid),
+                    "score": score,
+                    "topTierCount": LADDER_TIERS.iter().filter(|t| score >= t.0 as f64).count(),
+                })
+            };
+            let start = params["startAt"].as_i64().unwrap_or(1).max(1) as usize;
+            let max = params["maxResults"].as_i64().filter(|&n| n > 0).unwrap_or(100) as usize;
+            let rows: Vec<Value> =
+                ladder.iter().enumerate().skip(start - 1).take(max).map(|(i, &(x, s))| row(i + 1, x, s)).collect();
+            let user_row = ladder
+                .iter()
+                .position(|r| r.0 == me)
+                .map(|i| row(i + 1, me, ladder[i].1))
+                .unwrap_or_else(|| json!({ "rank": 0, "user": member_data(ctx, me), "score": 0.0, "topTierCount": 0 }));
+            json!({ "rows": rows, "ladderTiers": tiers, "userRow": user_row, "available": ladder.len() })
         }
 
         // ------------------------------------------------------------ Xls.WebServices.Club
