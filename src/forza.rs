@@ -128,6 +128,8 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         | (false, "CarClub", "GetRecommendedClubs")
         | (false, "User", "GetOwnedProducts")
         | (false, "User", "GetCompareStatsForRelatedUsers")
+        | (false, "Scoreboard", "GetTimeTrials")
+        | (false, "Storefront", "GetFeaturedPhotos")
         => json!({}),
         _ => return None,
     })
@@ -172,6 +174,15 @@ pub fn live_service(ctx: &Ctx, host: &str, path: &str, body: &[u8]) -> Option<Va
             })
             .collect();
         return Some(json!({ "profileUsers": users }));
+    }
+    // The friends list ("People" = who the player follows), same shape as the batch above.
+    // Empty until the server has a friends system.
+    if host == "profile.xboxlive.com" && path.ends_with("/profile/settings/people/People") {
+        return Some(json!({ "profileUsers": [] }));
+    }
+    // Rich presence (RP_SPLASH, RP_FREEROAM, ...). The game retries every 2 s while it fails.
+    if host == "userpresence.xboxlive.com" && path.ends_with("/devices/current/titles/current") {
+        return Some(json!({}));
     }
     None
 }
