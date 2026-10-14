@@ -21,7 +21,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 const MAX_STRING: usize = 0x2000;
+/// What the game's reader accepts (replies we send).
 const MAX_BLOB: usize = 0x80000;
+/// What we accept from the game (uploads such as ghosts can be bigger).
+const MAX_BLOB_IN: usize = 32 << 20;
 const MAX_ARRAY: usize = 0x2000;
 /// Any valid date: the game rejects the whole response if a datetime fails to parse.
 pub const DEFAULT_DATETIME: &str = "2000-01-01T00:00:00Z";
@@ -125,7 +128,7 @@ impl Schema {
                 String::from_utf8_lossy(r.take(n)?).into_owned().into()
             }
             "blob" => {
-                let n = r.len(MAX_BLOB)?;
+                let n = r.len(MAX_BLOB_IN)?;
                 hex(r.take(n)?).into()
             }
             "guid" => guid_to_string(r.take(16)?).into(),
