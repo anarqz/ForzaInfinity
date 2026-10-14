@@ -176,10 +176,9 @@ Corpo do `User.Logon`, hex, da captura `captures\2026-10-13_first-capture.jsonl`
     - Na corrida seguinte, o jogo baixa o fantasma com `DownloadFile(id, 256000)`.
     - Um recorde novo substitui o fantasma e mantém o id 1.
   - **Rivais com fantasma:** quando o rival não tem fantasma próprio, o `GetRival` usa o fantasma gravado mais próximo na mesma rota. Vale tanto para o desafio quanto para o rival gerado, que nesse caso adota o tempo e o carro do fantasma, desde que a classe seja a mesma pedida em `pivotId` (`Store::nearest_ghost`).
-  - **Ainda não resolvido:** o carro-fantasma não aparece na pista.
-    - O `CGhostCarComponent` existe e a opção "Fantasmas" está ativada.
-    - Na lista do componente (`+0x68`) há um `CarCacheRequest` para o carro 461, e o arquivo é lido como `CFileStream` (`+0x158`).
-    - Próximo passo: seguir `FUN_14098ed40`, que faz o parse com `FUN_1403490b0` e cria o carro "LiveGhost" com `FUN_1413c8c10`, e ver se o parse falha (`param_1+0xf`) ou se a checagem de versão (`iVar4 == iVar3`) rejeita o fantasma.
+  - **O carro-fantasma aparece na pista** (Alex confirmou num print). Ele é translúcido e difícil de ver nos prints reduzidos. Com a IA dirigindo, ele fica sobreposto ao carro do jogador, porque segue a mesma trajetória.
+    - Estado no `CGhostCarComponent`: `+0x140` é o handle do carro "LiveGhost", `+0x148` é o tempo do fantasma (double) e `+0x151` fica em 1 quando o carro foi criado.
+    - A criação passa por `FUN_14098ed40`, que faz o parse com `FUN_1403490b0` e cria o carro com `FUN_1413c8c10`.
 - **Automação de testes sem ninguém no PC (hook fh2online.14):**
   - Controle virtual: `tools/pad.py A B DOWN wait:2000 hold:RT:3000 stick:LX:-32767:500 off`.
     - O hook troca o `XInputGetState` do Azimuth (ponteiro em `azimuth+0x319520`) por uma versão que lê a memória compartilhada `Local\FH2Online_Pad`.
