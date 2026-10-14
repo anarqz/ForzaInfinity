@@ -14,7 +14,8 @@ use std::{
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::Value;
 
-const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC11B65";
+/// RFC 6455 section 1.3. Checked against the RFC's example (see the test below).
+const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[derive(Default)]
 pub struct Hub {
@@ -35,10 +36,7 @@ impl Hub {
 
     /// Takes over a connection whose request asked for an upgrade. Blocks until it closes.
     pub fn serve(&self, mut stream: TcpStream, key: &str, hello: &Value) -> std::io::Result<()> {
-        let mut sha = sha1_smol::Sha1::new();
-        sha.update(key.trim().as_bytes());
-        sha.update(GUID.as_bytes());
-        let accept = B64.encode(sha.digest().bytes());
+        let accept = accept_key(key);
         write!(
             stream,
             "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
@@ -118,5 +116,21 @@ fn read_until_close(stream: &mut TcpStream) -> std::io::Result<()> {
             }
             _ => {}
         }
+    }
+}
+
+pub fn accept_key(key: &str) -> String {
+    let mut sha = sha1_smol::Sha1::new();
+    sha.update(key.trim().as_bytes());
+    sha.update(GUID.as_bytes());
+    B64.encode(sha.digest().bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rfc6455_example() {
+        // RFC 6455 section 1.3: this key must give this accept value.
+        assert_eq!(super::accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 }

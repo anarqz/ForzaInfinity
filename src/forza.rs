@@ -99,6 +99,11 @@ pub fn live_service(ctx: &Ctx, host: &str, path: &str, body: &[u8]) -> Option<Va
                             "Gamertag" | "GameDisplayName" | "AppDisplayName" => tag.clone(),
                             "AccountTier" => "Gold".into(),
                             "Gamerscore" => "0".into(),
+                            // Must be an absolute URL: XSAPI turns it into a Uri, an empty string
+                            // gives a null Uri and the game crashes on it (game+0x124f916).
+                            "GameDisplayPicRaw" | "AppDisplayPicRaw" => {
+                                "http://images-eds.xboxlive.com/image?url=fh2online-gamerpic".into()
+                            }
                             _ => String::new(),
                         };
                         json!({ "id": name, "value": value })
@@ -183,7 +188,8 @@ fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
         "profile",
         format!(
             "Perfil sincronizado: nível {}, {} créditos",
-            race["level"].as_u64().unwrap_or(0),
+            // stored from 0; the game shows level + 1
+            race["level"].as_u64().unwrap_or(0) + 1,
             history["credits"].as_u64().unwrap_or(0)
         ),
         json!({

@@ -221,7 +221,11 @@ fn main() {
                 let app = Arc::clone(&app);
                 thread::spawn(move || {
                     if let Err(e) = serve_connection(&app, stream) {
-                        eprintln!("connection: {e}");
+                        // idle keep-alive connections timing out or being dropped are normal
+                        use std::io::ErrorKind::*;
+                        if !matches!(e.kind(), TimedOut | WouldBlock | ConnectionAborted | ConnectionReset) {
+                            eprintln!("connection: {e}");
+                        }
                     }
                 });
             }
