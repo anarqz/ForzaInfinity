@@ -15,6 +15,13 @@ use serde_json::{Value, json};
 
 use crate::{db::Store, gamedb::Catalog};
 
+mod clubs;
+
+/// The Car Club keywords (id, category, text) the server offers.
+pub fn club_keywords() -> &'static [(i64, i64, &'static str)] {
+    clubs::KEYWORDS
+}
+
 pub struct Ctx<'a> {
     pub store: &'a Store,
     pub catalog: &'a Catalog,
@@ -47,6 +54,9 @@ impl Ctx<'_> {
 pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Value> {
     let short = class.rsplit('.').next().unwrap_or(class);
     let xls = class.starts_with("Xls.");
+    if let Some(reply) = clubs::handle(ctx, xls, short, method, params) {
+        return Some(reply);
+    }
     Some(match (xls, short, method) {
         (false, "User", "Logon") => user_logon(ctx, params),
         (true, "User", "GetUserData") => json!({ "userData": user_data(ctx, ctx.xuid) }),
@@ -118,6 +128,49 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         (true, "Transaction", "Reconcile") => reconcile(ctx, params),
         // The friends the console knows (from social.xboxlive.com, i.e. ours): nothing to keep.
         (true, "User", "SetFriends") => json!({}),
+        // "Meus rivais": the career compare stats of the player's friends (from their UpdateAll).
+        (false, "User", "GetCompareStatsForRelatedUsers") => {
+            let max = params["numDesiredUsers"].as_i64().filter(|&n| n > 0).unwrap_or(10) as usize;
+            let stats: Vec<Value> = ctx
+                .store
+                .friends(ctx.xuid)
+                .into_iter()
+                .take(max)
+                .map(|(friend, _, _)| {
+                    let base = ctx.store.profile_data(friend)["compareStats"][0].clone();
+                    json!({ "base": if base.is_object() { base } else { json!({}) }, "xuid": friend })
+                })
+                .collect();
+            json!({ "compareStats": stats })
+        }
+        // The per-bucket stats (bucketedCompareStats from UpdateAllTables) of the given players.
+        (false, "User", "GetCompareStatsByBucket") => {
+            let bucket = params["bucketId"].as_i64().unwrap_or(-1);
+            let mut xuids: Vec<u64> = params["xuids"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+            if xuids.is_empty() {
+                xuids = ctx.store.friends(ctx.xuid).into_iter().map(|f| f.0).collect();
+            }
+            let max = params["numUsers"].as_i64().filter(|&n| n > 0).unwrap_or(10) as usize;
+            let stats: Vec<Value> = xuids
+                .into_iter()
+                .take(max)
+                .map(|x| {
+                    let tables = ctx.store.tables(x);
+                    let row = tables
+                        .get("bucketedCompareStats")
+                        .and_then(Value::as_array)
+                        .and_then(|rows| rows.iter().find(|r| r["Id"].as_i64() == Some(bucket)).cloned())
+                        .unwrap_or_else(|| json!({ "Id": bucket }));
+                    json!({ "base": row, "xuid": x })
+                })
+                .collect();
+            json!({ "bucketedCompareStats": stats })
+        }
+        // The player card (level, badge, title) shown to others.
+        (false, "User", "SetPlayerCardInfo") => {
+            ctx.store.set_player_card(ctx.xuid, params);
+            json!({})
+        }
         // The PermissionsLoader (game 0x140f09930) sends this at boot; until it gets an answer the
         // game treats the LSP as down (sessionObj+0x1131 == 0) and locks online features with
         // IDS_Popup_FeatureLocked_LSPDown_Message. No method overrides, no banned feature areas.
@@ -130,10 +183,7 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         | (false, "Storefront", "GetFeaturedLiveriesForRandomCars")
         | (false, "Storefront", "GetCuratedContent")
         | (false, "Storefront", "GetMyFileList")
-        | (false, "CarClub", "GetClubKeywords")
-        | (false, "CarClub", "GetRecommendedClubs")
         | (false, "User", "GetOwnedProducts")
-        | (false, "User", "GetCompareStatsForRelatedUsers")
         | (false, "Scoreboard", "GetTimeTrials")
         | (false, "Storefront", "GetFeaturedPhotos")
         => json!({}),
@@ -344,15 +394,17 @@ fn user_logon(ctx: &Ctx, params: &Value) -> Value {
 /// The UserData struct (leaderboards, clubs, logon) from what the player last sent.
 fn user_data(ctx: &Ctx, xuid: u64) -> Value {
     let login = ctx.store.login(xuid);
+    // (club id, tag, role)
+    let club = ctx.store.membership(xuid).and_then(|(id, role)| ctx.store.club(id).map(|c| (id, c.tag, role)));
     json!({
         "qwXuid": xuid,
         "wzGamerTag": ctx.store.gamertag(xuid),
         "flags": 0,
-        "clubId": 0,
-        "clubTag": "",
+        "clubId": club.as_ref().map(|c| c.0).unwrap_or(0),
+        "clubTag": club.as_ref().map(|c| c.1.clone()).unwrap_or_default(),
         "clubTopTierCount": 0,
-        "roleInClub": 0,
-        "acceptsClubInvites": true,
+        "roleInClub": club.as_ref().map(|c| c.2).unwrap_or(0),
+        "acceptsClubInvites": ctx.store.accepts_club_invites(xuid),
         "currentCareerLevel": login["currentCareerLevel"],
         "currentBadgeId": login["currentBadgeId"],
         "currentPlayerTitleId": login["currentPlayerTitleId"],

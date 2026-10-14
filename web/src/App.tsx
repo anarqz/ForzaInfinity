@@ -12,8 +12,9 @@ import {
   Traffic,
   XpChart,
 } from "./components";
+import { Clubs } from "./clubs";
 import { Friends, Players } from "./social";
-import { getJson, useLive, useNow, type Catalog, type FeedEvent, type Profile, type TrafficItem, type UserSummary } from "./lib";
+import { getJson, useLive, useNow, type Catalog, type Club, type Keyword, type FeedEvent, type Profile, type TrafficItem, type UserSummary } from "./lib";
 
 const STAT_TABS = [
   ["playerRaceHistory", "Corridas"],
@@ -34,6 +35,7 @@ export default function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [traffic, setTraffic] = useState<TrafficItem[]>([]);
+  const [clubs, setClubs] = useState<{ clubs: Club[]; keywords: Keyword[] }>({ clubs: [], keywords: [] });
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<(typeof STAT_TABS)[number][0]>("playerRaceHistory");
   const now = useNow(5000);
@@ -49,6 +51,10 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
+  }, []);
+
+  const loadClubs = useCallback(() => {
+    getJson<{ clubs: Club[]; keywords: Keyword[] }>("/api/clubs").then(setClubs).catch(() => undefined);
   }, []);
 
   const loadProfile = useCallback(async (xuid: string) => {
@@ -88,12 +94,14 @@ export default function App() {
       setSelected((s) => (s && list.some((u) => u.xuid === s) ? s : list[0]?.xuid ?? null));
       scheduleRefetch();
     },
+    onClubs: loadClubs,
   });
 
   useEffect(() => {
     loadUsers();
+    loadClubs();
     getJson<Catalog>("/api/catalog").then(setCatalog).catch(() => setCatalog(null));
-  }, [loadUsers]);
+  }, [loadUsers, loadClubs]);
 
   useEffect(() => {
     if (selected) loadProfile(selected);
@@ -152,6 +160,10 @@ export default function App() {
           <div className="col-main">
             <Card title="Garagem" icon="🚗" extra={<span className="pill">{profile.garage.length} carro(s)</span>}>
               <Garage p={profile} catalog={catalog} />
+            </Card>
+
+            <Card title="Clubes" icon="🏴" extra={<span className="pill">{clubs.clubs.length}</span>}>
+              <Clubs clubs={clubs.clubs} keywords={clubs.keywords} users={users} now={now} onError={setError} />
             </Card>
 
             <Card title="XP por corrida" icon="⚡">

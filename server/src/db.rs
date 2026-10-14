@@ -19,6 +19,9 @@ use serde_json::{Map, Value, json};
 
 use crate::{gamedb::Catalog, unix_ms};
 
+pub mod clubs;
+pub use clubs::{ClubFields, ROLE_COLEADER, ROLE_LEADER, ROLE_MEMBER};
+
 const MAX_EVENTS: i64 = 5000;
 /// A player counts as online while their game posted presence within this window.
 pub const PRESENCE_TTL_MS: i64 = 5 * 60 * 1000;
@@ -92,6 +95,7 @@ impl Store {
                  updated INTEGER NOT NULL);",
         )
         .map_err(|e| e.to_string())?;
+        db.execute_batch(clubs::SCHEMA).map_err(|e| e.to_string())?;
         Ok(Store { db: Mutex::new(db) })
     }
 
@@ -147,6 +151,32 @@ impl Store {
                 .optional()
         })
         .flatten()
+        .flatten()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null)
+    }
+
+    /// User.SetPlayerCardInfo: level, badge and title, kept with the login data where the
+    /// UserData builder reads them.
+    pub fn set_player_card(&self, xuid: u64, card: &Value) {
+        let mut login = self.login(xuid);
+        if !login.is_object() {
+            login = json!({});
+        }
+        for key in ["currentCareerLevel", "currentBadgeId", "currentPlayerTitleId"] {
+            if !card[key].is_null() {
+                login[key] = card[key].clone();
+            }
+        }
+        self.touch_user(xuid);
+        self.with(|db| db.execute("UPDATE users SET login = ?2 WHERE xuid = ?1", params![xuid as i64, login.to_string()]));
+    }
+
+    /// The last OnlineProfile.UpdateAll, or Null.
+    pub fn profile_data(&self, xuid: u64) -> Value {
+        self.with(|db| {
+            db.query_row("SELECT data FROM profile WHERE xuid = ?1", [xuid as i64], |r| r.get::<_, String>(0)).optional()
+        })
         .flatten()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or(Value::Null)
@@ -548,6 +578,15 @@ impl Store {
         .unwrap_or(0) as u64
     }
 
+    pub fn xuid_by_gamertag(&self, gamertag: &str) -> Option<u64> {
+        self.with(|db| {
+            db.query_row("SELECT xuid FROM users WHERE gamertag = ?1 COLLATE NOCASE", [gamertag.trim()], |r| r.get::<_, i64>(0))
+                .optional()
+        })
+        .flatten()
+        .map(|x| x as u64)
+    }
+
     pub fn user_exists(&self, xuid: u64) -> bool {
         self.with(|db| db.query_row("SELECT 1 FROM users WHERE xuid = ?1", [xuid as i64], |_| Ok(())).optional())
             .flatten()
@@ -583,6 +622,7 @@ impl Store {
 
     /// Removes a player and everything that is only theirs.
     pub fn delete_user(&self, xuid: u64) -> bool {
+        self.leave_club(xuid, clubs::ACTION_REMOVED);
         let x = xuid as i64;
         self.with(|db| {
             let n = db.execute("DELETE FROM users WHERE xuid = ?1", [x])?;
@@ -594,6 +634,9 @@ impl Store {
                 "DELETE FROM drivatars WHERE xuid = ?1",
                 "DELETE FROM ghosts WHERE xuid = ?1",
                 "DELETE FROM events WHERE xuid = ?1",
+                "DELETE FROM club_invites WHERE xuid = ?1 OR sender = ?1",
+                "DELETE FROM club_requests WHERE xuid = ?1",
+                "DELETE FROM user_settings WHERE xuid = ?1",
             ] {
                 db.execute(sql, [x])?;
             }
