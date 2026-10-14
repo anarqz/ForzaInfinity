@@ -63,7 +63,6 @@ pub struct Club {
     pub region: i64,
     pub attitude: i64,
     pub interest: i64,
-    pub xp: i64,
     pub created: i64,
 }
 
@@ -79,7 +78,7 @@ pub struct ClubFields {
     pub interest: i64,
 }
 
-const CLUB_COLUMNS: &str = "id, tag, name, description, privacy, region, attitude, interest, xp, created";
+const CLUB_COLUMNS: &str = "id, tag, name, description, privacy, region, attitude, interest, created";
 
 fn club_row(r: &rusqlite::Row) -> rusqlite::Result<Club> {
     Ok(Club {
@@ -91,8 +90,7 @@ fn club_row(r: &rusqlite::Row) -> rusqlite::Result<Club> {
         region: r.get(5)?,
         attitude: r.get(6)?,
         interest: r.get(7)?,
-        xp: r.get(8)?,
-        created: r.get(9)?,
+        created: r.get(8)?,
     })
 }
 
@@ -452,6 +450,29 @@ impl Store {
         .unwrap_or_default()
     }
 
+    /// XP the player earned since a time (Scoreboard.SubmitXpScore rows).
+    pub fn xp_since(&self, xuid: u64, since: i64) -> f64 {
+        self.with(|db| {
+            db.query_row("SELECT COALESCE(SUM(xp), 0) FROM xp WHERE xuid = ?1 AND time >= ?2", params![xuid as i64, since], |r| {
+                r.get::<_, f64>(0)
+            })
+        })
+        .unwrap_or(0.0)
+    }
+
+    /// The club ladder: (xuid, XP earned since joining), best first.
+    pub fn club_ladder(&self, club: i64) -> Vec<(u64, f64)> {
+        let mut rows: Vec<(u64, f64)> =
+            self.club_members(club).into_iter().map(|(x, _, joined)| (x, self.xp_since(x, joined))).collect();
+        rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+        rows
+    }
+
+    /// Club XP: what its members earned while in it.
+    pub fn club_xp(&self, club: i64) -> i64 {
+        self.club_ladder(club).iter().map(|r| r.1).sum::<f64>() as i64
+    }
+
     pub fn accepts_club_invites(&self, xuid: u64) -> bool {
         self.with(|db| {
             db.query_row("SELECT accepts_club_invites FROM user_settings WHERE xuid = ?1", [xuid as i64], |r| {
@@ -485,7 +506,7 @@ impl Store {
             "region": club.region,
             "attitude": club.attitude,
             "interest": club.interest,
-            "xp": club.xp,
+            "xp": self.club_xp(club.id),
             "created": club.created,
             "members": self.club_members(club.id).into_iter().map(|(x, role, joined)| json!({
                 "xuid": x.to_string(), "gamertag": tag(x), "role": role, "joined": joined,
