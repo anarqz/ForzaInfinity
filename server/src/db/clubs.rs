@@ -11,6 +11,7 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 
 use super::Store;
+use super::notifications as note;
 use crate::unix_ms;
 
 pub const ROLE_LEADER: i64 = 1;
@@ -288,6 +289,20 @@ impl Store {
         if role != ROLE_LEADER {
             if let Some(c) = self.club(club) {
                 self.club_history_add(xuid, &c, role, ACTION_JOINED);
+                let tag = self.gamertag(xuid);
+                self.notify(xuid, note::CLUB_MEMBER_ACCEPTED, json!({ "clubName": c.name, "clubTag": c.tag }));
+                self.notify_members(club, xuid, note::CLUB_NEW_MEMBER, json!({
+                    "newMemberXuid": xuid, "newMemberGamertag": tag, "clubName": c.name, "clubTag": c.tag,
+                }));
+            }
+        }
+    }
+
+    /// Sends a notification to every member except except.
+    fn notify_members(&self, club: i64, except: u64, kind: i64, params: Value) {
+        for (member, _, _) in self.club_members(club) {
+            if member != except {
+                self.notify(member, kind, params.clone());
             }
         }
     }
@@ -300,6 +315,15 @@ impl Store {
         self.with(|db| db.execute("DELETE FROM club_members WHERE xuid = ?1", [xuid as i64]));
         if let Some(c) = &club {
             self.club_history_add(xuid, c, role, action);
+            let tag = self.gamertag(xuid);
+            if action == ACTION_REMOVED {
+                self.notify(xuid, note::CLUB_KICK, json!({
+                    "kickedXuid": xuid, "kickedGamertag": tag, "clubName": c.name, "clubTag": c.tag,
+                }));
+            }
+            self.notify_members(club_id, xuid, note::CLUB_MEMBER_QUIT, json!({
+                "exMemberXuid": xuid, "exMemberGamertag": tag, "clubName": c.name, "clubTag": c.tag,
+            }));
         }
         let rest = self.club_members(club_id);
         if rest.is_empty() {
@@ -314,9 +338,10 @@ impl Store {
 
     /// Changes a member's role; a new leader turns the old one into a co-leader.
     pub fn set_member_role(&self, club: i64, xuid: u64, role: i64) -> bool {
-        if !(ROLE_LEADER..=ROLE_MEMBER).contains(&role) || self.membership(xuid).map(|m| m.0) != Some(club) {
-            return false;
-        }
+        let before = match self.membership(xuid) {
+            Some((c, r)) if c == club && (ROLE_LEADER..=ROLE_MEMBER).contains(&role) => r,
+            _ => return false,
+        };
         self.with(|db| {
             if role == ROLE_LEADER {
                 db.execute(
@@ -328,6 +353,16 @@ impl Store {
         });
         if let Some(c) = self.club(club) {
             self.club_history_add(xuid, &c, role, ACTION_ROLE);
+            if role < before {
+                // a lower number is a higher role
+                let tag = self.gamertag(xuid);
+                self.notify_members(club, 0, note::CLUB_NEW_PROMOTION, json!({
+                    "newRole": role, "newPromotedXuid": xuid, "newPromotedGamertag": tag,
+                    "clubName": c.name, "clubTag": c.tag,
+                }));
+            } else if role > before {
+                self.notify(xuid, note::CLUB_DEMOTION, json!({ "clubName": c.name, "clubTag": c.tag }));
+            }
         }
         true
     }
@@ -349,7 +384,15 @@ impl Store {
                 r.get(0)
             })
         })
-        .ok_or_else(|| "erro no banco".into())
+        .ok_or_else(|| "erro no banco".to_owned())
+        .inspect(|_| {
+            if let Some(c) = self.club(club) {
+                self.notify(xuid, note::CLUB_INVITATION, json!({
+                    "sponsorXuid": sender, "clubId": club, "clubName": c.name, "clubTag": c.tag,
+                    "sponsorGamertag": self.gamertag(sender),
+                }));
+            }
+        })
     }
 
     /// (invite id, club, sender, created) for invites sent to the player.
@@ -404,6 +447,14 @@ impl Store {
                 params![club, xuid as i64, unix_ms()],
             )
         });
+        let tag = self.gamertag(xuid);
+        for (member, role, _) in self.club_members(club) {
+            if role == ROLE_LEADER || role == ROLE_COLEADER {
+                self.notify(member, note::CLUB_MEMBERSHIP_REQUEST, json!({
+                    "requestorXuid": xuid, "requestorGamertag": tag, "clubId": club,
+                }));
+            }
+        }
     }
 
     /// (xuid, created) of players asking to join.
@@ -422,6 +473,11 @@ impl Store {
     }
 
     pub fn add_club_notice(&self, club: i64, xuid: u64, message: &str) -> i64 {
+        let role = self.membership(xuid).filter(|m| m.0 == club).map(|m| m.1).unwrap_or(0);
+        self.notify_members(club, xuid, note::CLUB_NOTICE_BOARD, json!({
+            "senderXuid": xuid, "senderClubRole": role, "senderGamertag": self.gamertag(xuid),
+            "noticeBoardMessage": message,
+        }));
         self.with(|db| {
             db.execute(
                 "INSERT INTO club_notices (club, xuid, message, created) VALUES (?1, ?2, ?3, ?4)",

@@ -149,6 +149,18 @@ export interface Profile {
   drivatar: null | { updated: number; saves: number; segments: number; curves: number };
   friends: Friend[];
   presence: Presence;
+  notifications: InboxItem[];
+}
+
+/** One notification of the in-game inbox (db/notifications.rs). */
+export interface InboxItem {
+  id: number;
+  type: number;
+  struct: string;
+  text: string;
+  params: Record<string, unknown>;
+  sent: number;
+  read: boolean;
 }
 
 export interface ClubMember {

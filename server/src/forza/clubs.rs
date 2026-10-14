@@ -462,12 +462,22 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
             Ok(_) => error(1, "not a club leader"),
             Err(e) => e,
         },
-        // A member suggests a kick: posted on the notice board for the leaders to see.
+        // A member suggests a kick: the leaders get a notification.
         (true, "Club", "RecommendMemberForRemoval") => match my_club(ctx) {
             Ok((club, _)) => {
                 let who = param_xuid(params, "userToRemove");
-                let text = format!("Sugestão de remoção: {}", ctx.store.gamertag(who));
-                ctx.store.add_club_notice(club.id, me, &text);
+                let note = json!({
+                    "recommendingRemovalXuid": me,
+                    "recommendingRemovalGamertag": ctx.store.gamertag(me),
+                    "recommendedForRemovalXuid": who,
+                    "recommendedForRemovalGamertag": ctx.store.gamertag(who),
+                    "clubId": club.id,
+                });
+                for (member, role, _) in ctx.store.club_members(club.id) {
+                    if is_officer(role) && member != me {
+                        ctx.store.notify(member, crate::db::notifications::CLUB_REMOVE_RECOMMENDATION, note.clone());
+                    }
+                }
                 json!({})
             }
             Err(e) => e,

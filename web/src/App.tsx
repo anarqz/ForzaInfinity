@@ -13,6 +13,7 @@ import {
   XpChart,
 } from "./components";
 import { Clubs } from "./clubs";
+import { Inbox } from "./inbox";
 import { Friends, Players } from "./social";
 import { getJson, useLive, useNow, type Catalog, type Club, type Keyword, type FeedEvent, type Profile, type TrafficItem, type UserSummary } from "./lib";
 
@@ -221,6 +222,9 @@ export default function App() {
           <div className="col-side">
             <Card title="Amigos" icon="👥" extra={<span className="pill">{profile.friends.length}</span>}>
               <Friends me={profile.user.xuid} friends={profile.friends} users={users} now={now} onError={setError} />
+            </Card>
+            <Card title="Caixa de entrada" icon="📬" extra={<span className="pill">{profile.notifications.filter((n) => !n.read).length} nova(s)</span>}>
+              <Inbox me={profile.user.xuid} items={profile.notifications} friends={profile.friends} now={now} onError={setError} />
             </Card>
             <Card title="Jogadores" icon="🎮" extra={<span className="pill">{users.length}</span>}>
               <Players users={users} selected={selected} now={now} onSelect={setSelected} onError={setError} />
