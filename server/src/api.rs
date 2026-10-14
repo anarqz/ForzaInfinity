@@ -254,17 +254,23 @@ fn change(app: &App, request: &Request, path: &str) -> Vec<u8> {
     }
 }
 
-/// A test "your rival beat your time": `from` beats `to`'s most recent score by 1 to 3%.
+/// A test "your rival beat your time" on the last real race event the game asked about
+/// (GetBestScore before a race): `from` is 1 to 3 % quicker than `to`'s time there, or than a
+/// plausible time for the route.
 fn test_rival(app: &App, to: u64, from: u64) -> Result<Value, (u16, String)> {
-    let profile = app.store.user_profile(to, &app.catalog).unwrap_or(Value::Null);
-    let last = profile["scores"].as_array().and_then(|s| s.first()).cloned();
-    let Some(last) = last else { return Err((400, "o jogador ainda não tem pontuação em nenhum evento".into())) };
-    let score_type = last["scoreType"].as_i64().unwrap_or(1);
-    let mine = last["score"].as_f64().unwrap_or(0.0);
+    let Some((board, score_type, event, track, class)) = app.store.last_race_event() else {
+        return Err((400, "nenhum evento de corrida conhecido ainda: entre numa corrida no jogo primeiro".into()));
+    };
+    let mine = app.store.leaderboard(board, score_type, Some(track), Some(event)).into_iter().find(|r| r.xuid == to);
+    let lower = crate::db::lower_is_better(score_type);
+    let base = match &mine {
+        Some(r) => r.score,
+        None => app.catalog.tracks.get(&track).map(|t| t.length_m as f64 / 30.5).filter(|s| *s > 5.0).unwrap_or(90.0),
+    };
     let k = 0.01 + (crate::unix_ms() % 200) as f64 / 10_000.0;
-    let score = if score_type == 1 { mine * (1.0 - k) } else { mine * (1.0 + k) };
-    let track = last["trackId"].as_i64().unwrap_or(-1);
-    let track_name = last["track"]["name"].as_str().unwrap_or("").to_owned();
+    let score = ((if lower { base * (1.0 - k) } else { base * (1.0 + k) }) * 1000.0).round() / 1000.0;
+    let car = mine.as_ref().and_then(|r| r.data["carId"].as_i64()).unwrap_or(461);
+    let track_name = app.catalog.tracks.get(&track).map(|t| t.name.clone()).unwrap_or_default();
     let club = app.store.membership(from).and_then(|(id, role)| app.store.club(id).map(|c| (c.tag, role)));
     let params = json!({
         "senderXuid": from,
@@ -273,20 +279,19 @@ fn test_rival(app: &App, to: u64, from: u64) -> Result<Value, (u16, String)> {
         "senderClubRole": club.as_ref().map(|c| c.1).unwrap_or(0),
         "senderFlags": 0,
         "sentTime": crate::forza::iso_utc(crate::unix_ms()),
-        "timeTrialId": last["gameScoreboardId"],
-        "carId": last["carId"],
-        "carClassId": last["carClassId"],
+        "timeTrialId": event,
+        "carId": car,
+        "carClassId": class.max(0),
         "localizedTimeTrialName": track_name,
         "trackName": track_name,
         "trackId": track,
         "score": score,
         "scoreType": score_type,
-        "category": last["scoreboardType"],
+        "category": board,
     });
     let id = app.store.notify(to, crate::db::notifications::TIME_BEATEN, params);
-    Ok(json!({ "id": id, "score": score }))
+    Ok(json!({ "id": id, "score": score, "trackId": track, "event": event }))
 }
-
 fn clubs_reply(app: &App) -> Value {
     let keywords: Vec<Value> = crate::forza::club_keywords()
         .iter()
