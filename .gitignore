@@ -11,6 +11,7 @@ bin/*.dll
 # Decompiled game code stays local (it is the game's, not ours)
 notes/decomp/
 notes/decomp-game/
+notes/decomp_*/
 
 # Python caches
 __pycache__/

@@ -422,6 +422,21 @@ impl Store {
         .flatten()
     }
 
+    /// Any player's ghost on a route (event ignored) whose score is closest to `score`:
+    /// (ghost id, its score, its car).
+    pub fn nearest_ghost(&self, scoreboard_type: i64, score_type: i64, track_id: i64, score: f64) -> Option<(i64, f64, i64)> {
+        self.with(|db| {
+            db.query_row(
+                "SELECT id, score, car_id FROM ghosts WHERE scoreboard_type = ?1 AND score_type = ?2 AND track_id = ?3
+                 ORDER BY abs(score - ?4) LIMIT 1",
+                params![scoreboard_type, score_type, track_id, score],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+        })
+        .flatten()
+    }
+
     /// The player's ghosts (no data), for the web UI.
     pub fn ghosts(&self, xuid: u64, catalog: &Catalog) -> Vec<Value> {
         self.with(|db| {

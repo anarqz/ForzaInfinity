@@ -181,9 +181,7 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
         // Meus Rivais -> "Ir para"), and rivals need 0x51/0x54/0x59/0x5b allowed to upload times
         // and ghosts (FUN_140a41c90). So every id the table holds (0x100) is enabled, access 0.
         (false, "User", "GetPermissionsTable") => json!({
-            "permissions": (0..0x100)
-                .map(|id| json!({ "methodId": id, "tier": 0, "isEnabled": true, "access": 0 }))
-                .collect::<Vec<_>>(),
+            "permissions": permissions(),
             "featureAreasBanMask": 0,
             "userFlags": 0,
         }),
@@ -364,6 +362,12 @@ fn string_list(value: &Value) -> Vec<String> {
     value.as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default()
 }
 
+/// MethodPermission list for GetPermissionsTable and Logon: every id the game's table holds
+/// (0x100), enabled with access 0. A method missing from the table reads as access 4.
+fn permissions() -> Value {
+    (0..0x100).map(|id| json!({ "methodId": id, "tier": 0, "isEnabled": true, "access": 0 })).collect()
+}
+
 /// User.Logon: the game repeats it until it gets a valid reply, and nothing else in the Forza
 /// services starts before it succeeds.
 fn user_logon(ctx: &Ctx, params: &Value) -> Value {
@@ -384,7 +388,8 @@ fn user_logon(ctx: &Ctx, params: &Value) -> Value {
         "responseData": {
             "isProfileValid": true,
             "lastOnlineProfileUpdateAllTablesTranId": checkpoint,
-            "permissions": [],
+            // the Logon reply replaces the permissions table too
+            "permissions": permissions(),
             "featureAreasBanMask": 0,
             "userFlags": 0,
             "upsellOfferId": 0,
@@ -762,10 +767,18 @@ fn random_rival(ctx: &Ctx, params: &Value) -> Value {
     let factor = 0.94 + rand() * 0.09;
     let score = if lower { base * factor } else { base * (2.0 - factor) };
     let score = (score * 1000.0).round() / 1000.0;
+    // a ghost recorded on this route makes the rival raceable: take its time and car
+    // (same car class as asked for: pivotId)
+    let class = int("pivotId");
+    let ghost = ctx
+        .store
+        .nearest_ghost(board, score_type, track, score)
+        .filter(|g| class < 0 || ctx.catalog.car(g.2).map(|c| c.class_id) == Some(class));
+    let score = ghost.map(|g| g.1).unwrap_or(score);
 
-    let car = mine
-        .as_ref()
-        .and_then(|r| r.data["carId"].as_i64())
+    let car = ghost
+        .map(|g| g.2)
+        .or_else(|| mine.as_ref().and_then(|r| r.data["carId"].as_i64()))
         .or_else(|| drivatar_car(ctx, ctx.xuid, -1))
         // never an invalid id: any real car (the Supra if present)
         .or_else(|| ctx.catalog.car(461).map(|c| c.id).or_else(|| ctx.catalog.cars.keys().next().copied()))
@@ -802,7 +815,7 @@ fn random_rival(ctx: &Ctx, params: &Value) -> Value {
         "carPerformanceIndex": cat.map(|c| c.pi as f64 / 1000.0).unwrap_or(0.5),
         "usedSTM": false, "usedTCS": false, "usedABS": true, "usedAutoBrake": false,
         "usedAutoShifting": rand() < 0.5, "usedClutch": false, "isClean": true,
-        "ghostFileId": 0,
+        "ghostFileId": ghost.map(|g| g.0).unwrap_or(0),
         "bounty": bounty,
     });
     json!({ "rival": { "scoreData": row, "bounty": bounty } })
@@ -827,6 +840,8 @@ fn challenge_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
     } else {
         return None;
     };
+    // a rival without an uploaded ghost races with the closest one recorded on the route
+    let ghost = if ghost != 0 { ghost } else { ctx.store.nearest_ghost(board, score_type, track, score).map(|g| g.0).unwrap_or(0) };
     ctx.store.record_race_event(board, score_type, int("rivalEventId"), track, int("pivotId"));
     let cat = ctx.catalog.car(car);
     let bounty = 9600;

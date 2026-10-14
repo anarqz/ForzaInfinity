@@ -171,7 +171,23 @@ Corpo do `User.Logon`, hex, da captura `captures\2026-10-13_first-capture.jsonl`
   - A tabela `ghosts` guarda um fantasma por jogador e evento (chave: tipo de placar, tipo de pontuação, evento e pista). O `UploadFile` aceita o fantasma só se ele ainda for o recorde, e substitui o anterior mantendo o mesmo id.
   - O `DownloadFile` responde pelo id (máximo de 512 KB, limite do leitor do jogo), e o `GetRowsAnthem` informa o `ghostFileId`.
   - Os pedidos agora aceitam blobs de até 32 MB (`MAX_BLOB_IN`).
-  - **Falta ver no jogo** se o upload acontece e o tamanho real de um fantasma.
+  - **Visto no jogo (14/10/2026), depois que a tabela de permissões foi preenchida:**
+    - Uma corrida de rival termina com `SubmitScore`, que devolve `uploadFiles: true`, seguido de `UploadFile`. O blob tem cerca de 27 KB: cabeçalho de 16 bytes (`<u32 ?, u32 tamanho descompactado, u32 tamanho compactado, u32 4096>`) e depois blocos zlib de 4 KB.
+    - Na corrida seguinte, o jogo baixa o fantasma com `DownloadFile(id, 256000)`.
+    - Um recorde novo substitui o fantasma e mantém o id 1.
+  - **Rivais com fantasma:** quando o rival não tem fantasma próprio, o `GetRival` usa o fantasma gravado mais próximo na mesma rota. Vale tanto para o desafio quanto para o rival gerado, que nesse caso adota o tempo e o carro do fantasma, desde que a classe seja a mesma pedida em `pivotId` (`Store::nearest_ghost`).
+  - **Ainda não resolvido:** o carro-fantasma não aparece na pista.
+    - O `CGhostCarComponent` existe e a opção "Fantasmas" está ativada.
+    - Na lista do componente (`+0x68`) há um `CarCacheRequest` para o carro 461, e o arquivo é lido como `CFileStream` (`+0x158`).
+    - Próximo passo: seguir `FUN_14098ed40`, que faz o parse com `FUN_1403490b0` e cria o carro "LiveGhost" com `FUN_1413c8c10`, e ver se o parse falha (`param_1+0xf`) ou se a checagem de versão (`iVar4 == iVar3`) rejeita o fantasma.
+- **Automação de testes sem ninguém no PC (hook fh2online.14):**
+  - Controle virtual: `tools/pad.py A B DOWN wait:2000 hold:RT:3000 stick:LX:-32767:500 off`.
+    - O hook troca o `XInputGetState` do Azimuth (ponteiro em `azimuth+0x319520`) por uma versão que lê a memória compartilhada `Local\FH2Online_Pad`.
+    - Enquanto `active` estiver em 0, o controle de verdade funciona normalmente.
+  - Captura de tela: `tools/shot.py saida.png [divisor]`.
+  - Tecla: `tools/key.py F2`.
+  - `[Autodrive] InEvents=1`: o F2 entrega o carro à IA nativa também dentro de eventos. Foi assim que o rival da rota 897 foi corrido e vencido sem ninguém no controle.
+  - Caminho até o desafio: START, RB×4 (aba Rivais), A (Meus Rivais), A (Ir para), RIGHT, A (carro), A (iniciar) e então F2.
 - **Fantasmas (como o protocolo funciona):** o protocolo já prevê. O `SubmitScore` devolve `uploadFiles`; se for true, o jogo chama `Scoreboard.UploadFile(scoreId, blob)`. As linhas de placar e de rival trazem `ghostFileId`, que o jogo baixa com `Scoreboard.DownloadFile(id, maxSize)`.
 - **Histórico, antes da sonda: `GetEconomySettings` ficava 503.**
   - As propriedades ficam no `ForzaEconomyModule`: o registro está em `FUN_14053bc10`, os getters em `0x14054xxxx`, e os valores no objeto em `+0x208`… `+0x348` (passo de 0x20). Os nomes são `CreditDestinationBonus`, `CreditDestinationFalloff`, `XPPerKmOffline`, `XPPerKmOnline`, `CreditsPerKm`, `MinimumFinishlineXP`, `SubmitXpFrequency`, `TombolaPrizeScale`, `HorizonPromoBonusScale`, `TokensEnabled`, `XboxMusicEnabled`, além de `UseServerValues` (`+0x1e8`) e `DownloadedEconomyValues` (`+0x351`).
