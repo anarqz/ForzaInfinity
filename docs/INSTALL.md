@@ -9,8 +9,9 @@ and keeps the original as a backup; the game is never modified on disk.
 
 - Your own copy of Forza Horizon 2 running on Azimuth 0.9.7, on Windows or on Linux / Steam
   Deck through Proton.
-- The address of a ForzaInfinity server (`host:port`), from whoever runs it. To run one
-  yourself, see [SERVER.md](SERVER.md).
+- A ForzaInfinity server. The installer suggests the public one, `https://infinity.anarqz.dev`
+  (150 players at a time, then a waiting line). For another server, use the address its owner
+  gives you (`https://host` or `host:port`); to run one yourself, see [SERVER.md](SERVER.md).
 - An **offline save**: play until the game has saved at least once. Your online profile is
   created from it, so your cars, credits and level come with you.
 - The game closed while you install.
@@ -44,7 +45,7 @@ curl -fsSL https://github.com/anarqz/ForzaInfinity/releases/latest/download/inst
 or unzip ForzaInfinity.zip and run `./install.sh`. It looks for `azimuth.exe` in your home
 folder, SD cards and drives (`/run/media`, `/media`, `/mnt`), asks which one when there are
 several, and asks for the server address. Both take arguments to skip the questions:
-`./install.sh "<folder with azimuth.exe>" host:port`.
+`./install.sh "<folder with azimuth.exe>" https://infinity.anarqz.dev`.
 
 ## What the installer changes
 

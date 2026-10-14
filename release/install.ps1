@@ -1,7 +1,7 @@
 # ForzaInfinity installer for Windows: puts the ForzaInfinity azimuth-tls.dll into Azimuth
 # (keeping the original as azimuth-tls.dll.stock) and points it at a server.
 #   Install.cmd                  double click (asks for the folder and the server)
-#   install.ps1 -Folder <dir> -Server host:port -Quiet
+#   install.ps1 -Folder <dir> -Server host:port|https://host -Quiet
 #   irm https://github.com/anarqz/ForzaInfinity/releases/latest/download/install.ps1 | iex
 param([string]$Folder = '', [string]$Server = '', [switch]$Quiet)
 $ErrorActionPreference = 'Stop'
@@ -49,11 +49,11 @@ if (-not $Server) {
     $default = if ($DefaultServer -notlike '__*') { $DefaultServer } else { '' }
     $Server = if ($Quiet) { $default } else {
         Use-Dialogs
-        [Microsoft.VisualBasic.Interaction]::InputBox('ForzaInfinity server address (host:port), from whoever runs your server:', 'ForzaInfinity', $default)
+        [Microsoft.VisualBasic.Interaction]::InputBox('ForzaInfinity server address (host:port or https://host), from whoever runs your server:', 'ForzaInfinity', $default)
     }
 }
 $Server = $Server.Trim()
-if ($Server -notmatch '^[A-Za-z0-9.\-]+:[0-9]{1,5}$') { Fail "The server must look like host:port (for example 192.168.0.10:8081), not '$Server'." }
+if ($Server -notmatch '^(https?://[A-Za-z0-9.\-]+(:[0-9]{1,5})?|[A-Za-z0-9.\-]+:[0-9]{1,5})$') { Fail "The server must look like host:port (for example 192.168.0.10:8081) or https://host, not '$Server'." }
 
 # 3. the DLL (next to this script, else the latest release)
 $dll = Join-Path $here 'azimuth-tls.dll'

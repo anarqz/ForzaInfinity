@@ -33,7 +33,7 @@ A seção `[Network]` do `FH2_ExtraOptions.ini`:
 |---|---|
 | `Off` | Comportamento original do Azimuth. |
 | `Capture` | Grava cada requisição em `data/bin/FH2_Network.jsonl` e responde "offline". |
-| `Proxy` | Encaminha para `Server=host:porta`. É o modo dos jogadores. |
+| `Proxy` | Encaminha para `Server=host:porta` ou `Server=https://host[:porta]` (TLS pelo WinHTTP). É o modo dos jogadores. |
 
 ## Servidor
 
@@ -56,4 +56,4 @@ Ghidra 12.1.4 headless. `notes/ghidra-scripts/Decomp.java` decompila uma lista d
 
 ## Release dos jogadores
 
-`tools/package_release.sh [--server host:port]` compila o hook e monta `dist/ForzaInfinity.zip` mais os mesmos arquivos soltos. Anexe tudo de `dist/` a uma release do GitHub: a landing e os instaladores apontam para `releases/latest/download/…`. O `install.ps1` precisa de um teste num Windows antes de cada release.
+`tools/package_release.sh [--server host:port | https://host]` (para a release pública: `--server https://infinity.anarqz.dev`) compila o hook e monta `dist/ForzaInfinity.zip` mais os mesmos arquivos soltos. Anexe tudo de `dist/` a uma release do GitHub: a landing e os instaladores apontam para `releases/latest/download/…`. O `install.ps1` precisa de um teste num Windows antes de cada release.
