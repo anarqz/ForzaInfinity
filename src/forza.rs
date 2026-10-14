@@ -62,6 +62,9 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
             "reconcileActiveNotifications": false, "activeNotificationIds": [],
         }),
         (false, "DailyCreditBonus", "GetPayout") => json!({ "dailyPayout": {} }),
+        // Transactional (X-TransactionId): credits granted by the service. Nothing to grant yet.
+        (false, "User", "RetrieveOnlineCredits") => json!({ "credit": 0 }),
+        (true, "Transaction", "Reconcile") => reconcile(ctx, params),
         // Lists that are empty until the server has the content (storefront, clubs, drivatars).
         (false, "Storefront", "GetFileKeywords")
         | (false, "Storefront", "GetLiveriesForDrivatar")
@@ -288,6 +291,24 @@ fn rows_anthem(ctx: &Ctx, params: &Value) -> Value {
         .map(|i| row_json(i + 1, &rows[i]))
         .unwrap_or_else(|| json!({ "user": user_data(ctx, ctx.xuid) }));
     json!({ "rows": page, "userRow": user_row, "available": rows.len(), "totalRowCount": rows.len() })
+}
+
+/// Transaction.Reconcile: the client asks for the reply to a transactional request it did not
+/// get. WebRequestPayload is that whole reply (12-byte header + results), which the client
+/// parses as if it had just arrived (FUN_140efce10). Xls error 6 (HRESULT 0x80510006) makes
+/// it close the transaction as failed and stop asking (FUN_140f04c80).
+fn reconcile(ctx: &Ctx, params: &Value) -> Value {
+    let id = params["transactionId"].as_str().unwrap_or("");
+    match ctx.store.transaction(id) {
+        Some(body) => {
+            let hex: String = body.iter().map(|b| format!("{b:02x}")).collect();
+            json!({ "WebRequestPayload": hex, "cbMaxAvailable": body.len() })
+        }
+        None => {
+            ctx.event("transaction", "Transação antiga descartada (o servidor não a conhecia)", json!({ "transactionId": id }));
+            json!({ "__xtsw_error": { "code": 6, "message": "unknown transaction" } })
+        }
+    }
 }
 
 fn create_tune(ctx: &Ctx, params: &Value) -> Value {

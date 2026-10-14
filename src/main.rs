@@ -428,6 +428,13 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
         }
     }
 
+    // Transactional requests: keep the exact reply for Transaction.Reconcile.
+    if let (Some(tx), Some(_)) = (request.header("x-transactionid"), &response_xtsw) {
+        if (200..300).contains(&status) {
+            app.store.save_transaction(tx, ctx.xuid, &label, &out_body);
+        }
+    }
+
     // Live feed for the manager UI: every game request (not stored), then the handler's events.
     app.hub.broadcast(&json!({
         "type": "request",
@@ -526,6 +533,14 @@ fn forza_answer(
         return Some(answer);
     }
 
+    // A handler can answer with an Xls error: {"__xtsw_error": {"code": n, "message": "..."}}.
+    if let Some(err) = builtin.as_ref().and_then(|b| b.get("__xtsw_error")) {
+        let code = err["code"].as_u64().unwrap_or(1) as u32;
+        let message = err["message"].as_str().unwrap_or("");
+        answer.response = Some(json!({ "xtsw_error": err }));
+        answer.reply = Some((status, headers, xtsw::error_envelope(code, message)));
+        return Some(answer);
+    }
     let mut results = builtin.unwrap_or_else(|| json!({}));
     if let Some(over) = spec.and_then(|s| s.xtsw.as_ref()) {
         forza::merge(&mut results, over);
