@@ -15,8 +15,11 @@ Funcionando e testado no jogo (PC):
 - Textos do Infinity (hook e mensagens do servidor visíveis no jogo) em inglês. O painel web segue em português.
 - Teste das edições de XAML/fluxo: `python hook\tests\ui_edits_test.py <zig> <Mount>` (compila as funções reais do `azimuth_ui.c` e valida o XML).
 
+- Perfil novo (fh2online.29, não testado no jogo ainda): "Create profile" pede o carro inicial (Camaro SS 69 = 289, Supra RZ 98 = 461, BMW Z4 11 = 1218; o servidor recusa outros) e o servidor grava como save na nuvem o template `server/templates/starter-<carro>.bundle`, gerado por `tools/make_starter_saves.py` a partir do save offline (depois do 1º campeonato, 50.000 CR, `IntroducedMultiplayer` ligado para pular o vídeo do online). O boot seguinte baixa esse save. Formato: `SaveState` XML; `PlayerDatabase` = `ssmc` + u32 tamanho + SQLite + zeros até 6.291.464; `ProfileData` com campos binários (Credits, MostValuableCar).
+- A linha de status da pausa consulta o servidor (1 s) toda vez que a pausa abre.
+
 Pendente:
-- Perfil inicial pronto (decidido: começar depois do 1º campeonato, derivado do save offline deste PC; escolha entre Camaro SS 69 (289), Supra RZ 98 (461) e BMW Z4 11 (1218), da tabela `IEAutoShowCars`). Save: `SaveState` é XML, `PlayerDatabase` é SQLite após 8 bytes (`ssmc`), tabelas `NewProfile_*` no `gamedbRC.slt`. Scripts em `notes/decomp_work` (`savepeek.py`, `savedump.py`, `gamedbq.py`).
+- Testar o perfil novo no jogo: este PC já tem conta (uma por PC), então é preciso apagar a conta de teste `Alex#72178` no servidor e o `Token` no `FH2Online_Accounts.ini`, ou testar num PC/Deck sem conta.
 - Steam Deck (`deck@192.168.68.93`, jogo em `/run/media/SN01T/piShop/Forza Horizon 2`, perfil `anarqz#08723`) ainda com fh2online.17.
 - O perfil de teste `Alex#72178` tem uma cópia do progresso offline (do teste do save na nuvem); backup em `FH2\saves-backup-20261014-131022`.
 - Regras de trabalho com o usuário: não controlar teclado, controle nem o jogo dele; cópias de arquivo, builds e reinício do servidor são permitidos.
