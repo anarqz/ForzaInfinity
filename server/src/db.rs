@@ -20,6 +20,7 @@ use serde_json::{Map, Value, json};
 use crate::{gamedb::Catalog, unix_ms};
 
 pub mod clubs;
+pub mod notifications;
 pub use clubs::{ClubFields, ROLE_COLEADER, ROLE_LEADER, ROLE_MEMBER};
 
 const MAX_EVENTS: i64 = 5000;
@@ -96,6 +97,7 @@ impl Store {
         )
         .map_err(|e| e.to_string())?;
         db.execute_batch(clubs::SCHEMA).map_err(|e| e.to_string())?;
+        db.execute_batch(notifications::SCHEMA).map_err(|e| e.to_string())?;
         Ok(Store { db: Mutex::new(db) })
     }
 
@@ -637,6 +639,7 @@ impl Store {
                 "DELETE FROM club_invites WHERE xuid = ?1 OR sender = ?1",
                 "DELETE FROM club_requests WHERE xuid = ?1",
                 "DELETE FROM user_settings WHERE xuid = ?1",
+                "DELETE FROM notifications WHERE xuid = ?1",
             ] {
                 db.execute(sql, [x])?;
             }
@@ -879,6 +882,7 @@ impl Store {
             "achievements": [],
             "friends": self.friends_json(xuid),
             "presence": self.presence_json(xuid),
+            "notifications": self.notifications_json(xuid),
         }))
     }
 

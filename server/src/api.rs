@@ -9,6 +9,10 @@
 //!   PUT    /api/users/<xuid>/friends/<f> {favorite}   mark a friend as favorite
 //!   DELETE /api/users/<xuid>/friends/<f> undo a friendship
 //!
+//!   GET    /api/users/<xuid>/notifications   the player's in-game inbox
+//!   POST   /api/users/<xuid>/notifications {kind: "message", message}
+//!          or {kind: "rival", from}: a test "your rival beat your time" on the player's last event
+//!   DELETE /api/notifications/<id>
 //!   GET    /api/clubs                     clubs (members, invites, requests, notices) + keywords
 //!   POST   /api/clubs {owner, tag, name, description, privacy, region, attitude, interest}
 //!   PUT    /api/clubs/<id> {name, description, privacy, region, attitude, interest}
@@ -78,6 +82,10 @@ pub fn handle(app: &App, request: &Request) -> Outcome {
             Some(x) => json_reply(200, &app.store.friends_json(x)),
             None => json_reply(404, &json!({ "error": "unknown player" })),
         },
+        ["users", xuid, "notifications"] => match xuid.parse::<u64>().ok().filter(|&x| app.store.user_exists(x)) {
+            Some(x) => json_reply(200, &app.store.notifications_json(x)),
+            None => json_reply(404, &json!({ "error": "unknown player" })),
+        },
         ["users", xuid] => match xuid.parse::<u64>().ok().and_then(|x| app.store.user_profile(x, &app.catalog)) {
             Some(profile) => json_reply(200, &profile),
             None => json_reply(404, &json!({ "error": "unknown player" })),
@@ -141,6 +149,29 @@ fn change(app: &App, request: &Request, path: &str) -> Vec<u8> {
         ("DELETE", ["users", x, "friends", f]) => match (xuid(x), xuid(f)) {
             (Some(a), Some(b)) if app.store.remove_friend(a, b) => Ok(app.store.friends_json(a)),
             _ => Err((404, "amizade desconhecida".into())),
+        },
+        ("POST", ["users", x, "notifications"]) => match xuid(x) {
+            Some(to) => match body["kind"].as_str().unwrap_or("message") {
+                "message" => {
+                    let text = body["message"].as_str().unwrap_or("").trim().to_owned();
+                    if text.is_empty() {
+                        Err((400, "mensagem vazia".into()))
+                    } else {
+                        let id = app.store.notify(to, crate::db::notifications::MESSAGE, json!({ "Message": text, "SRAUri": "" }));
+                        Ok(json!({ "id": id }))
+                    }
+                }
+                "rival" => match body_xuid(&body, "from").filter(|&f| app.store.user_exists(f) && f != to) {
+                    Some(from) => test_rival(app, to, from),
+                    None => Err((400, "escolha quem desafia".into())),
+                },
+                _ => Err((400, "kind: message ou rival".into())),
+            },
+            None => Err((404, "jogador desconhecido".into())),
+        },
+        ("DELETE", ["notifications", id]) => match id.parse::<i64>() {
+            Ok(id) if app.store.delete_notification(id) => Ok(json!({})),
+            _ => Err((404, "notificação desconhecida".into())),
         },
         ("POST", ["clubs"]) => {
             let owner = body_xuid(&body, "owner");
@@ -221,6 +252,39 @@ fn change(app: &App, request: &Request, path: &str) -> Vec<u8> {
         }
         Err((status, error)) => json_reply(status, &json!({ "error": error })),
     }
+}
+
+/// A test "your rival beat your time": `from` beats `to`'s most recent score by 1 to 3%.
+fn test_rival(app: &App, to: u64, from: u64) -> Result<Value, (u16, String)> {
+    let profile = app.store.user_profile(to, &app.catalog).unwrap_or(Value::Null);
+    let last = profile["scores"].as_array().and_then(|s| s.first()).cloned();
+    let Some(last) = last else { return Err((400, "o jogador ainda não tem pontuação em nenhum evento".into())) };
+    let score_type = last["scoreType"].as_i64().unwrap_or(1);
+    let mine = last["score"].as_f64().unwrap_or(0.0);
+    let k = 0.01 + (crate::unix_ms() % 200) as f64 / 10_000.0;
+    let score = if score_type == 1 { mine * (1.0 - k) } else { mine * (1.0 + k) };
+    let track = last["trackId"].as_i64().unwrap_or(-1);
+    let track_name = last["track"]["name"].as_str().unwrap_or("").to_owned();
+    let club = app.store.membership(from).and_then(|(id, role)| app.store.club(id).map(|c| (c.tag, role)));
+    let params = json!({
+        "senderXuid": from,
+        "senderGamertag": app.store.gamertag(from),
+        "senderClubTag": club.as_ref().map(|c| c.0.clone()).unwrap_or_default(),
+        "senderClubRole": club.as_ref().map(|c| c.1).unwrap_or(0),
+        "senderFlags": 0,
+        "sentTime": crate::forza::iso_utc(crate::unix_ms()),
+        "timeTrialId": last["gameScoreboardId"],
+        "carId": last["carId"],
+        "carClassId": last["carClassId"],
+        "localizedTimeTrialName": track_name,
+        "trackName": track_name,
+        "trackId": track,
+        "score": score,
+        "scoreType": score_type,
+        "category": last["scoreboardType"],
+    });
+    let id = app.store.notify(to, crate::db::notifications::TIME_BEATEN, params);
+    Ok(json!({ "id": id, "score": score }))
 }
 
 fn clubs_reply(app: &App) -> Value {

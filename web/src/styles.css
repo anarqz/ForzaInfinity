@@ -239,3 +239,9 @@ select {
 .club-create .tag-input { flex: 0 0 70px; min-width: 0; text-transform: uppercase; }
 .club-create .wide { flex-basis: 100%; }
 .btn.small { padding: 4px 10px; font-size: 12px; }
+/* ------------------------------------------------------------ inbox */
+.inbox { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow: auto; }
+.inbox li { display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px; border-radius: 10px; font-size: 13px; background: rgba(255,45,120,.06); }
+.inbox li.read { background: transparent; opacity: .75; }
+.inbox-icon { flex: none; }
+.inbox-text { flex: 1; min-width: 0; }

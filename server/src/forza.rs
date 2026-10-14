@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::{db::Store, gamedb::Catalog};
 
 mod clubs;
+mod notifications;
 
 /// The Car Club keywords (id, category, text) the server offers.
 pub fn club_keywords() -> &'static [(i64, i64, &'static str)] {
@@ -56,6 +57,11 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
     let xls = class.starts_with("Xls.");
     if let Some(reply) = clubs::handle(ctx, xls, short, method, params) {
         return Some(reply);
+    }
+    if xls && short == "Notifications" {
+        if let Some(reply) = notifications::handle(ctx, method, params) {
+            return Some(reply);
+        }
     }
     Some(match (xls, short, method) {
         (false, "User", "Logon") => user_logon(ctx, params),
@@ -98,10 +104,6 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
             ctx.event("gameplay", "Log de gameplay recebido", params.clone());
             json!({})
         }
-        (true, "Notifications", "RetrieveForUser") => json!({
-            "results": [], "parameterBlock": "", "nextRetrieveSeconds": 300,
-            "reconcileActiveNotifications": false, "activeNotificationIds": [],
-        }),
         (false, "DailyCreditBonus", "GetPayout") => json!({ "dailyPayout": {} }),
         // The game's own offline values, read from ForzaEconomyModule in the running game by
         // the hook's economy probe (FH2_ExtraOptions.log, 2026-10-13). UseServerValues is 1 in
@@ -465,6 +467,7 @@ fn submit_score(ctx: &Ctx, params: &Value) -> Value {
         ),
         json!({ "scoreId": score_id, "scoreType": score_type, "data": data }),
     );
+    notifications::rivals_beaten(ctx, score_type, data);
     // Ask for the ghost (Scoreboard.UploadFile) only for a new personal best on this event.
     json!({ "scoreId": score_id, "uploadFiles": ctx.store.is_personal_best(&score_id) })
 }
