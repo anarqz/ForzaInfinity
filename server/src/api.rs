@@ -279,7 +279,7 @@ fn test_rival(app: &App, to: u64, from: u64) -> Result<Value, (u16, String)> {
         "senderClubRole": club.as_ref().map(|c| c.1).unwrap_or(0),
         "senderFlags": 0,
         "sentTime": crate::forza::iso_utc(crate::unix_ms()),
-        "timeTrialId": event,
+        "timeTrialId": crate::forza::challenge_target(board, event).1,
         "carId": car,
         "carClassId": class.max(0),
         "localizedTimeTrialName": track_name,
@@ -287,7 +287,7 @@ fn test_rival(app: &App, to: u64, from: u64) -> Result<Value, (u16, String)> {
         "trackId": track,
         "score": score,
         "scoreType": score_type,
-        "category": board,
+        "category": crate::forza::challenge_target(board, event).0,
     });
     let id = app.store.notify(to, crate::db::notifications::TIME_BEATEN, params);
     Ok(json!({ "id": id, "score": score, "trackId": track, "event": event }))
