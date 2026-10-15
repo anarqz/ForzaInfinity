@@ -40,6 +40,7 @@ mod forza;
 mod gamedb;
 mod strtable;
 mod gamerpic;
+mod l10n;
 mod guard;
 mod live;
 mod news_cli;

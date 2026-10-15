@@ -815,6 +815,7 @@ impl Store {
                 // their inbox, and what they sent to others (messages, rival times)
                 "DELETE FROM notifications WHERE xuid = ?1 OR json_extract(params, '$.senderXuid') = ?1",
                 "DELETE FROM accounts WHERE xuid = ?1",
+                "DELETE FROM account_lang WHERE xuid = ?1",
                 "DELETE FROM devices WHERE xuid = ?1",
                 "DELETE FROM web_keys WHERE xuid = ?1",
                 "DELETE FROM saves WHERE xuid = ?1",
