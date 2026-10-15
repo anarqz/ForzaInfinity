@@ -459,6 +459,9 @@ function Install({ t }: { t: Texts }) {
       <p className="section-note" data-reveal>
         {t.install.note}
       </p>
+      <p className="requires" data-reveal>
+        <IconLock /> {t.install.requires}
+      </p>
       <div className="install glass" data-reveal>
         <div className="tabs" role="tablist">
           {(["windows", "deck", "linux"] as const).map((p) => (

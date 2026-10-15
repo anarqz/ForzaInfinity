@@ -12,7 +12,7 @@ const en = {
       "ForzaInfinity brings Forza Horizon 2's online side back to the PC version on Azimuth. Friends, car clubs, rival ghosts, leaderboards, shared liveries and a cloud save that follows you from your PC to the Steam Deck.",
     cta: "Get ForzaInfinity",
     cta2: "See what's back",
-    platforms: "Windows · Steam Deck · Linux",
+    platforms: "Windows · Steam Deck · Linux · Azimuth 0.9.7",
   },
   toast: {
     label: "Festival milestone",
@@ -86,6 +86,8 @@ const en = {
   install: {
     title: "Up and running in a minute",
     note: "The installer keeps Azimuth's original file as a backup and only touches its data/bin folder.",
+    requires:
+      "Requires Azimuth 0.9.7. Azimuth 0.9.8 and 0.9.9 are not supported yet (the game would play offline): keep your 0.9.7 folder for now. The installer checks the version for you.",
     tabs: { windows: "Windows", deck: "Steam Deck", linux: "Linux" } as Record<Platform, string>,
     steps: {
       windows: [
@@ -118,7 +120,7 @@ const en = {
       },
       {
         q: "What do I need?",
-        a: "Your own copy of Forza Horizon 2 on Azimuth 0.9.7, a server to connect to, and an offline save: play until the game saves once before creating your profile.",
+        a: "Your own copy of Forza Horizon 2 on Azimuth 0.9.7 (0.9.8 and 0.9.9 are not supported yet), a server to connect to, and an offline save: play until the game saves once before creating your profile.",
       },
       {
         q: "Will I lose my progress?",
@@ -160,7 +162,7 @@ const pt: Texts = {
       "O ForzaInfinity traz de volta o lado online do Forza Horizon 2 para a versão de PC no Azimuth. Amigos, clubes de carros, fantasmas dos rivais, placares, pinturas compartilhadas e um save na nuvem que vai do seu PC ao Steam Deck.",
     cta: "Baixar o ForzaInfinity",
     cta2: "Ver o que voltou",
-    platforms: "Windows · Steam Deck · Linux",
+    platforms: "Windows · Steam Deck · Linux · Azimuth 0.9.7",
   },
   toast: {
     label: "Marco do festival",
@@ -233,6 +235,8 @@ const pt: Texts = {
   install: {
     title: "Rodando em um minuto",
     note: "O instalador guarda o arquivo original do Azimuth como backup e só mexe na pasta data/bin dele.",
+    requires:
+      "Requer o Azimuth 0.9.7. O Azimuth 0.9.8 e o 0.9.9 ainda não são suportados (o jogo ficaria offline): mantenha a sua pasta da 0.9.7 por enquanto. O instalador confere a versão para você.",
     tabs: { windows: "Windows", deck: "Steam Deck", linux: "Linux" },
     steps: {
       windows: [
@@ -266,7 +270,7 @@ const pt: Texts = {
       },
       {
         q: "Do que eu preciso?",
-        a: "Sua própria cópia do Forza Horizon 2 no Azimuth 0.9.7, um servidor para se conectar e um save offline: jogue até o jogo salvar uma vez antes de criar o perfil.",
+        a: "Sua própria cópia do Forza Horizon 2 no Azimuth 0.9.7 (a 0.9.8 e a 0.9.9 ainda não são suportadas), um servidor para se conectar e um save offline: jogue até o jogo salvar uma vez antes de criar o perfil.",
       },
       {
         q: "Vou perder meu progresso?",

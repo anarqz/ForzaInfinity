@@ -7,8 +7,11 @@ and keeps the original as a backup; the game is never modified on disk.
 
 ## Before you start
 
-- Your own copy of Forza Horizon 2 running on Azimuth 0.9.7, on Windows or on Linux / Steam
-  Deck through Proton.
+- Your own copy of Forza Horizon 2 running on **Azimuth 0.9.7**, on Windows or on Linux / Steam
+  Deck through Proton. **Azimuth 0.9.8 and 0.9.9 are not supported yet**: the hook only goes
+  online on the Azimuth build it was made for, so on a newer one the game plays offline. Keep
+  your 0.9.7 folder for now. The installers read the version from `azimuth.exe` and stop on
+  another one (`FORCE=1 ./install.sh` or `install.ps1 -Force` installs anyway).
 - A ForzaInfinity server. The installer suggests the public one, `https://infinity.anarqz.dev`
   (150 players at a time, then a waiting line). For another server, use the address its owner
   gives you (`https://host` or `host:port`); to run one yourself, see [SERVER.md](SERVER.md).

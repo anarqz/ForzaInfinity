@@ -1025,6 +1025,29 @@ h3 {
   padding: 34px;
 }
 
+/* the supported Azimuth version, above the install steps */
+.requires {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: -16px 0 24px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  background: rgba(255, 181, 71, 0.1);
+  border: 1px solid rgba(255, 181, 71, 0.4);
+  color: #ffe2b0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.requires svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  color: #ffb547;
+}
+
 .tabs {
   display: inline-flex;
   gap: 4px;
