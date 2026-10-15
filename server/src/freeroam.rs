@@ -6,7 +6,9 @@
 //!   - `gameserverds.xboxlive.com …/variants`: one variant, `Release_6CC152FD.FreeRoam`;
 //!   - `gameserverds.xboxlive.com /qosservers`: exactly one QoS server;
 //!   - `gameserverms.xboxlive.com …/clusters` (POST): the cluster is "Fulfilled" at once;
-//!   - `sessiondirectory.xboxlive.com /serviceconfigs/…` (MPSD, contract 105), in memory.
+//!   - `sessiondirectory.xboxlive.com /serviceconfigs/…` (MPSD, contract 105), in memory;
+//!   - `momatch.xboxlive.com /serviceconfigs/…/hoppers/…` (SmartMatch, contract 103): every
+//!     ticket is found at once (not in fh2srv.py; see `smartmatch`).
 //!
 //! The trick (fh2srv.py 203-211): when a session written by the game has
 //! `constants.custom.gameServerPlatform`, we fill `servers.gameServerPlatform.properties.custom`
@@ -43,6 +45,9 @@ use serde_json::{Map, Value, json};
 pub const GAMESERVERDS: &str = "gameserverds.xboxlive.com";
 pub const GAMESERVERMS: &str = "gameserverms.xboxlive.com";
 pub const SESSIONDIRECTORY: &str = "sessiondirectory.xboxlive.com";
+pub const MOMATCH: &str = "momatch.xboxlive.com";
+/// Most match tickets kept at once (a ticket lives as long as its sessions' TTL).
+const MAX_TICKETS: usize = 512;
 
 // fh2srv.py 86-88
 const GAME_VARIANT: &str = "00000000-0000-0000-0000-00000000f001";
@@ -92,6 +97,8 @@ pub struct Freeroam {
     world: Option<WorldAddr>,
     /// MPSD sessions by path (lower-cased: session names are case-insensitive).
     sessions: Mutex<HashMap<String, Session>>,
+    /// SmartMatch tickets by id: (ticket session key, its details, created).
+    tickets: Mutex<HashMap<String, (String, Value, Instant)>>,
     ids: AtomicU64,
 }
 
@@ -136,7 +143,7 @@ fn device_token(xuid: u64) -> String {
 
 impl Freeroam {
     pub fn new(world: Option<WorldAddr>) -> Self {
-        Freeroam { world, sessions: Mutex::new(HashMap::new()), ids: AtomicU64::new(0) }
+        Freeroam { world, sessions: Mutex::new(HashMap::new()), tickets: Mutex::new(HashMap::new()), ids: AtomicU64::new(0) }
     }
 
     /// The world a player is sent to. F0: the configured one for everybody; F1 will pick the
@@ -192,6 +199,9 @@ impl Freeroam {
             GAMESERVERMS => self.gsms(method, path, body, xuid, now),
             SESSIONDIRECTORY if path.starts_with("/serviceconfigs/") => {
                 self.mpsd(method, path, body, xuid, gamertag, now)
+            }
+            MOMATCH if path.to_ascii_lowercase().starts_with("/serviceconfigs/") => {
+                self.smartmatch(method, path, body, xuid, gamertag, now)
             }
             _ => None,
         }
@@ -403,6 +413,165 @@ impl Freeroam {
         sessions.insert(key, Session { doc: doc.clone(), touched: now });
         // fh2srv.py 216
         Some(Reply::json(if created { 201 } else { 200 }, doc))
+    }
+
+    /// SmartMatch (momatch, contract 103), as Microsoft.Xbox.Services.dll calls it
+    /// (MatchmakingService: CreateMatchTicketAsync, GetMatchTicketDetailsAsync,
+    /// DeleteMatchTicketAsync, GetHopperStatisticsAsync). After writing its ticket session
+    /// (properties.system.matchmaking.targetSessionConstants), the game creates a ticket for a
+    /// hopper (FreeRoam_qos, CarMeet_qos, RoadTrip_qos); with no answer it deletes the ticket and
+    /// shows an error. Here every ticket is found at once: the hopper has one shared target
+    /// session (the world), made from the ticket's targetSessionConstants with the player
+    /// reserved in it and its game server filled, and the ticket session's
+    /// servers.matchmaking says "found" with the targetSessionRef, as SmartMatch wrote it.
+    ///   POST   /serviceconfigs/{scid}/hoppers/{hopper}              -> {ticketId, waitTime}
+    ///   GET    /serviceconfigs/{scid}/hoppers/{hopper}/tickets/{id} -> ticket details
+    ///   DELETE /serviceconfigs/{scid}/hoppers/{hopper}/tickets/{id} -> 204
+    ///   GET    /serviceconfigs/{scid}/hoppers/{hopper}/stats        -> {name, waitTime, population}
+    fn smartmatch(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        xuid: u64,
+        gamertag: &dyn Fn(u64) -> String,
+        now: Instant,
+    ) -> Option<Reply> {
+        let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
+        // serviceconfigs, scid, hoppers, hopper [, tickets, id | stats]
+        if parts.len() < 4 || !parts[2].eq_ignore_ascii_case("hoppers") {
+            return None;
+        }
+        let (scid, hopper) = (parts[1], parts[3]);
+        let what = parts.get(4).map(|p| p.to_ascii_lowercase());
+        match (method, what.as_deref(), parts.get(5).filter(|id| !id.is_empty())) {
+            ("POST", None, _) => {}
+            ("GET", Some("stats"), _) => {
+                let population = self.tickets.lock().unwrap_or_else(|p| p.into_inner()).len();
+                return Some(Reply::json(200, json!({ "name": hopper, "waitTime": 0, "population": population })));
+            }
+            ("GET", Some("tickets"), Some(id)) => {
+                let tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
+                return Some(match tickets.get(*id) {
+                    Some((_, details, _)) => Reply::json(200, details.clone()),
+                    None => Reply::json(404, json!({})),
+                });
+            }
+            ("DELETE", Some("tickets"), id) => {
+                if let Some(id) = id {
+                    self.tickets.lock().unwrap_or_else(|p| p.into_inner()).remove(*id);
+                }
+                return Some(Reply { status: 204, body: None });
+            }
+            _ => return None,
+        }
+        let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let ticket_ref = &request["ticketSessionRef"];
+        let (Some(ticket_template), Some(ticket_name)) =
+            (ticket_ref["templateName"].as_str(), ticket_ref["name"].as_str())
+        else {
+            return Some(Reply::json(400, json!({ "error": "ticketSessionRef is missing" })));
+        };
+        let ticket_scid = ticket_ref["scid"].as_str().unwrap_or(scid);
+        let ticket_key = format!("/serviceconfigs/{ticket_scid}/sessiontemplates/{ticket_template}/sessions/{ticket_name}")
+            .to_ascii_lowercase();
+        // one world per hopper: everybody who looks for FreeRoam_qos meets in the same session
+        let target_name = format!("fh2inf-{}", hopper.to_ascii_lowercase());
+        let target_ref = json!({ "scid": ticket_scid, "templateName": ticket_template, "name": target_name });
+        let target_key = format!("/serviceconfigs/{ticket_scid}/sessiontemplates/{ticket_template}/sessions/{target_name}")
+            .to_ascii_lowercase();
+
+        let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
+        sessions.retain(|_, s| now.saturating_duration_since(s.touched) < SESSION_TTL);
+        let Some(ticket_session) = sessions.get_mut(&ticket_key) else {
+            return Some(Reply::json(404, json!({ "error": "the ticket session does not exist" })));
+        };
+        let target_constants = ticket_session.doc["properties"]["system"]["matchmaking"]["targetSessionConstants"].clone();
+        // the ticket session: SmartMatch's result (MultiplayerSession reads
+        // servers.matchmaking.properties.system: status, targetSessionRef)
+        ticket_session.doc["servers"]["matchmaking"] = json!({
+            "constants": { "system": {}, "custom": {} },
+            "properties": { "system": {
+                "status": "found", "statusDetails": "", "typicalWait": 0, "targetSessionRef": target_ref.clone(),
+            }, "custom": {} },
+        });
+        ticket_session.touched = now;
+
+        // the target session (the world), made or refreshed
+        if !sessions.contains_key(&target_key) {
+            let ts = now_iso();
+            println!("freeroam: world session {target_name} created for hopper {hopper}");
+            sessions.insert(target_key.clone(), Session {
+                doc: json!({
+                    "contractVersion": 105, "correlationId": self.uuid(&target_key), "startTime": ts, "nextTimer": ts,
+                    "constants": { "system": { "visibility": "open", "maxMembersCount": 12 }, "custom": {} },
+                    "properties": { "system": { "keywords": [], "turn": [], "joinRestriction": "none" }, "custom": {} },
+                    "servers": {}, "members": {}, "hostCandidates": [],
+                    "membersInfo": { "first": 0, "next": 0, "count": 0, "accepted": 0, "active": 0 },
+                }),
+                touched: now,
+            });
+        }
+        let server = |location: &str| self.server_entry(xuid, location);
+        let Some(target) = sessions.get_mut(&target_key) else {
+            return Some(Reply::json(500, json!({})));
+        };
+        target.touched = now;
+        if let (Value::Object(constants), Value::Object(from)) = (&mut target.doc["constants"], target_constants) {
+            merge(constants, from);
+        }
+        let location = target.doc["constants"]["custom"]["gameServerPlatform"]["location"]
+            .as_str()
+            .unwrap_or(LOCATION)
+            .to_owned();
+        target.doc["servers"]["gameServerPlatform"] = server(&location);
+        // the player, reserved in the world as SmartMatch did (the game then writes "me" active)
+        let present = target.doc["members"]
+            .as_object()
+            .is_some_and(|m| m.values().any(|v| v["constants"]["system"]["xuid"] == json!(xuid.to_string())));
+        if !present {
+            let next = target.doc["membersInfo"]["next"].as_u64().unwrap_or(0);
+            target.doc["membersInfo"]["next"] = json!(next + 1);
+            target.doc["members"][next.to_string()] = json!({
+                "constants": { "system": { "xuid": xuid.to_string(), "index": next }, "custom": {} },
+                "properties": { "system": { "active": false, "ready": false }, "custom": {} },
+                "gamertag": match gamertag(xuid) {
+                    t if t.is_empty() => format!("Driver {}", xuid % 10000),
+                    t => crate::db::game_tag(&t),
+                },
+                "deviceToken": device_token(xuid),
+                "nat": "open",
+                "activeTitleId": "446059611",
+                "reserved": true,
+                "joinTime": now_iso(),
+                "turn": false,
+                "initializationEpisode": 0,
+            });
+            let count = target.doc["members"].as_object().map(|m| m.len()).unwrap_or(0);
+            target.doc["membersInfo"]["count"] = json!(count);
+            target.doc["membersInfo"]["accepted"] = json!(count);
+        }
+        drop(sessions);
+
+        let ticket_id = self.uuid(&ticket_key);
+        let details = json!({
+            "ticketStatus": "found",
+            "waitTime": 0,
+            "preserveSession": request["preserveSession"].clone(),
+            "ticketSessionRef": ticket_ref.clone(),
+            "targetSessionRef": target_ref,
+            "ticketAttributes": request["ticketAttributes"].clone(),
+        });
+        let mut tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
+        tickets.retain(|_, (_, _, made)| now.saturating_duration_since(*made) < SESSION_TTL);
+        if tickets.len() >= MAX_TICKETS {
+            if let Some(oldest) = tickets.iter().min_by_key(|(_, t)| t.2).map(|(k, _)| k.clone()) {
+                tickets.remove(&oldest);
+            }
+        }
+        tickets.insert(ticket_id.clone(), (ticket_key, details, now));
+        println!("freeroam: ticket {ticket_id} for {hopper} found -> {target_name} (xuid {xuid})");
+        Some(Reply::json(200, json!({ "ticketId": ticket_id, "waitTime": 0 })))
     }
 
     /// A random-looking version 4 UUID (no rand crate): the session path, the time and a counter.
@@ -634,6 +803,64 @@ mod tests {
         assert_eq!(f.session_count(), MAX_SESSIONS);
         // the oldest went first
         let r = f.handle_at("GET", SESSIONDIRECTORY, &format!("{SESSION}0"), b"", 7, &tag, t0).unwrap();
+        assert_eq!(r.status, 404);
+    }
+
+    #[test]
+    fn smartmatch_finds_the_world() {
+        let world: WorldAddr = "192.168.68.40:5101".parse().unwrap();
+        let f = Freeroam::new(Some(world));
+        let scid = "788f0100-a4bc-46c3-b19b-d1001a96545b";
+        let ticket_session = format!("/serviceconfigs/{scid}/sessionTemplates/defaultTemplate_qos/sessions/T1");
+        let constants = json!({ "custom": { "hopperId": 2, "gameServerPlatform": { "gameVariantId": GAME_VARIANT, "maxAllowedPlayers": 12 } } });
+        call(&f, "PUT", SESSIONDIRECTORY, &ticket_session, json!({
+            "properties": { "system": { "matchmaking": { "targetSessionConstants": constants } } },
+            "members": { "me": { "properties": { "system": { "active": true } } } },
+        }), 7);
+        let hopper = format!("/Serviceconfigs/{scid}/hoppers/FreeRoam_qos");
+        let r = call(&f, "POST", MOMATCH, &hopper, json!({
+            "preserveSession": "never", "scid": scid, "giveUpDuration": 3600000,
+            "ticketSessionRef": { "name": "T1", "scid": scid, "templateName": "defaultTemplate_qos" },
+            "ticketAttributes": { "hopperId": 2 },
+        }), 7);
+        assert_eq!(r.status, 200);
+        let body = r.body.unwrap();
+        let id = body["ticketId"].as_str().unwrap().to_owned();
+        assert_eq!(body["waitTime"], json!(0));
+        // the ticket session says found, with the target
+        let t = call(&f, "GET", SESSIONDIRECTORY, &ticket_session, Value::Null, 7).body.unwrap();
+        let mm = &t["servers"]["matchmaking"]["properties"]["system"];
+        assert_eq!(mm["status"], json!("found"));
+        assert_eq!(mm["targetSessionRef"]["name"], json!("fh2inf-freeroam_qos"));
+        // the target: the ticket's constants, the world, the player reserved
+        let target = format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/fh2inf-freeroam_qos");
+        let w = call(&f, "GET", SESSIONDIRECTORY, &target, Value::Null, 7).body.unwrap();
+        assert_eq!(w["constants"]["custom"]["hopperId"], json!(2));
+        assert_eq!(
+            w["servers"]["gameServerPlatform"]["properties"]["custom"]["secureDeviceAddress"],
+            json!(secure_device_address(&world))
+        );
+        assert_eq!(w["members"]["0"]["constants"]["system"]["xuid"], json!("7"));
+        assert_eq!(w["members"]["0"]["reserved"], json!(true));
+        // a second player meets in the same world; the first joining with "me" is not doubled
+        call(&f, "PUT", SESSIONDIRECTORY, &format!("/serviceconfigs/{scid}/sessionTemplates/defaultTemplate_qos/sessions/T2"),
+            json!({ "properties": { "system": { "matchmaking": { "targetSessionConstants": constants } } } }), 8);
+        call(&f, "POST", MOMATCH, &hopper,
+            json!({ "ticketSessionRef": { "name": "T2", "scid": scid, "templateName": "defaultTemplate_qos" } }), 8);
+        call(&f, "PUT", SESSIONDIRECTORY, &target, json!({ "members": { "me": { "properties": { "system": { "active": true } } } } }), 7);
+        let w = call(&f, "GET", SESSIONDIRECTORY, &target, Value::Null, 7).body.unwrap();
+        assert_eq!(w["membersInfo"]["count"], json!(2));
+        assert_eq!(w["membersInfo"]["active"], json!(1));
+        // ticket details, stats, delete
+        let d = call(&f, "GET", MOMATCH, &format!("{hopper}/tickets/{id}"), Value::Null, 7).body.unwrap();
+        assert_eq!(d["ticketStatus"], json!("found"));
+        assert_eq!(call(&f, "GET", MOMATCH, &format!("{hopper}/stats"), Value::Null, 7).status, 200);
+        assert_eq!(call(&f, "DELETE", MOMATCH, &format!("{hopper}/tickets/{id}"), Value::Null, 7).status, 204);
+        assert_eq!(call(&f, "GET", MOMATCH, &format!("{hopper}/tickets/{id}"), Value::Null, 7).status, 404);
+        // the empty ticket id the game deletes after a failed create
+        assert_eq!(call(&f, "DELETE", MOMATCH, &format!("{hopper}/tickets/"), Value::Null, 7).status, 204);
+        // a ticket for a session that does not exist
+        let r = call(&f, "POST", MOMATCH, &hopper, json!({ "ticketSessionRef": { "name": "nope", "templateName": "x" } }), 7);
         assert_eq!(r.status, 404);
     }
 
