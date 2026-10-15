@@ -31,7 +31,8 @@ impl Bucket {
     fn limits(self) -> (f64, f64) {
         match self {
             Bucket::Game => (400.0, 25.0),
-            Bucket::Account => (30.0, 0.5),
+            // per account when the request carries its token (api::allowed), else per address
+            Bucket::Account => (60.0, 2.0),
             Bucket::Register => (3.0, 3.0 / 3600.0),
             Bucket::Login => (10.0, 10.0 / 600.0),
             Bucket::Save => (5.0, 1.0 / 30.0),
