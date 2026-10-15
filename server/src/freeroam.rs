@@ -1020,8 +1020,10 @@ mod tests {
         let fallback: WorldAddr = "10.9.9.9:5101".parse().unwrap();
         let f = Freeroam::new(Some(fallback));
         let host = Caller::new(50, "203.0.113.5".parse().unwrap(), &tag, &no_friends);
-        let lan_guest = Caller::new(51, "203.0.113.5".parse().unwrap(), &tag, &no_friends);
-        let guest = me(52);
+        // friends of the host: FREE ROAM ONLINE goes straight only to friends' worlds
+        let host_friend = |_: u64| vec![50];
+        let lan_guest = Caller::new(51, "203.0.113.5".parse().unwrap(), &tag, &host_friend);
+        let guest = Caller::new(52, "198.51.100.9".parse().unwrap(), &tag, &host_friend);
         let hosting = json!({
             "name": "Mundo", "message": "", "visibility": "public", "password": "", "maxPlayers": 12,
             "port": 5200, "lan": ["192.168.68.40"], "version": "x",
