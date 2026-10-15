@@ -15,7 +15,17 @@ Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no
   - quando o `azimuth-tls.dll` atual tem menos de 64 KB (o original que uma atualização do Azimuth devolve), ele vira o novo `.stock`. O original da 0.9.9 é diferente do da 0.9.7;
   - o `install.ps1` decodifica o INI baixado da release (o GitHub manda `octet-stream`, e o `.Content` vem em bytes).
 - **Modelo `release/FH2_ExtraOptions.ini`:** refeito a partir do da 0.2.74 (o anterior ainda era o da 0.2.34), com Autodrive `Cinematic`/`InEvents` e `[Network]`. `DisableAzimuthSaveChecksums=0` e `EnableMediaOverrides=0`, como testado. O parser de verdade (`settings_read`, rodado no Wine) aceita o modelo novo, o antigo e o do upstream.
-- **Sem release ainda.** O pacote está em `dist/` (`ForzaInfinity.zip`, DLL `bd806ef9…`). Falta o teste no Windows; não tenho acesso a ele.
+- **Release `v0.1.2` (Latest)** com o .36. O teste no Windows ainda falta (o Alex está instalando o SSH nele).
+- **Servidor "mundo aberto"** (pedido do Alex; no ar no público às 11:49 UTC, com backup `data/pre-open-world-20261015T114836.sqlite` na VM):
+  - `Ctx::can_see` vale para qualquer conta não banida: tempos, fantasmas (`DownloadFile`), pinturas, storefront, nomes, perfil e presença de um jogador;
+  - placares são o servidor inteiro, com a posição real; `isClubBoard` mostra só o clube. O servidor imprime o `view` de cada pedido ("scoreboard view …") para descobrirmos qual é o filtro de amigos;
+  - drivatars (`GetDrivatarsForCache` e grid) vêm de todo mundo: amigos primeiro, depois os outros embaralhados por pedido (`Store::drivatar_owners`);
+  - rival (`GetRival`): o amigo mais próximo, senão qualquer jogador; fantasma de qualquer um;
+  - clubes: todos aparecem na busca (os ocultos, privacidade 3, não), `clubXPRank` real e convite para qualquer jogador;
+  - continuam só entre amigos: lista de amigos e presença em grupo, mensagens, desafios, Meus Rivais e convites sugeridos;
+  - contas banidas ficam fora dos placares, dos fantasmas e dos drivatars;
+  - teste `forza::tests::open_to_the_whole_server`;
+  - o texto do menu INFINITY no hook ainda diz "ghost races between friends" (mudar no próximo hook).
 
 ## Estado em 2026-10-15, noite (hook fh2online.35, Azimuth 0.9.9 mapeado): leia primeiro
 

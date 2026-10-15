@@ -355,7 +355,8 @@ impl Store {
                 let mut stmt = db.prepare(
                     "SELECT xuid, score, time, data FROM scores
                      WHERE scoreboard_type = ?1 AND score_type = ?2
-                       AND (?3 IS NULL OR track_id = ?3) AND (?4 IS NULL OR game_scoreboard_id = ?4)",
+                       AND (?3 IS NULL OR track_id = ?3) AND (?4 IS NULL OR game_scoreboard_id = ?4)
+                       AND xuid NOT IN (SELECT xuid FROM accounts WHERE banned = 1)",
                 )?;
                 let found = stmt
                     .query_map(params![scoreboard_type, score_type, track_id, game_scoreboard_id], |r| {
@@ -481,16 +482,18 @@ impl Store {
 
     /// The ghost of one of `owners` on a route (event ignored) whose score is closest to
     /// `score`: (ghost id, its score, its car).
-    pub fn nearest_ghost(&self, owners: &[u64], scoreboard_type: i64, score_type: i64, track_id: i64, score: f64) -> Option<(i64, f64, i64)> {
-        if owners.is_empty() {
-            return None;
-        }
-        // integers only: safe to inline
-        let list = owners.iter().map(|x| (*x as i64).to_string()).collect::<Vec<_>>().join(",");
+    /// The ghost closest to `score` on a route: among `owners`, or (None) everyone not banned.
+    pub fn nearest_ghost(&self, owners: Option<&[u64]>, scoreboard_type: i64, score_type: i64, track_id: i64, score: f64) -> Option<(i64, f64, i64)> {
+        let whose = match owners {
+            Some([]) => return None,
+            // integers only: safe to inline
+            Some(owners) => format!("xuid IN ({})", owners.iter().map(|x| (*x as i64).to_string()).collect::<Vec<_>>().join(",")),
+            None => "xuid NOT IN (SELECT xuid FROM accounts WHERE banned = 1)".to_owned(),
+        };
         self.with(|db| {
             db.query_row(
                 &format!(
-                    "SELECT id, score, car_id FROM ghosts WHERE xuid IN ({list}) AND scoreboard_type = ?1 AND score_type = ?2
+                    "SELECT id, score, car_id FROM ghosts WHERE {whose} AND scoreboard_type = ?1 AND score_type = ?2
                        AND track_id = ?3 ORDER BY abs(score - ?4) LIMIT 1"
                 ),
                 params![scoreboard_type, score_type, track_id, score],
@@ -537,6 +540,19 @@ impl Store {
                 params![xuid as i64, data.to_string(), unix_ms()],
             )
         });
+    }
+
+    /// The players with a drivatar (accounts not banned), the most recently trained first.
+    pub fn drivatar_owners(&self, limit: usize) -> Vec<u64> {
+        self.with(|db| {
+            let mut stmt = db.prepare(
+                "SELECT d.xuid FROM drivatars d JOIN accounts a ON a.xuid = d.xuid
+                 WHERE a.banned = 0 ORDER BY d.updated DESC LIMIT ?1",
+            )?;
+            let found = stmt.query_map([limit as i64], |r| r.get::<_, i64>(0))?.flatten().map(|x| x as u64).collect::<Vec<_>>();
+            Ok(found)
+        })
+        .unwrap_or_default()
     }
 
     /// (data, updated, saves) of a player's drivatar.

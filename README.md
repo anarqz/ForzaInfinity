@@ -10,9 +10,12 @@ Forza Horizon 2's online services, back for the PC version running on **Azimuth 
 - **Friends**: add each other by `Name#12345` from the game, see who is online.
 - **Car Clubs**: create, invite, roles, notice board.
 - **Rivals and ghost races**: every friend's best time on each route is a time to beat, with
-  their ghost.
-- **Leaderboards**: speed traps, speed zones and skill chains among friends.
-- **Drivatars**: your friends race you and park at car meets, in their cars' colours.
+  their ghost; with no friend there, the closest time on the server. Every ghost on the
+  leaderboards can be raced.
+- **Leaderboards**: speed traps, speed zones, skill chains and race times against every player
+  on the server, with real positions.
+- **Drivatars**: every player's drivatar races you and fills the roads and car meets, in their
+  cars' colours; friends first.
 - **Storefront**: share designs, vinyl groups and tunes; browse, download, like; three
   strikes from different players take a file down.
 - **Cloud save**: your profile starts from your offline progress and follows you to another

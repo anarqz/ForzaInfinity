@@ -307,6 +307,16 @@ impl Store {
         .unwrap_or(0)
     }
 
+    /// A player everyone sees (leaderboards, ghosts, drivatars, shared files): an account that
+    /// is not banned.
+    pub fn is_public_player(&self, xuid: u64) -> bool {
+        self.with(|db| {
+            db.query_row("SELECT banned FROM accounts WHERE xuid = ?1", [xuid as i64], |r| r.get::<_, i64>(0)).optional()
+        })
+        .flatten()
+            == Some(0)
+    }
+
     pub fn set_banned(&self, xuid: u64, banned: bool) -> bool {
         self.with(|db| db.execute("UPDATE accounts SET banned = ?1 WHERE xuid = ?2", params![banned as i64, xuid as i64]))
             .is_some_and(|n| n > 0)
