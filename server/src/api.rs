@@ -69,10 +69,27 @@ pub fn allowed(app: &App, request: &Request) -> bool {
         Some("weblogin" | "login") => Bucket::Login,
         // uploading a save: the hook sends at most one a minute
         Some("save") if request.method == "PUT" => Bucket::Save,
+        // cheap reads every hook makes every few seconds (status line, waiting line)
+        Some("info" | "queue" | "stats") => Bucket::Game,
         Some(_) => Bucket::Account,
         None => Bucket::Game,
     };
-    app.guard.allow(request.client_ip(), bucket)
+    // Account endpoints count per account (its token) when they carry one: players behind one
+    // address (a home, a carrier's shared address) do not use up each other's requests.
+    let key = match (bucket, request.header("x-fh2-token")) {
+        (Bucket::Account, Some(token)) if !token.is_empty() => token_key(token),
+        _ => request.client_ip(),
+    };
+    app.guard.allow(key, bucket)
+}
+
+/// A stand-in address for a token's rate-limit bucket (never a real one: fd00::/8, from the
+/// token's SHA-1).
+fn token_key(token: &str) -> std::net::IpAddr {
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&sha1_smol::Sha1::from(token).digest().bytes()[..16]);
+    bytes[0] = 0xfd;
+    std::net::IpAddr::from(bytes)
 }
 
 /// The manager answers this machine only, under a local Host (a web page elsewhere cannot
