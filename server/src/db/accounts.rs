@@ -299,6 +299,47 @@ impl Store {
     }
 
     /// Friend requests `from` sent in the last `window_ms` (rate limit).
+    /// Where `me` stands with `other`: "friends" (both added each other), "requested" (`me`
+    /// asked), "incoming" (`other` asked) or "none".
+    pub fn friend_state(&self, me: u64, other: u64) -> &'static str {
+        if self.friends(me).iter().any(|f| f.0 == other && f.2) {
+            return "friends";
+        }
+        let asked = |from: u64, to: u64| {
+            self.with(|db| {
+                db.query_row(
+                    "SELECT 1 FROM friend_requests WHERE from_xuid = ?1 AND to_xuid = ?2",
+                    params![from as i64, to as i64],
+                    |_| Ok(()),
+                )
+                .optional()
+            })
+            .flatten()
+            .is_some()
+        };
+        if asked(me, other) {
+            "requested"
+        } else if asked(other, me) {
+            "incoming"
+        } else {
+            "none"
+        }
+    }
+
+    /// Ends a friendship and any request between the two (either way). True when something
+    /// was there.
+    pub fn unfriend(&self, a: u64, b: u64) -> bool {
+        let requests = self
+            .with(|db| {
+                db.execute(
+                    "DELETE FROM friend_requests WHERE (from_xuid = ?1 AND to_xuid = ?2) OR (from_xuid = ?2 AND to_xuid = ?1)",
+                    params![a as i64, b as i64],
+                )
+            })
+            .unwrap_or(0);
+        self.remove_friend(a, b) || requests > 0
+    }
+
     pub fn friend_requests_since(&self, from: u64, window_ms: i64) -> i64 {
         self.with(|db| {
             db.query_row(
