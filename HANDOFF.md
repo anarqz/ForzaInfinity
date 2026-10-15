@@ -2,7 +2,26 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
-## Estado em 2026-10-15, madrugada (servidor público no GCP, fila de 150 vagas): leia primeiro
+## Estado em 2026-10-15, noite (hook fh2online.35, Azimuth 0.9.9 mapeado): leia primeiro
+
+- **Público:** release `v0.1.1` (latest) com o hook **.34** = ExtraOptions **0.2.74** + FH2Online. Testado no Deck (Azimuth 0.9.7): menu INFINITY, conta e as edições de fluxo do upstream convivem. Landing em `https://anarqz.github.io/ForzaInfinity/`, com o card de compartilhamento (`landing/og/`).
+- **Azimuth 0.9.8 e 0.9.9 saíram** (itch.io, Almost There Games). Por enquanto o ForzaInfinity **exige a 0.9.7**: os instaladores leem a versão do `azimuth.exe` (texto UTF-16 "0.x.y") e recusam outra (`FORCE=1` / `-Force`); README, INSTALL.md e a landing dizem isso.
+- **O que muda na 0.9.9:**
+  - O `azimuth-tls.dll` tem a mesma interface: exports, TLS de 336/16 e só KERNEL32.
+  - O ExtraOptions 0.2.74 já trata 0.9.6–0.9.9 (`azimuth_host_build`, pela data de compilação do PE).
+  - As nossas partes eram 0.9.7 fixas: rede, conta e o controle de testes.
+  - A 0.9.9 move os saves para uma pasta por jogo: `<pasta do jogo>\saves\player-1`, com backup em `saves-backup-…` e o log "title folder: this game's saves are in …". O nome da pasta é montado em tempo de execução (estrutura em `DAT_14031a9c0`/`+0x88`, juntada por `FUN_140081dc0` em `FUN_140187040`).
+  - Atualizar o Azimuth por cima sobrescreve o nosso `azimuth-tls.dll`: é preciso rodar o instalador de novo.
+- **Hook .35** (`9cdbd4d`, commitado, **não publicado nem instalado**):
+  - Os endereços do `azimuth.exe` usados pela rede e pela conta vêm de `adapters/azimuth_offsets.c` por versão. Os da 0.9.9 saíram do `tools/azimuth_map.py` (casamento de funções pelo Capstone, com os operandos de endereço apagados): todas iguais instrução por instrução.
+  - **A 0.9.9 continua desligada** (`azimuth_offsets` devolve 0 para ela) até o `azimuth_cloud.c` seguir a pasta nova dos saves. Na 0.9.7 nada muda, mas o código foi reorganizado, então o .35 precisa de teste.
+- **Próximo:**
+  1. Testar o .35 na 0.9.7 (PC e Deck).
+  2. Rodar a 0.9.9 uma vez numa pasta nova, com cópia dos saves, e ler no `data\logs\azimuth.log` a pasta do jogo.
+  3. Fazer o `azimuth_cloud.c` usar essa pasta na 0.9.9, ligar a 0.9.9 e aceitá-la nos instaladores.
+  4. Release só depois do teste.
+
+## Estado em 2026-10-15, madrugada (servidor público no GCP, fila de 150 vagas)
 
 - **Servidor público:** `https://infinity.anarqz.dev`, banco vazio. Detalhes e operação em `infra/README.md`.
   - GCP: projeto `forza-infinity-online` (org 14mb.io, faturamento em BRL, alerta de orçamento de R$ 30). VM e2-micro em us-east1, sem portas abertas: SSH só pelo IAP.

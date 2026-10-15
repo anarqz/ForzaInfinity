@@ -25,7 +25,8 @@ jogo ──IXMLHTTPRequest2──▶ azimuth-tls.dll (hook) ──HTTP──▶ 
 - O jogo faz todo o HTTP por COM: `CoCreateInstance(CLSID_FreeThreadedXMLHTTP60)`. O Azimuth implementa o próprio `CoCreateInstance` (RVA `0x6dbe0`) e, para esse CLSID, devolve um `OfflineRequest`. O hook põe um jump nessa função (depois de conferir o SHA-256 dos primeiros bytes) e devolve o próprio `IXMLHTTPRequest2`.
 - O hook também responde o token do usuário do Xbox Live, troca o `DataWriter`/`DataReader` do Azimuth (que perdiam dados), cuida da conta (`azimuth_account.c`), do save na nuvem (`azimuth_cloud.c`, codec próprio em `azimuth_codec.c`), da tela INFINITY (`azimuth_online_menu.c`, `azimuth_ui.c`) e de correções do jogo sob o Azimuth (clipes do Game DVR).
 - Build: `python hook/build.py <zig> --azimuth --build-dir build --output build/azimuth-tls.dll` (Zig 0.15.2). Confira que os imports são só KERNEL32 e que o TLS continua igual (template de 336 bytes, alinhamento 16, sem callbacks).
-- Testes: `python hook/tests/codec_test.py <zig> <bundles ou .sqlite>` (codec do save) e `python hook/tests/ui_edits_test.py <zig> <Mount>` (edições de XAML).
+- Testes: `python hook/tests/codec_test.py <zig> <bundles ou .sqlite>` (codec do save) e `python hook/tests/ui_edits_test.py <zig> <Mount>` (edições de XAML; o `.exe` gerado roda no Windows, ou no Linux pelo Wine do Proton dentro do `SteamLinuxRuntime_4/run`).
+- **Nova versão do Azimuth:** os endereços do `azimuth.exe` que a rede e a conta usam ficam em `hook/adapters/azimuth_offsets.c`, um bloco por versão. Para achar os da versão nova: `tools/azimuth_map.py <azimuth.exe antigo> <novo> <rva…>` (precisa do `capstone`). Ele casa as funções pelas instruções com os endereços apagados e confere as tabelas pelo ponteiro guardado. Os hashes são o SHA-256 dos primeiros 0x20 bytes de cada função. Depois, ajuste os instaladores (`SUPPORTED_AZIMUTH` / `$SupportedAzimuth`).
 
 A seção `[Network]` do `FH2_ExtraOptions.ini`:
 
