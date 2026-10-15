@@ -14,6 +14,13 @@
 //!
 //! Objects (NerdLib SyncedObject): ObjectCreate (7), ObjectUpdate (8), ObjectDelete (9), and the
 //! cars, CarPredictionFull (15). Layouts at each type below.
+//!
+//! Also read, so that what follows them in a packet is not lost: the car events (20, 21, 35),
+//! MsgTagCollision (36), the traffic messages (16, 17, 71, 72, 73, 74), MsgCollObjRest (24),
+//! MsgChatManagement (33) and MsgInactivePlayersPulled (70). Still unknown, so they end the
+//! parse: PlayerInput (14, no sender found), the ownership messages (10-13), the weather replies
+//! (54, 56, 58, sent only when the server asks) and the race, road trip, car meet and bucket
+//! list messages.
 
 use crate::bits::{BitError, BitResult, Bits, Reader};
 
@@ -34,35 +41,104 @@ pub const MSG_OBJECT_CREATE: u8 = 7;
 pub const MSG_OBJECT_UPDATE: u8 = 8;
 pub const MSG_OBJECT_DELETE: u8 = 9;
 pub const MSG_CAR: u8 = 15;
+pub const MSG_SERVER_TRAFFIC_FULL_SYNC: u8 = 16;
+pub const MSG_SERVER_TRAFFIC_ROUTE_PROGRESS: u8 = 17;
+pub const MSG_BREAK_GLASS: u8 = 20;
+pub const MSG_CAR_COLLISION: u8 = 21;
+pub const MSG_COLL_OBJ_REST: u8 = 24;
+pub const MSG_CHAT_MANAGEMENT: u8 = 33;
 pub const MSG_FINALISE_SESSION_ENTRY: u8 = 34;
+pub const MSG_REPAIR_DAMAGE: u8 = 35;
+pub const MSG_TAG_COLLISION: u8 = 36;
+pub const MSG_INACTIVE_PLAYERS_PULLED: u8 = 70;
+pub const MSG_SERVER_TRAFFIC_MESSAGE: u8 = 71;
+pub const MSG_CLIENT_TRAFFIC_MESSAGE: u8 = 72;
+pub const MSG_SERVER_TRAFFIC_FULL_ROUTE: u8 = 73;
+pub const MSG_SERVER_TRAFFIC_STATIONARY: u8 = 74;
 
-/// The message table's names (142F4DB20) for the ids seen so far.
+/// The message table's names (142F4DB20: 77 entries of name, description, and the send channel
+/// and id as two u32s just before the next name).
 pub fn msg_name(id: u8) -> &'static str {
-    match id {
-        0 => "OpenConnection",
-        1 => "OpenConnectionResponse",
-        2 => "CloseConnection",
-        3 => "Ping",
-        4 => "Pong",
-        5 => "TimeSync",
-        6 => "ConnectionSyncDone",
-        7 => "ObjectCreate",
-        8 => "ObjectUpdate",
-        9 => "ObjectDelete",
-        10 => "ObjectRequestOwnership",
-        11 => "ObjectGrantOwnership",
-        12 => "ObjectTransferOwnership",
-        13 => "ObjectNeedsUpdates",
-        14 => "PlayerInput",
-        15 => "CarPredictionFull",
-        34 => "FinaliseSessionEntry",
-        35 => "MsgRepairDamage",
-        53 => "RequestSendFullWeather",
-        54 => "FullWeather",
-        71 => "ServerTrafficMessage",
-        72 => "ClientTrafficMessage",
-        _ => "?",
-    }
+    const NAMES: [&str; 77] = [
+        "OpenConnection",
+        "OpenConnectionResponse",
+        "CloseConnection",
+        "Ping",
+        "Pong",
+        "TimeSync",
+        "ConnectionSyncDone",
+        "ObjectCreate",
+        "ObjectUpdate",
+        "ObjectDelete",
+        "ObjectRequestOwnership",
+        "ObjectGrantOwnership",
+        "ObjectTransferOwnership",
+        "ObjectNeedsUpdates",
+        "PlayerInput",
+        "CarPredictionFull",
+        "ServerTrafficFullSync",
+        "ServerTrafficRouteProgressUpdate",
+        "ClientTrafficFullSync",
+        "ClientTrafficRouteProgressUpdate",
+        "MsgBreakGlass",
+        "MsgCarCollision",
+        "MsgCollObjPos",
+        "MsgCollObjRest",
+        "MsgCollObjDetachPart",
+        "MsgCollObjPosVel",
+        "MsgCarMeetPlayerInviteRequest",
+        "MsgCarMeetPlayerJoinOrCancelRequest",
+        "MsgCarMeetLaunchWagerRace",
+        "MsgCarMeetNotifyPendingGameMode",
+        "MsgCarMeetConfigureGameOptionsForWagerRace",
+        "MsgCarMeetConfiguredGameOptionsForWagerRace",
+        "MsgCarMeetGameModeSessionReady",
+        "MsgChatManagement",
+        "FinaliseSessionEntry",
+        "MsgRepairDamage",
+        "MsgTagCollision",
+        "MsgTagBuckets",
+        "MsgRequestRace",
+        "MsgStartingGrid",
+        "MsgStartRace",
+        "MsgReadyRequest",
+        "MsgReadyRequestResponse",
+        "MsgInProgressScoreUpdate",
+        "MsgLapScore",
+        "MsgScoreKeyframe",
+        "MsgVoteToKick",
+        "MsgVoteForTrack",
+        "SelectNextRoadTripEvent",
+        "SelectedNextRoadTripEvent",
+        "ConfigureGameOptionsForRoadTripEvent",
+        "ConfiguredGameOptionsForRoadTripEvent",
+        "SetGroupSatNavEvent",
+        "RequestSendFullWeather",
+        "FullWeather",
+        "RequestSendNewAtmosphericData",
+        "NewAtmosphericData",
+        "RequestSendNewPrecipitationData",
+        "NewPrecipitationData",
+        "RequestLeaderChange",
+        "DropLeadership",
+        "BucketListChallengeStart",
+        "BucketListChallengeEnded",
+        "RequestSynchronizeBucketListChallenge",
+        "RequestDesynchronizeBucketListChallenge",
+        "RespondBucketListPartner",
+        "BucketListStatusPlayerWaiting",
+        "BucketListStatusChallengeStarted",
+        "BucketListStatusChallengeEnded",
+        "MsgDebugLog",
+        "MsgInactivePlayersPulled",
+        "ServerTrafficMessage",
+        "ClientTrafficMessage",
+        "ServerTrafficFullRoute",
+        "ServerTrafficStationary",
+        "ClientTrafficFullRoute",
+        "ClientTrafficStationary",
+    ];
+    NAMES.get(id as usize).copied().unwrap_or("?")
 }
 
 /// What the client sends as OpenConnection's version and game (the build hash, also in the
@@ -275,6 +351,89 @@ pub struct Car {
     pub body: Bits,
 }
 
+// The other messages a console sends. Each one's writer builds it right after the 7-bit id
+// (14176B670 with [1422E4408] = 7 bits), from the message's own sender function (the callers of
+// 141760C70, which takes the send channel and the id); the console's reader, where it has one,
+// is the callback registered for the id with 141768170. Primitives: 14176B380 / 14176B670 /
+// 14176AD40 / 14176ABD0 write n bits (u32, u8, signed, u16), 14176AB90 a 32-bit float,
+// 14176A8A0 one bit, 14176AEC0 64 bits, 14181FFA0 a vec3 (3 floats, 96 bits).
+
+/// A vec3 (14181FFA0, read 141820020): three 32-bit floats.
+const VEC3_BITS: usize = 96;
+
+/// Car events: the car's handle (7-bit id, as CarPredictionFull), then a fixed body. The console
+/// registers a reader for each in the car router (1417CF210), so the server relays them.
+///   - MsgBreakGlass (20; send 141804B10, read 141804C10): u32, 3 vec3, s32 (352 bits).
+///   - MsgCarCollision (21; send 141804D30, read 141804E20): vec3, 3 floats (192 bits).
+///   - MsgRepairDamage (35; send 141804F30, read 141804FD0): nothing after the handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarEvent {
+    pub id: u8,
+    pub handle: Handle,
+    pub body: Bits,
+}
+
+/// The body of a car event after its handle, in bits.
+pub fn car_event_bits(id: u8) -> Option<usize> {
+    match id {
+        MSG_BREAK_GLASS => Some(32 + 3 * VEC3_BITS + 32),
+        MSG_CAR_COLLISION => Some(VEC3_BITS + 3 * 32),
+        MSG_REPAIR_DAMAGE => Some(0),
+        _ => None,
+    }
+}
+
+/// MsgTagCollision (36; send 1418048B0, read 1418049C0): two car handles (7-bit ids: the
+/// sender's car and the car it touched), then four u3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagCollision {
+    pub a: Handle,
+    pub b: Handle,
+    pub vals: [u8; 4],
+}
+
+/// Traffic. The Xbox server ran the AI traffic; consoles send it ServerTraffic* and get
+/// ClientTraffic* back (the console's traffic router, 1417DD790, reads only 18, 19, 72, 75, 76).
+/// Fixed sizes, kept as raw bits:
+///   - ServerTrafficFullSync (16; send 1417F6E70): u8, then 141821450: u32, vec3, 9 u16, u32,
+///     2 bools (314 bits).
+///   - ServerTrafficRouteProgressUpdate (17; send 1417F6C00): u8, 141821150 (float, u32, u32),
+///     vec3 (200 bits).
+///   - ServerTrafficMessage (71; send 1417F5210) and ClientTrafficMessage (72; read 14181FD70):
+///     u4, then 1418208E0 / 141820950: u8, s14, u5, u8, bool; then s32 (72 bits).
+///   - ServerTrafficFullRoute (73; send 1417F6CD0): u8, 1418211F0 (8 u16, u2), 141821150, vec3
+///     (330 bits).
+///   - ServerTrafficStationary (74; send 1417F6DB0): u8, 141821360: vec3, 3 u16, u32, bool
+///     (185 bits).
+pub fn traffic_bits(id: u8) -> Option<usize> {
+    match id {
+        MSG_SERVER_TRAFFIC_FULL_SYNC => Some(8 + 32 + VEC3_BITS + 9 * 16 + 32 + 2),
+        MSG_SERVER_TRAFFIC_ROUTE_PROGRESS => Some(8 + 96 + VEC3_BITS),
+        MSG_SERVER_TRAFFIC_MESSAGE | MSG_CLIENT_TRAFFIC_MESSAGE => Some(4 + (8 + 14 + 5 + 8 + 1) + 32),
+        MSG_SERVER_TRAFFIC_FULL_ROUTE => Some(8 + (8 * 16 + 2) + 96 + VEC3_BITS),
+        MSG_SERVER_TRAFFIC_STATIONARY => Some(8 + VEC3_BITS + 3 * 16 + 32 + 1),
+        _ => None,
+    }
+}
+
+/// MsgCollObjRest (24; send 1417DDAF0, read 1417DDBD0): u4, u11 count, count bytes. The
+/// console's reader copies the bytes into a 1024-byte stack buffer without a check, so this
+/// must never be sent on with more than 1024.
+pub const COLL_OBJ_REST_MAX: usize = 1024;
+/// MsgChatManagement (33; send 1417F5040, read 1417F5120): u64, u7 count, count bytes. The
+/// reader's buffer holds 64.
+pub const CHAT_MANAGEMENT_MAX: usize = 64;
+
+/// MsgInactivePlayersPulled (70; send 1417F7000): a lobby object handle (2-bit id).
+pub const INACTIVE_PLAYERS_ID_BITS: u32 = 2;
+
+fn read_bytes(r: &mut Reader, n: usize) -> BitResult<Vec<u8>> {
+    if r.left() < n * 8 {
+        return Err(BitError::Short);
+    }
+    (0..n).map(|_| r.u8(8)).collect()
+}
+
 /// Seq arithmetic mod 255, as the receiver does it: `a` is newer than `b` when it is ahead by
 /// less than 128.
 pub fn seq_next(s: u8) -> u8 {
@@ -307,8 +466,16 @@ pub enum Msg {
     Object(ObjectMsg),
     Delete(ObjectDelete),
     Car(Car),
-    /// FinaliseSessionEntry (34): no fields; the console has loaded the session.
+    /// FinaliseSessionEntry (34; send 1417F7980): no fields; the console has loaded the session.
     FinaliseSessionEntry,
+    /// MsgBreakGlass (20), MsgCarCollision (21), MsgRepairDamage (35).
+    CarEvent(CarEvent),
+    TagCollision(TagCollision),
+    /// The ServerTraffic* messages and ClientTrafficMessage: the body after the id, raw.
+    Traffic { id: u8, body: Bits },
+    CollObjRest { kind: u8, data: Vec<u8> },
+    ChatManagement { xuid: u64, data: Vec<u8> },
+    InactivePlayersPulled(Handle),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,6 +518,12 @@ impl Msg {
             Msg::Delete(_) => MSG_OBJECT_DELETE,
             Msg::Car(_) => MSG_CAR,
             Msg::FinaliseSessionEntry => MSG_FINALISE_SESSION_ENTRY,
+            Msg::CarEvent(e) => e.id,
+            Msg::TagCollision(_) => MSG_TAG_COLLISION,
+            Msg::Traffic { id, .. } => *id,
+            Msg::CollObjRest { .. } => MSG_COLL_OBJ_REST,
+            Msg::ChatManagement { .. } => MSG_CHAT_MANAGEMENT,
+            Msg::InactivePlayersPulled(_) => MSG_INACTIVE_PLAYERS_PULLED,
         }
     }
 
@@ -400,6 +573,36 @@ impl Msg {
                 Msg::Car(Car { handle, body: r.take(CAR_BODY_BITS)? })
             }
             MSG_FINALISE_SESSION_ENTRY => Msg::FinaliseSessionEntry,
+            MSG_BREAK_GLASS | MSG_CAR_COLLISION | MSG_REPAIR_DAMAGE => {
+                let handle = Handle::read(r, CAR_ID_BITS)?;
+                let n = car_event_bits(id).unwrap_or(0);
+                Msg::CarEvent(CarEvent { id, handle, body: r.take(n)? })
+            }
+            MSG_TAG_COLLISION => Msg::TagCollision(TagCollision {
+                a: Handle::read(r, CAR_ID_BITS)?,
+                b: Handle::read(r, CAR_ID_BITS)?,
+                vals: [r.u8(3)?, r.u8(3)?, r.u8(3)?, r.u8(3)?],
+            }),
+            MSG_SERVER_TRAFFIC_FULL_SYNC
+            | MSG_SERVER_TRAFFIC_ROUTE_PROGRESS
+            | MSG_SERVER_TRAFFIC_MESSAGE
+            | MSG_CLIENT_TRAFFIC_MESSAGE
+            | MSG_SERVER_TRAFFIC_FULL_ROUTE
+            | MSG_SERVER_TRAFFIC_STATIONARY => {
+                let n = traffic_bits(id).unwrap_or(0);
+                Msg::Traffic { id, body: r.take(n)? }
+            }
+            MSG_COLL_OBJ_REST => {
+                let kind = r.u8(4)?;
+                let n = r.bits(11)? as usize;
+                Msg::CollObjRest { kind, data: read_bytes(r, n)? }
+            }
+            MSG_CHAT_MANAGEMENT => {
+                let xuid = r.bits(64)?;
+                let n = r.bits(7)? as usize;
+                Msg::ChatManagement { xuid, data: read_bytes(r, n)? }
+            }
+            MSG_INACTIVE_PLAYERS_PULLED => Msg::InactivePlayersPulled(Handle::read(r, INACTIVE_PLAYERS_ID_BITS)?),
             other => return Err(ReadError::UnknownMsg(other)),
         })
     }
@@ -450,6 +653,37 @@ impl Msg {
                 c.handle.write(&mut w, CAR_ID_BITS);
                 w.append(&c.body);
             }
+            Msg::CarEvent(e) => {
+                debug_assert_eq!(Some(e.body.len()), car_event_bits(e.id));
+                e.handle.write(&mut w, CAR_ID_BITS);
+                w.append(&e.body);
+            }
+            Msg::TagCollision(t) => {
+                t.a.write(&mut w, CAR_ID_BITS);
+                t.b.write(&mut w, CAR_ID_BITS);
+                for v in t.vals {
+                    w.push(v as u64, 3);
+                }
+            }
+            Msg::Traffic { id, body } => {
+                debug_assert_eq!(Some(body.len()), traffic_bits(*id));
+                w.append(body);
+            }
+            Msg::CollObjRest { kind, data } => {
+                debug_assert!(data.len() < 1 << 11);
+                w.push(*kind as u64, 4).push(data.len() as u64, 11);
+                for &b in data {
+                    w.push(b as u64, 8);
+                }
+            }
+            Msg::ChatManagement { xuid, data } => {
+                debug_assert!(data.len() < 1 << 7);
+                w.push(*xuid, 64).push(data.len() as u64, 7);
+                for &b in data {
+                    w.push(b as u64, 8);
+                }
+            }
+            Msg::InactivePlayersPulled(h) => h.write(&mut w, INACTIVE_PLAYERS_ID_BITS),
         }
         w
     }
@@ -671,8 +905,8 @@ mod tests {
         w.push(7, 7).push(10, 4).push(0, 30);
         assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::UnknownRouter(10)));
         let mut w = Bits::new();
-        w.push(35, 7).push(0, 30);
-        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::UnknownMsg(35)));
+        w.push(14, 7).push(0, 30);
+        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::UnknownMsg(14)));
         // truncated object
         let full = Msg::Object(ObjectMsg {
             create: false,
@@ -703,6 +937,66 @@ mod tests {
         let Msg::Car(back) = Msg::read(&mut Reader::new(fw.as_bytes())).unwrap() else { panic!() };
         assert_eq!(back.handle, Handle::Relay(42, 7));
         assert_eq!(back.body, body);
+    }
+
+    #[test]
+    fn other_messages_roundtrip() {
+        let handles = |id| [Handle::Own(id), Handle::Relay(id, 3), Handle::Server(id), Handle::Transfer(id)];
+        for id in [MSG_BREAK_GLASS, MSG_CAR_COLLISION, MSG_REPAIR_DAMAGE] {
+            let n = car_event_bits(id).unwrap();
+            for h in handles(127) {
+                roundtrip(Msg::CarEvent(CarEvent { id, handle: h, body: payload(n, id as u64) }));
+            }
+        }
+        roundtrip(Msg::TagCollision(TagCollision { a: Handle::Own(1), b: Handle::Relay(2, 9), vals: [7, 0, 5, 1] }));
+        for id in [16, 17, 71, 72, 73, 74] {
+            roundtrip(Msg::Traffic { id, body: payload(traffic_bits(id).unwrap(), id as u64) });
+        }
+        roundtrip(Msg::CollObjRest { kind: 15, data: vec![] });
+        roundtrip(Msg::CollObjRest { kind: 3, data: (0..2047).map(|i| i as u8).collect() });
+        roundtrip(Msg::ChatManagement { xuid: u64::MAX - 5, data: (0..127).collect() });
+        roundtrip(Msg::InactivePlayersPulled(Handle::Own(3)));
+        roundtrip(Msg::InactivePlayersPulled(Handle::Relay(1, 200)));
+    }
+
+    #[test]
+    fn other_message_sizes() {
+        // id + flags + 7-bit id (+ the body)
+        let repair = Msg::CarEvent(CarEvent { id: MSG_REPAIR_DAMAGE, handle: Handle::Own(2), body: Bits::new() });
+        assert_eq!(repair.write().len(), 7 + 2 + 7);
+        assert_eq!(car_event_bits(MSG_BREAK_GLASS), Some(352));
+        assert_eq!(car_event_bits(MSG_CAR_COLLISION), Some(192));
+        assert_eq!(car_event_bits(MSG_CAR), None);
+        let sizes: Vec<_> = [16, 17, 71, 72, 73, 74].iter().map(|&id| traffic_bits(id).unwrap()).collect();
+        assert_eq!(sizes, [314, 200, 72, 72, 330, 185]);
+        assert_eq!(traffic_bits(18), None);
+        let t = Msg::TagCollision(TagCollision { a: Handle::Own(1), b: Handle::Own(2), vals: [0; 4] });
+        assert_eq!(t.write().len(), 7 + 9 + 9 + 12);
+        assert_eq!(Msg::InactivePlayersPulled(Handle::Own(1)).write().len(), 7 + 2 + 2);
+        // a byte count over what is there: truncated, not a huge allocation
+        let mut w = Bits::new();
+        w.push(MSG_COLL_OBJ_REST as u64, 7).push(0, 4).push(2047, 11).push(0, 16);
+        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::Bits(BitError::Short)));
+        assert_eq!(msg_name(76), "ClientTrafficStationary");
+        assert_eq!(msg_name(35), "MsgRepairDamage");
+        assert_eq!(msg_name(77), "?");
+    }
+
+    /// The parse goes on after them: [RepairDamage, ServerTrafficMessage, Car] in one packet.
+    #[test]
+    fn known_messages_do_not_end_the_packet() {
+        let car = Msg::Car(Car { handle: Handle::Own(4), body: payload(CAR_BODY_BITS, 1) });
+        let msgs = [
+            Msg::CarEvent(CarEvent { id: MSG_REPAIR_DAMAGE, handle: Handle::Own(4), body: Bits::new() }),
+            Msg::Traffic { id: MSG_SERVER_TRAFFIC_MESSAGE, body: payload(72, 2) },
+            car,
+        ];
+        let bits: Vec<Bits> = msgs.iter().map(|m| m.write()).collect();
+        let data = packet(&bits, NO_SEQ, NO_ACK, 0);
+        let mut r = Reader::at(&data, HEADER_LEN * 8);
+        for m in &msgs {
+            assert_eq!(&Msg::read(&mut r).unwrap(), m);
+        }
     }
 
     #[test]
