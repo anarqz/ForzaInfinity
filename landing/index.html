@@ -3,10 +3,64 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="ForzaInfinity brings Forza Horizon 2's online services back for the PC version running on Azimuth: friends, clubs, rivals, ghost races, leaderboards, liveries and cloud saves." />
+    <title>ForzaInfinity · Forza Horizon 2 online again on PC</title>
+    <meta
+      name="description"
+      content="Forza Horizon 2's online side, back on PC through Azimuth: friends, car clubs, rival ghosts, leaderboards, shared liveries and a cloud save from your PC to the Steam Deck. Free fan project."
+    />
     <meta name="theme-color" content="#107c10" />
-    <title>ForzaInfinity</title>
+    <meta name="color-scheme" content="dark" />
+    <link rel="canonical" href="%SITE_URL%" />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+
+    <!-- Sharing (Open Graph: Facebook, Discord, WhatsApp, LinkedIn, Telegram...). Absolute URLs:
+         %SITE_URL% is filled in at build time (vite.config.ts, VITE_SITE_URL). -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ForzaInfinity" />
+    <meta property="og:url" content="%SITE_URL%" />
+    <meta property="og:title" content="ForzaInfinity · Back on the road" />
+    <meta
+      property="og:description"
+      content="Forza Horizon 2's online side, back on PC: friends, car clubs, rival ghosts, leaderboards, shared liveries and cloud saves. Windows, Steam Deck and Linux."
+    />
+    <meta property="og:image" content="%SITE_URL%og.png" />
+    <meta property="og:image:secure_url" content="%SITE_URL%og.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="ForzaInfinity: Back on the road. A road running into a dusk sun, with friends, clubs, rival ghosts, leaderboards, liveries and cloud saves for Windows, Steam Deck and Linux."
+    />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="pt_BR" />
+
+    <!-- X / Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ForzaInfinity · Back on the road" />
+    <meta
+      name="twitter:description"
+      content="Forza Horizon 2's online side, back on PC: friends, clubs, rival ghosts, leaderboards, liveries and cloud saves."
+    />
+    <meta name="twitter:image" content="%SITE_URL%og.png" />
+    <meta name="twitter:image:alt" content="ForzaInfinity: Back on the road." />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "ForzaInfinity",
+        "url": "%SITE_URL%",
+        "image": "%SITE_URL%og.png",
+        "description": "Brings Forza Horizon 2's online services back for the PC version running on Azimuth: friends, car clubs, rivals, leaderboards, shared liveries and cloud saves.",
+        "applicationCategory": "GameApplication",
+        "operatingSystem": "Windows, Linux, SteamOS",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "codeRepository": "https://github.com/anarqz/ForzaInfinity"
+      }
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700;800&display=swap" rel="stylesheet" />
