@@ -226,11 +226,54 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
             None => json_reply(401, &json!({ "error": "Unknown token." })),
         },
         // befriend "Name#12345" from the game: friends (and rivals) once both added each other
+        // The friendship with one player, by XUID: {xuid} -> {state, gamertag} (state: friends,
+        // requested, incoming, none). The game's player actions ask before offering add/remove.
+        ("POST", "friends/status") => match token_account() {
+            Some(me) if !me.banned => {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                match body_xuid(&body, "xuid").filter(|&x| x != 0).and_then(|x| app.store.account(x)) {
+                    Some(t) if t.xuid != me.xuid => json_reply(
+                        200,
+                        &json!({ "state": app.store.friend_state(me.xuid, t.xuid), "gamertag": t.gamertag() }),
+                    ),
+                    Some(_) => json_reply(400, &json!({ "error": "That is your own profile." })),
+                    None => json_reply(404, &json!({ "error": "That player has no profile on this server." })),
+                }
+            }
+            Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
+        },
+        // Ends a friendship (or a request either way): {xuid} -> {message}.
+        ("POST", "friends/remove") => match token_account() {
+            Some(me) if !me.banned => {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                match body_xuid(&body, "xuid").filter(|&x| x != 0).and_then(|x| app.store.account(x)) {
+                    Some(t) if t.xuid != me.xuid => {
+                        let was = app.store.unfriend(me.xuid, t.xuid);
+                        app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
+                        let message = if was {
+                            format!("{} is no longer your friend.", t.gamertag())
+                        } else {
+                            format!("{} was not your friend.", t.gamertag())
+                        };
+                        json_reply(200, &json!({ "message": message, "friends": false }))
+                    }
+                    Some(_) => json_reply(400, &json!({ "error": "That is your own profile." })),
+                    None => json_reply(404, &json!({ "error": "That player has no profile on this server." })),
+                }
+            }
+            Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
+        },
         ("POST", "friends") => match token_account() {
             Some(me) if !me.banned => {
                 let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
                 let tag = body["gamertag"].as_str().unwrap_or("").trim();
-                let target = tag.rsplit_once('#').and_then(|(n, d)| app.store.account_by_name(n, d));
+                // by Name#12345 (typed), or by XUID (a player picked in the game's menus)
+                let target = match body_xuid(&body, "xuid").filter(|&x| x != 0) {
+                    Some(x) => app.store.account(x),
+                    None => tag.rsplit_once('#').and_then(|(n, d)| app.store.account_by_name(n, d)),
+                };
                 match target {
                     _ if app.store.friend_requests_since(me.xuid, 3_600_000) >= 20 => {
                         json_reply(429, &json!({ "error": "Too many friend requests. Try again later." }))
