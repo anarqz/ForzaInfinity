@@ -38,7 +38,8 @@ copy.sqlite"`) or with the server stopped.
 | `/<host>/<path>` + `X-Fh2-Original-Url` | the hook | The game's own requests (Forza `bin/xtsw` services, Xbox Live JSON). |
 | `/infinity/v1/register`, `me`, `login`, `webkey`, `friends`, `delete` | the hook | Accounts: one per PC, identified by its token (`X-Fh2-Token`). |
 | `/infinity/v1/save`, `save/info` | the hook | The cloud save (PUT/GET). |
-| `/infinity/v1/info` | anyone | `{ "name": "ForzaInfinity", "api": 1 }` |
+| `/infinity/v1/info` | anyone | `{ "name": "ForzaInfinity", "api": 1, "freeroam": true, … }` |
+| `/infinity/v1/worlds`, `worlds/of/<xuid>`, `worlds/<id>/join` | the hook | Player-hosted free roam worlds (below), with free roam on. |
 | `/infinity/v1/stats` | anyone (CORS open) | Server-wide totals for the landing page, cached 30 s. |
 | `/ui/`, `/api/`, `/ws` | this machine only | The manager (web/): players, friends, clubs, live feed. |
 
@@ -64,11 +65,40 @@ Quando a sessão tem `constants.custom.gameServerPlatform`, o servidor preenche
 `fh2inf:<ip>:<porta>` (IPv6 entre colchetes: `fh2inf:[2001:db8::1]:5101`), que o hook decodifica.
 
 ```sh
-fh2-server … --freeroam-world 192.168.68.40:5101   # liga e manda todos para esse relay
-fh2-server … --freeroam                            # liga sem mundo (endereço de mentira, 127.0.0.1)
+fh2-server … --freeroam                            # liga: só mundos hospedados pelos jogadores
+fh2-server … --freeroam-world 192.168.68.40:5101   # liga, e quem não tem mundo hospedado vai para esse relay
 ```
 
 Sessões paradas por 30 min somem; no máximo 512 em memória e 128 KB cada. Nada vai para o banco.
+Um ticket do SmartMatch (`momatch`) sem nenhum mundo para o jogador recebe 503 (o jogo mostra o erro
+de conexão).
+
+## Mundos hospedados pelos jogadores (F1)
+
+Com o free roam ligado (`--freeroam` ou `--freeroam-world`), o `/infinity/v1/info` diz
+`"freeroam": true` e o hook pode anunciar mundos (`server/src/worlds.rs`). Todas as rotas exigem o
+`X-Fh2-Token` (401 sem conta, 403 conta suspensa, 404 com o free roam desligado) e respondem
+também em `/fh2online/v1/`. O IP do jogador é o da conexão ou, atrás do proxy (`--behind-proxy`),
+o `CF-Connecting-IP` / último `X-Forwarded-For`, como nos limites.
+
+| Rota | Corpo | Resposta |
+|---|---|---|
+| `POST worlds` | `{"name" (1–40), "message" (≤120), "visibility": "public"\|"friends"\|"off", "password" (≤32, "" = sem), "maxPlayers": 1–12, "port", "lan": [≤4 IPs], "version" (≤40), "banned"?: [xuids]}` | `{"id": "<xuid do anfitrião>", "address": "<ip>:<porta>", "players", "expiresIn": 45}`; 400 se inválido. Inicia ou renova (heartbeat a cada 15 s); um mundo por conta. |
+| `DELETE worlds` | — | 204. O mundo acaba e os jogadores dele são liberados. |
+| `GET worlds` | — | `{"worlds": [{"id", "name", "message", "host", "players", "maxPlayers", "friendsOnly", "sameNetwork"}]}`: públicos, ou só-amigos de um amigo; sem senha, sem `off`, sem quem baniu o jogador. |
+| `GET worlds/of/<xuid>` | — | `{"world": null}` ou `{"world": {"id", "name", "host", "players", "maxPlayers", "password": bool, "canJoin": bool, "why": ""\|"full"\|"friends"\|"off"\|"banned"}}`: o mundo que esse jogador hospeda ou em que está, avaliado para quem pergunta. |
+| `POST worlds/<id>/join` | `{"password"}` | `{"ok": true}`: o próximo FREE ROAM ONLINE do jogador vai para esse mundo (vale 10 min). 404 mundo desconhecido; 403 `{"error", "why"}` com `why` como acima ou `"password"` (`"error": "wrong password"`); 429 depois de 5 senhas erradas em 10 min. |
+
+Para onde cada jogador vai (`world_for`, usado na sessão, no SmartMatch e no cluster), nesta ordem:
+o mundo que ele hospeda (`127.0.0.1:<porta>`, o relay está no mesmo PC); o que escolheu pelo
+`join`; aquele em que já está (por 30 min desde o último ticket); o melhor mundo aberto para ele
+(sem senha, com vaga, visível): primeiro o do mesmo IP público, depois o com mais jogadores,
+depois o heartbeat mais recente; por fim o `--freeroam-world`. Quem tem o mesmo IP público do
+anfitrião recebe o primeiro endereço de `lan`; os outros, o IP público do anfitrião.
+
+Jogadores = anfitrião + quem foi mandado ao mundo por um ticket. Um mundo sem heartbeat por 45 s
+some. Tudo fica em memória (no máximo 256 mundos); a senha só como SHA-1 com sal próprio do
+mundo, e nunca vai para o log.
 
 ## Limits
 

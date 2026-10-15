@@ -31,6 +31,9 @@
 //!   GET /api/status           request counter, connected UIs
 //!   GET /ws                   WebSocket: {"type":"request"|"event", ...} as they happen
 //!   GET /ui/...               web/dist (React build); unknown paths fall back to index.html
+//!
+//! Account routes for the hook (/infinity/v1/..., X-Fh2-Token) are in `account_api`; the
+//! player-hosted worlds (/infinity/v1/worlds...) are worlds.rs.
 
 use std::{fs, path::Path};
 
@@ -147,6 +150,24 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
         return json_reply(413, &json!({ "error": "too large" }));
     }
     let token_account = || request.header("x-fh2-token").and_then(|t| app.store.account_by_token(t));
+    // player-hosted worlds (worlds.rs), with free roam on
+    if route == "worlds" || route.starts_with("worlds/") {
+        return match (token_account(), &app.freeroam) {
+            (Some(a), _) if a.banned => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+            (None, _) => json_reply(401, &json!({ "error": "Unknown token." })),
+            (Some(_), None) => json_reply(404, &json!({ "error": "Free roam is off on this server." })),
+            (Some(a), Some(f)) => {
+                let gamertag = |x| app.store.gamertag(x);
+                let friends = |x| crate::mutual_friends(&app.store, x);
+                let caller = crate::freeroam::Caller::new(a.xuid, request.client_ip(), &gamertag, &friends);
+                let reply = f.worlds.api(&request.method, route, &request.body, &caller);
+                match reply.body {
+                    Some(body) => json_reply(reply.status, &body),
+                    None => response(reply.status, "application/json; charset=utf-8", "", b""),
+                }
+            }
+        };
+    }
     if route.starts_with("save") {
         return match token_account() {
             Some(a) if !a.banned => save_api(app, request, route, a.xuid),
@@ -167,6 +188,8 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                     "online": online,
                     "queued": queued,
                     "capacity": app.admission.capacity(),
+                    // online free roam on: players can host worlds (/infinity/v1/worlds)
+                    "freeroam": app.freeroam.is_some(),
                     // the newest ForzaInfinity: the hook tells an outdated player to update
                     "latestHook": latest["hook"],
                     "latestRelease": latest["release"],
