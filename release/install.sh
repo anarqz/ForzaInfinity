@@ -112,6 +112,10 @@ fi
 UPDATER="$HERE/update.sh"
 if [ ! -f "$UPDATER" ]; then UPDATER="$TMP/update.sh"; curl -fsSL "$RELEASE/update.sh" -o "$UPDATER" || UPDATER=""; fi
 if [ -n "$UPDATER" ]; then cp "$UPDATER" "$AZIMUTH/ForzaInfinity-Update.sh" && chmod +x "$AZIMUTH/ForzaInfinity-Update.sh"; fi
+# 6. the report, left there too: ForzaInfinity-Report.sh writes the last launch to one file
+REPORTER="$HERE/report.sh"
+if [ ! -f "$REPORTER" ]; then REPORTER="$TMP/report.sh"; curl -fsSL "$RELEASE/report.sh" -o "$REPORTER" || REPORTER=""; fi
+if [ -n "$REPORTER" ]; then cp "$REPORTER" "$AZIMUTH/ForzaInfinity-Report.sh" && chmod +x "$AZIMUTH/ForzaInfinity-Report.sh"; fi
 
 say "ForzaInfinity is installed in $AZIMUTH.
 

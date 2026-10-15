@@ -15,5 +15,5 @@ STOCK="$AZIMUTH/data/bin/azimuth-tls.dll.stock"
 [ -n "$AZIMUTH" ] && [ -f "$STOCK" ] || { echo "No backup (data/bin/azimuth-tls.dll.stock) found. Run: ./uninstall.sh <folder with azimuth.exe>" >&2; exit 1; }
 if ps -eo args | grep -qi '[a]zimuth\.exe'; then echo "Close Forza Horizon 2 (Azimuth) first." >&2; exit 1; fi
 cp "$STOCK" "$AZIMUTH/data/bin/azimuth-tls.dll"
-rm -f "$AZIMUTH/ForzaInfinity-Update.sh"
+rm -f "$AZIMUTH/ForzaInfinity-Update.sh" "$AZIMUTH/ForzaInfinity-Report.sh"
 echo "Azimuth's original azimuth-tls.dll is back in $AZIMUTH. Saves and FH2_ExtraOptions.ini were left as they are."
