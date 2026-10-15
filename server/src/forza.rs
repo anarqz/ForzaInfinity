@@ -598,6 +598,9 @@ fn profile_update_tables(ctx: &Ctx, params: &Value) -> Value {
         return json!({});
     }
     let summary = ctx.store.apply_tables(ctx.xuid, params);
+    if params["garageCars"].as_array().is_some_and(|a| !a.is_empty()) {
+        ctx.store.fill_save_cars(ctx.xuid);
+    }
     ctx.store.set_garage_baseline(ctx.xuid, garage_cars(ctx).len() as i64);
     storefront::count_downloads(ctx, params);
     let cars = params["garageCars"].as_array().map(Vec::len).unwrap_or(0);
@@ -749,12 +752,6 @@ const VIEW_FRIENDS: i64 = 2;
 const VIEW_CLUB: i64 = 3;
 const VIEW_FRIENDS_AND_CLUB: i64 = 4;
 
-/// A leaderboard of everyone on the server. The friends and club views keep only those players
-/// (and the caller), each row still with its real position on the server; near me is the page
-/// around the caller's place; global and the after-event board are everyone. isClubBoard keeps
-/// the caller's club as well. Boards without a track (speed traps and zones: scoreboardType 9,
-/// skills: 4) name their event in pivotId, which is the gameScoreboardId the scores were
-/// submitted with; track boards are the whole route. Also Scoreboard.GetRows (VIEW SCOREBOARD).
 /// The car club XP board (CLUB LEADERBOARD: scoreboardType 8, scoreType 4, isClubBoard). XP is
 /// not a submitted score (SubmitXpScore keeps it apart), so the board comes from it: the club
 /// view (3) is the caller's club, its members by the XP they earned in it (as the ladder);
@@ -805,6 +802,12 @@ fn club_xp_rows(ctx: &Ctx, params: &Value) -> Value {
     json!({ "rows": page, "userRow": user_row, "available": ranked.len() })
 }
 
+/// A leaderboard of everyone on the server. The friends and club views keep only those players
+/// (and the caller), each row still with its real position on the server; near me is the page
+/// around the caller's place; global and the after-event board are everyone. isClubBoard keeps
+/// the caller's club as well. Boards without a track (speed traps and zones: scoreboardType 9,
+/// skills: 4) name their event in pivotId, which is the gameScoreboardId the scores were
+/// submitted with; track boards are the whole route. Also Scoreboard.GetRows (VIEW SCOREBOARD).
 fn score_rows(ctx: &Ctx, params: &Value) -> Value {
     if params["scoreboardType"].as_i64() == Some(8) && params["scoreType"].as_i64() == Some(4)
         && params["isClubBoard"].as_bool() == Some(true)

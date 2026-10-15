@@ -232,11 +232,8 @@ impl Store {
     pub fn import_save_bests(&self, xuid: u64, bundle: &[u8]) -> usize {
         let Some(xml) = bundle_file(bundle, "data/SaveState") else { return 0 };
         let xml = String::from_utf8_lossy(&xml);
-        // the car shown with them: the player's most raced one
-        let mut garage: Vec<Value> =
-            self.tables(xuid).remove("garageCars").and_then(|v| v.as_array().cloned()).unwrap_or_default();
-        garage.sort_by_key(|c| -c["numRaces"].as_i64().unwrap_or(0));
-        let car = garage.first().cloned().unwrap_or(Value::Null);
+        // the car shown with them (none yet when the save comes before the garage: fill_save_cars)
+        let car = self.most_raced_car(xuid).unwrap_or(Value::Null);
         let mut taken = 0;
         for (score_type, board, best) in camera_bests(&xml) {
             let current = self
@@ -264,11 +261,82 @@ impl Store {
         }
         taken
     }
+
+    /// The player's most raced garage car (UpdateAllTables garageCars row).
+    fn most_raced_car(&self, xuid: u64) -> Option<Value> {
+        let garage = self.tables(xuid).remove("garageCars")?;
+        garage.as_array()?.iter().filter(|c| c["carId"].as_i64().is_some_and(|id| id > 0)).max_by_key(|c| c["numRaces"].as_i64().unwrap_or(0)).cloned()
+    }
+
+    /// Gives the bests taken from a save before the player's garage reached the server (a new
+    /// profile uploads its save first) the player's most raced car, as import_save_bests does:
+    /// without one the boards showed "DLC Car", class D, PI 100. Returns how many were filled.
+    pub fn fill_save_cars(&self, xuid: u64) -> usize {
+        let Some(car) = self.most_raced_car(xuid) else { return 0 };
+        let id = car["carId"].as_i64().unwrap_or(-1);
+        let class = car["classID"].as_i64().unwrap_or(0);
+        let pi = car["perfIndex"].as_f64().unwrap_or(0.0);
+        self.with(|db| {
+            let mut stmt = db.prepare("SELECT id, data FROM scores WHERE xuid = ?1 AND car_id < 0")?;
+            let rows: Vec<(i64, String)> =
+                stmt.query_map([xuid as i64], |r| Ok((r.get(0)?, r.get(1)?)))?.flatten().collect();
+            let mut filled = 0;
+            for (row, data) in rows {
+                let Ok(mut data) = serde_json::from_str::<Value>(&data) else { continue };
+                if data["fromSave"] != true {
+                    continue;
+                }
+                data["carId"] = json!(id);
+                data["carClassId"] = json!(class);
+                data["carPerformanceIndex"] = json!(pi);
+                filled += db.execute(
+                    "UPDATE scores SET car_id = ?2, car_class_id = ?3, data = ?4 WHERE id = ?1",
+                    rusqlite::params![row, id, class, data.to_string()],
+                )?;
+            }
+            Ok(filled)
+        })
+        .unwrap_or(0)
+    }
+
+    /// fill_save_cars for every player (at start).
+    pub fn fill_all_save_cars(&self) -> usize {
+        let owners: Vec<u64> = self
+            .with(|db| {
+                let mut stmt = db.prepare("SELECT DISTINCT xuid FROM scores WHERE car_id < 0")?;
+                let found = stmt.query_map([], |r| r.get::<_, i64>(0))?.flatten().map(|x| x as u64).collect::<Vec<_>>();
+                Ok(found)
+            })
+            .unwrap_or_default();
+        owners.into_iter().map(|x| self.fill_save_cars(x)).sum()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A best taken from the save before the garage came gets the most raced car with it.
+    #[test]
+    fn save_bests_get_a_car() {
+        let dir = std::env::temp_dir().join(format!("fh2-savecar-{}", super::super::accounts::new_token()));
+        let store = Store::open(&dir.join("t.sqlite")).unwrap();
+        let x = 2535000000000042;
+        store.add_score(x, TRAP, &json!({
+            "scoreboardType": BOARD_TYPE, "gameScoreboardId": 3, "trackId": -1, "score": 40.0, "carId": -1, "fromSave": true,
+        }));
+        assert_eq!(store.fill_all_save_cars(), 0);
+        store.apply_tables(x, &json!({ "garageCars": [
+            { "id": 1, "carId": 461, "classID": 2, "perfIndex": 0.608, "numRaces": 3 },
+            { "id": 2, "carId": 1218, "classID": 3, "perfIndex": 0.65, "numRaces": 9 },
+        ]}));
+        assert_eq!(store.fill_all_save_cars(), 1);
+        let row = store.leaderboard(BOARD_TYPE, TRAP, None, Some(3)).remove(0);
+        assert_eq!(row.data["carId"], 1218);
+        assert_eq!(row.data["carClassId"], 3);
+        assert_eq!(store.fill_all_save_cars(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn boards() {
