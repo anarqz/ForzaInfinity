@@ -2,6 +2,19 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-15, meio-dia (hook fh2online.37, atualização automática): leia primeiro
+
+- **Hook .37** (`5cd49b5`), na release **`v0.1.3`, publicada como pré-lançamento** (os instaladores, que usam `releases/latest`, ainda entregam a v0.1.2). SHA `f791ffe4…`.
+  - **Atualização automática** (`adapters/azimuth_update.c`): o `/info` do servidor tem `latestHook`/`latestRelease`, vindos de `server/responses/infinity/latest.json`, que o `tools/package_release.sh --release vX.Y.Z` escreve.
+    - Se o build anunciado for maior, o hook baixa `azimuth-tls.dll` e `.sha256` **do GitHub** (`anarqz/ForzaInfinity`, nunca do servidor do jogo).
+    - Confere o SHA-256, o `MZ` e o `+fh2online.N`, grava `.new`, renomeia o atual para `.previous` e põe o novo no lugar.
+    - Desliga com `[Network] AutoUpdate=0`.
+  - Na tela INFINITY, o PROFILE virou um bloco 1x1 com o **UPDATE** embaixo (I7 em 0,1). O primeiro clique em INFINITY da sessão mostra a atualização. A linha da pausa avisa "UPDATE INSTALLED | RESTART THE GAME".
+  - `ForzaInfinity-Update.sh`/`.cmd` (de `release/update.*`) ficam na pasta do Azimuth; os desinstaladores removem.
+- **Ordem de uma release daqui em diante:** `package_release.sh --release vX.Y.Z` → `gh release create` → commit do `latest.json` → `infra/deploy.sh`. Se o servidor anunciar antes de a release existir, o download falha (e o menu manda atualizar à mão).
+- **Falta testar no Deck** (estava fora da rede): instalar `scratchpad/selftest.dll` (o código do .37 com `MOD_VERSION` .36), abrir o jogo e ver no log "UPDATE: installed 0.2.74+fh2online.37" e o `azimuth-tls.dll` com o SHA `f791ffe4…`. Depois, o Alex confere os blocos e o popup. Só então promover a v0.1.3 a Latest.
+- Landing: textos do servidor aberto (Rivais "Race the whole server's ghosts", Storefront para todos, abertura).
+
 ## Estado em 2026-10-15, manhã (hook fh2online.36, Azimuth 0.9.9 ligado): leia primeiro
 
 - **Hook .36:** suporta a **0.9.9** (a mais recente) e a 0.9.7. A 0.9.8 continua de fora.
