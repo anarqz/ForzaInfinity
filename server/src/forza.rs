@@ -742,32 +742,57 @@ fn rows_anthem(ctx: &Ctx, params: &Value) -> Value {
     out
 }
 
-/// A leaderboard of everyone on the server, with each row's real position (club boards:
-/// isClubBoard, the caller's club). Boards without a track (speed traps and zones:
-/// scoreboardType 9, skills: 4) name their event in pivotId, which is the gameScoreboardId the
-/// scores were submitted with; track boards are the whole route. Also Scoreboard.GetRows (VIEW
-/// SCOREBOARD). `view` (2 there, 5 after an event) is not used yet: every view is the whole board.
+/// The leaderboard filters (`view`, as the game labels them: IDS_Global, IDS_NearMe,
+/// IDS_Friends, IDS_Club, IDS_FriendsAndClub; 5 is the board shown right after an event).
+const VIEW_NEAR_ME: i64 = 1;
+const VIEW_FRIENDS: i64 = 2;
+const VIEW_CLUB: i64 = 3;
+const VIEW_FRIENDS_AND_CLUB: i64 = 4;
+
+/// A leaderboard of everyone on the server. The friends and club views keep only those players
+/// (and the caller), each row still with its real position on the server; near me is the page
+/// around the caller's place; global and the after-event board are everyone. isClubBoard keeps
+/// the caller's club as well. Boards without a track (speed traps and zones: scoreboardType 9,
+/// skills: 4) name their event in pivotId, which is the gameScoreboardId the scores were
+/// submitted with; track boards are the whole route. Also Scoreboard.GetRows (VIEW SCOREBOARD).
 fn score_rows(ctx: &Ctx, params: &Value) -> Value {
     let track = params["trackId"].as_i64().filter(|t| *t >= 0);
     let event = if track.is_none() { params["pivotId"].as_i64() } else { None };
-    let mut rows = ctx.store.leaderboard(
+    let rows = ctx.store.leaderboard(
         params["scoreboardType"].as_i64().unwrap_or(-1),
         params["scoreType"].as_i64().unwrap_or(-1),
         track,
         event,
     );
-    // which view the game asks for where (to tell a friends filter apart, once one is seen)
-    println!(
-        "scoreboard view {} (type {}, scoreType {}, track {}, pivot {}, club {})",
-        params["view"], params["scoreboardType"], params["scoreType"], params["trackId"], params["pivotId"], params["isClubBoard"]
-    );
-    if params["isClubBoard"].as_bool() == Some(true) {
+    let view = params["view"].as_i64().unwrap_or(0);
+    let club_members = || -> Vec<u64> {
         let club = ctx.store.membership(ctx.xuid).map(|m| m.0);
-        let members: Vec<u64> = club.map(|c| ctx.store.club_members(c).iter().map(|m| m.0).collect()).unwrap_or_default();
-        rows.retain(|r| r.xuid == ctx.xuid || members.contains(&r.xuid));
+        club.map(|c| ctx.store.club_members(c).iter().map(|m| m.0).collect()).unwrap_or_default()
+    };
+    let mut circle: Option<Vec<u64>> = match view {
+        VIEW_FRIENDS => Some(ctx.friend_ids()),
+        VIEW_CLUB => Some(club_members()),
+        VIEW_FRIENDS_AND_CLUB => Some(ctx.friend_ids().into_iter().chain(club_members()).collect()),
+        _ => None,
+    };
+    if params["isClubBoard"].as_bool() == Some(true) {
+        let members = club_members();
+        circle = Some(circle.map(|c| c.into_iter().filter(|x| members.contains(x)).collect()).unwrap_or(members));
     }
-    let start = params["startAt"].as_i64().unwrap_or(1).max(1) as usize;
+    // (real position on the server, row)
+    let ranked: Vec<(usize, &crate::db::ScoreRow)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i + 1, r))
+        .filter(|(_, r)| r.xuid == ctx.xuid || circle.as_ref().is_none_or(|c| c.contains(&r.xuid)))
+        .collect();
     let max = params["maxResults"].as_i64().unwrap_or(50).clamp(0, 500) as usize;
+    let mine = ranked.iter().position(|(_, r)| r.xuid == ctx.xuid);
+    let start = match (view, mine) {
+        // the page with the caller in its middle
+        (VIEW_NEAR_ME, Some(i)) => (i + 1).saturating_sub(max / 2).max(1),
+        _ => params["startAt"].as_i64().unwrap_or(1).max(1) as usize,
+    };
     let row_json = |position: usize, r: &crate::db::ScoreRow| {
         let d = &r.data;
         json!({
@@ -786,14 +811,11 @@ fn score_rows(ctx: &Ctx, params: &Value) -> Value {
             ).unwrap_or(0),
         })
     };
-    let page: Vec<Value> =
-        rows.iter().enumerate().skip(start - 1).take(max).map(|(i, r)| row_json(i + 1, r)).collect();
-    let user_row = rows
-        .iter()
-        .position(|r| r.xuid == ctx.xuid)
-        .map(|i| row_json(i + 1, &rows[i]))
+    let page: Vec<Value> = ranked.iter().skip(start - 1).take(max).map(|(p, r)| row_json(*p, r)).collect();
+    let user_row = mine
+        .map(|i| row_json(ranked[i].0, ranked[i].1))
         .unwrap_or_else(|| json!({ "user": user_data(ctx, ctx.xuid) }));
-    json!({ "rows": page, "userRow": user_row, "available": rows.len() })
+    json!({ "rows": page, "userRow": user_row, "available": ranked.len() })
 }
 
 /// Transaction.Reconcile: the client asks for the reply to a transactional request it did not
@@ -1165,8 +1187,8 @@ mod tests {
             assert!(store.save_ghost(x, &id, b"ghost").is_some());
         }
         store.set_banned(c, true);
-        // D is nobody's friend and sees A and B with their real positions, not banned C
-        let board = call(d, "GetRows", json!({ "scoreboardType": 0, "scoreType": 1, "view": 2, "trackId": 7, "startAt": 1, "maxResults": 50 }));
+        // D is nobody's friend and sees A and B on the global board, not banned C
+        let board = call(d, "GetRows", json!({ "scoreboardType": 0, "scoreType": 1, "view": 0, "trackId": 7, "startAt": 1, "maxResults": 50 }));
         let rows = board["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["user"]["qwXuid"], b);
@@ -1183,6 +1205,12 @@ mod tests {
             store.apply_tables(x, &garage);
         }
         store.add_friend(d, a);
+        // the friends view: D's friend A only, at A's real position (2nd of the server)
+        let friends = call(d, "GetRows", json!({ "scoreboardType": 0, "scoreType": 1, "view": 2, "trackId": 7, "startAt": 1, "maxResults": 50 }));
+        assert_eq!(friends["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(friends["rows"][0]["user"]["qwXuid"], a);
+        assert_eq!(friends["rows"][0]["position"], 2);
+        assert_eq!(friends["available"], 1);
         let cache = handle(&ctx(d), "Drivatar", "GetDrivatarsForCache", &json!({ "numberOfDrivatars": 10 })).unwrap();
         let owners: Vec<u64> = cache["drivatarInfos"].as_array().unwrap().iter().map(|i| i["Xuid"].as_u64().unwrap()).collect();
         assert_eq!(owners, vec![a, b]);
