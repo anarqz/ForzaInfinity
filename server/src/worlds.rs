@@ -237,6 +237,15 @@ impl State {
     }
 }
 
+/// A private network address (security review L1): RFC 1918 and link-local IPv4, unique
+/// local (fc00::/7) and link-local (fe80::/10) IPv6.
+fn is_lan(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
+    }
+}
+
 /// Both the host and the caller sent their car database and the two differ: they cannot
 /// play together (different cars installed, imported or modified).
 fn cars_differ(w: &World, caller: &Caller) -> bool {
@@ -425,7 +434,8 @@ impl Worlds {
                 let parsed: Option<Vec<IpAddr>> =
                     a.iter().map(|v| v.as_str().and_then(|s| s.trim().parse::<IpAddr>().ok()).map(|ip| ip.to_canonical())).collect();
                 match parsed {
-                    Some(l) => l,
+                    Some(l) if l.iter().all(is_lan) => l,
+                    Some(_) => return bad("lan: private addresses only".into()),
                     None => return bad("lan: IP addresses".into()),
                 }
             }
@@ -595,6 +605,12 @@ impl Worlds {
         let Some((host, w)) = host.and_then(|h| s.worlds.get(&h).map(|w| (h, w))) else {
             return Reply::json(200, json!({ "world": null }));
         };
+        // where a player is, only for their friends, or when that world is open to the caller on
+        // the list anyway (security review L3)
+        let open = w.listed && w.password.is_none() && w.visibility == Visibility::Public;
+        if !(open || caller.xuid == who || caller.is_friend(who)) {
+            return Reply::json(200, json!({ "world": null }));
+        }
         let why = s.why(host, w, caller);
         Reply::json(200, json!({ "world": {
             "id": host.to_string(),
@@ -773,6 +789,25 @@ mod tests {
         // a host whose database changed ends its world
         assert_eq!(call(&w, "POST", "worlds/left", json!({"reason": "cars"}), &who(HOST, HOME), t).status, 204);
         assert_eq!(w.counts().0, 0);
+    }
+
+    #[test]
+    fn lan_must_be_private_and_of_needs_friendship() {
+        let w = Worlds::new();
+        let t = Instant::now();
+        let c = who(HOST, HOME);
+        for lan in [json!(["8.8.8.8"]), json!(["2001:db8::1"]), json!(["192.168.0.2", "1.1.1.1"])] {
+            assert_eq!(call(&w, "POST", "worlds", world(json!({"lan": lan})), &c, t).status, 400, "{lan}");
+        }
+        for lan in [json!(["10.0.0.2"]), json!(["172.16.5.1"]), json!(["169.254.1.1"]), json!(["fd00::1"]), json!(["fe80::1"])] {
+            assert_eq!(call(&w, "POST", "worlds", world(json!({"lan": lan})), &c, t).status, 200, "{lan}");
+        }
+        // a private session: a stranger does not learn where the host is; a friend does
+        assert_eq!(call(&w, "POST", "worlds", world(json!({"listed": false, "visibility": "friends"})), &c, t).status, 200);
+        let r = call(&w, "GET", "worlds/of/100", Value::Null, &who(5, AWAY), t).body.unwrap();
+        assert_eq!(r["world"], Value::Null);
+        let r = call(&w, "GET", "worlds/of/100", Value::Null, &who(1, AWAY), t).body.unwrap();
+        assert_eq!(r["world"]["id"], json!("100"));
     }
 
     #[test]
@@ -961,11 +996,12 @@ mod tests {
         host_world(&w, HOST, "192.0.2.3", json!({"visibility": "friends", "password": "pw"}), t);
         let of = |x: u64, caller: u64| call(&w, "GET", &format!("worlds/of/{x}"), Value::Null, &who(caller, AWAY), t).body.unwrap();
         assert_eq!(of(5, 1), json!({"world": null}));
-        assert_eq!(of(HOST, 5), json!({"world": {
+        // a stranger does not learn where the host of a friends-only world is (L3)
+        assert_eq!(of(HOST, 5), json!({"world": null}));
+        assert_eq!(of(HOST, 1), json!({"world": {
             "id": "100", "name": "Mundo do Alex", "host": "Player#100", "players": 1, "maxPlayers": 12,
-            "password": true, "canJoin": false, "why": "friends",
+            "password": true, "canJoin": true, "why": "",
         }}));
-        assert_eq!(of(HOST, 1)["world"]["canJoin"], true);
         // a player in the world: the same world
         let c = Choice { addr: "192.0.2.3:5101".parse().unwrap(), host: HOST, via: Via::Pending };
         w.assign(1, Some(&c), t);
