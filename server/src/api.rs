@@ -249,7 +249,7 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                     app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
                     json_reply(
                         200,
-                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key }),
+                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key, "expansions": app.store.expansions(account.xuid) }),
                     )
                 }
                 Err(e) => json_reply(400, &json!({ "error": e })),
@@ -378,7 +378,7 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                     app.store.add_event(account.xuid, "account", &format!("{gamertag} entrou em outro PC"), json!({}));
                     json_reply(
                         200,
-                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key }),
+                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key, "expansions": app.store.expansions(account.xuid) }),
                     )
                 }
                 Err(e) => json_reply(401, &json!({ "error": e })),
@@ -397,7 +397,7 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
         }
         ("GET", "me") => match token_account() {
             Some(a) if a.banned => json_reply(403, &json!({ "error": "Account suspended on this server." })),
-            Some(a) => json_reply(200, &json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag() })),
+            Some(a) => json_reply(200, &json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag(), "expansions": app.store.expansions(a.xuid) })),
             None => json_reply(401, &json!({ "error": "Unknown token." })),
         },
         _ => json_reply(404, &json!({ "error": "not found" })),

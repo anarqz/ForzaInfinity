@@ -82,7 +82,7 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=/etc/cloudflared/tunnel.env
-ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel --protocol http2 run
 Restart=always
 RestartSec=5
 DynamicUser=yes

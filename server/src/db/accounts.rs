@@ -31,7 +31,14 @@ pub const SCHEMA: &str = "
         from_xuid INTEGER NOT NULL, to_xuid INTEGER NOT NULL, created INTEGER NOT NULL,
         PRIMARY KEY (from_xuid, to_xuid));
     CREATE TABLE IF NOT EXISTS web_keys (
-        xuid INTEGER PRIMARY KEY, key_hash TEXT NOT NULL, created INTEGER NOT NULL);";
+        xuid INTEGER PRIMARY KEY, key_hash TEXT NOT NULL, created INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS account_expansions (
+        xuid INTEGER NOT NULL, product TEXT NOT NULL, granted INTEGER NOT NULL,
+        PRIMARY KEY (xuid, product));";
+
+/// Expansions every profile on the server has: Storm Island (ContentOffers 31, whose data is in
+/// the base game, MountPath game:\). The hook unlocks them in the game (azimuth_expansions.c).
+pub const GRANTED_EXPANSIONS: &[&str] = &["06f06bff-35ee-4821-a289-fbc1765d6b76"];
 
 /// Web key alphabet: no 0/O or 1/I, so it can be read off a TV and typed.
 const WEB_KEY_ALPHABET: &[u8; 32] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -145,7 +152,36 @@ impl Store {
             )
         })
         .ok_or("Could not save the account.")?;
+        self.grant_expansions();
         Ok((Account { xuid, name: name.into(), discriminator: discriminator.into(), banned: false }, token))
+    }
+
+    /// Gives every account the GRANTED_EXPANSIONS it does not have yet (a new account, and at
+    /// start the ones made before). Returns how many grants were added.
+    pub fn grant_expansions(&self) -> usize {
+        let now = unix_ms();
+        GRANTED_EXPANSIONS
+            .iter()
+            .map(|product| {
+                self.with(|db| {
+                    db.execute(
+                        "INSERT OR IGNORE INTO account_expansions (xuid, product, granted) SELECT xuid, ?1, ?2 FROM accounts",
+                        params![product, now],
+                    )
+                })
+                .unwrap_or(0)
+            })
+            .sum()
+    }
+
+    /// The expansions (product ids) an account has.
+    pub fn expansions(&self, xuid: u64) -> Vec<String> {
+        self.with(|db| {
+            let mut stmt = db.prepare("SELECT product FROM account_expansions WHERE xuid = ?1 ORDER BY product")?;
+            let rows = stmt.query_map([xuid as i64], |r| r.get::<_, String>(0))?.flatten().collect();
+            Ok(rows)
+        })
+        .unwrap_or_default()
     }
 
     fn account_row(r: &rusqlite::Row) -> rusqlite::Result<Account> {
@@ -427,6 +463,13 @@ mod tests {
         assert_eq!(found.xuid, acc.xuid);
         assert_eq!(store.gamertag(acc.xuid), "Alex#01234");
         assert!(store.account_by_token("nope").is_none());
+        // every profile has Storm Island: a new one at once, older ones from the backfill
+        assert_eq!(store.expansions(acc.xuid), GRANTED_EXPANSIONS);
+        store.with(|db| db.execute("DELETE FROM account_expansions", []));
+        assert!(store.expansions(acc.xuid).is_empty());
+        assert_eq!(store.grant_expansions(), 2);
+        assert_eq!(store.expansions(acc.xuid), GRANTED_EXPANSIONS);
+        assert_eq!(store.grant_expansions(), 0);
         let key = store.rotate_web_key(acc.xuid).unwrap();
         assert_eq!(key.len(), 14);
         assert!(store.account_by_web_key("Alex#01234", &key).is_some());
