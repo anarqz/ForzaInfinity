@@ -42,6 +42,7 @@ mod strtable;
 mod gamerpic;
 mod guard;
 mod live;
+mod news_cli;
 mod xtsw;
 
 use std::{
@@ -220,6 +221,11 @@ impl Target {
 }
 
 fn main() {
+    // admin news, straight into the database (never over HTTP): news_cli.rs
+    if std::env::args().nth(1).as_deref() == Some("news") {
+        news_cli::run(std::env::args().skip(2).collect());
+        return;
+    }
     let mut listen: SocketAddr = "127.0.0.1:8081".parse().unwrap();
     let mut root = std::env::current_dir().unwrap();
     let mut gamedb_path = None;
