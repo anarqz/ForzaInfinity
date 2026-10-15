@@ -112,7 +112,7 @@ impl<'a> Caller<'a> {
     pub fn with_car_db(mut self, header: Option<&str>) -> Self {
         self.car_db = header
             .map(|h| h.trim().to_ascii_lowercase())
-            .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+            .filter(|h| (h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())) || h == CAR_DB_CHANGED);
         self
     }
 
@@ -163,6 +163,8 @@ struct State {
     pending: HashMap<u64, (u64, Instant)>,
     /// player -> (wrong passwords, first of them)
     failures: HashMap<u64, (u32, Instant)>,
+    /// host -> players its relay must drop (handed over in the next heartbeat's reply).
+    kicks: HashMap<u64, Vec<u64>>,
 }
 
 impl State {
@@ -180,6 +182,8 @@ impl State {
         });
         self.pending.retain(|_, (host, at)| worlds.contains_key(host) && now.saturating_duration_since(*at) < PENDING_TTL);
         self.failures.retain(|_, (_, at)| now.saturating_duration_since(*at) < FAILURE_WINDOW);
+        let worlds = &self.worlds;
+        self.kicks.retain(|host, _| worlds.contains_key(host));
     }
 
     /// The host and the players sent there.
@@ -236,8 +240,15 @@ impl State {
 /// Both the host and the caller sent their car database and the two differ: they cannot
 /// play together (different cars installed, imported or modified).
 fn cars_differ(w: &World, caller: &Caller) -> bool {
-    matches!((&w.car_db, &caller.car_db), (Some(a), Some(b)) if a != b)
+    caller.car_db.as_deref() == Some(CAR_DB_CHANGED)
+        || matches!((&w.car_db, &caller.car_db), (Some(a), Some(b)) if a != b)
 }
+
+/// What a hook sends as X-Fh2-CarDb once the car database changed during the session: that
+/// game joins no world until it restarts.
+const CAR_DB_CHANGED: &str = "changed";
+/// Most players waiting to be kicked from one world.
+const MAX_KICKS: usize = 64;
 
 pub struct Worlds {
     state: Mutex<State>,
@@ -356,6 +367,7 @@ impl Worlds {
                 self.stop(caller.xuid, now);
                 Reply { status: 204, body: None }
             }
+            ("POST", ["worlds", "left"]) => self.left(&body, caller, now),
             ("GET", ["worlds"]) => self.list(caller, now),
             ("GET", ["worlds", "of", who]) => match who.parse::<u64>() {
                 Ok(who) => self.of(who, caller, now),
@@ -493,18 +505,45 @@ impl Worlds {
         // the host plays in their own world
         s.members.remove(&host);
         s.pending.remove(&host);
+        let kicks: Vec<String> = s.kicks.remove(&host).unwrap_or_default().iter().map(|x| x.to_string()).collect();
         Reply::json(200, json!({
             "id": host.to_string(),
             "address": address.to_string(),
             "players": s.players(host),
             "expiresIn": WORLD_TTL.as_secs(),
+            "kick": kicks,
         }))
+    }
+
+    /// POST worlds/left {"reason"}: the caller's game left its world on its own (the car
+    /// database changed during the session). It is no longer a member, and that world's host
+    /// is asked to kick it at once (the relay may still hear it). A host ends its world.
+    fn left(&self, body: &Value, caller: &Caller, now: Instant) -> Reply {
+        let reason = body["reason"].as_str().unwrap_or("").chars().take(16).collect::<String>();
+        let mut s = self.lock();
+        s.purge(now);
+        if s.worlds.contains_key(&caller.xuid) {
+            drop(s);
+            self.stop(caller.xuid, now);
+            println!("worlds: {} left their own world ({reason})", caller.xuid);
+            return Reply { status: 204, body: None };
+        }
+        s.pending.remove(&caller.xuid);
+        if let Some((host, _)) = s.members.remove(&caller.xuid) {
+            let list = s.kicks.entry(host).or_default();
+            if list.len() < MAX_KICKS && !list.contains(&caller.xuid) {
+                list.push(caller.xuid);
+            }
+            println!("worlds: {} left the world of {host} ({reason}); its relay is asked to kick them", caller.xuid);
+        }
+        Reply { status: 204, body: None }
     }
 
     /// DELETE worlds: the world ends; its players are released.
     fn stop(&self, host: u64, now: Instant) {
         let mut s = self.lock();
         s.purge(now);
+        s.kicks.remove(&host);
         if s.worlds.remove(&host).is_some() {
             let before = s.members.len();
             s.members.retain(|_, (h, _)| *h != host);
@@ -664,7 +703,7 @@ mod tests {
         let w = Worlds::new();
         let t0 = Instant::now();
         let b = host_world(&w, HOST, HOME, json!({}), t0);
-        assert_eq!(b, json!({"id": "100", "address": "203.0.113.5:5101", "players": 1, "expiresIn": 45}));
+        assert_eq!(b, json!({"id": "100", "address": "203.0.113.5:5101", "players": 1, "expiresIn": 45, "kick": []}));
         // heartbeat keeps it past 45 s
         host_world(&w, HOST, HOME, json!({}), t0 + Duration::from_secs(30));
         assert!(w.choose(&who(5, AWAY), t0 + Duration::from_secs(60)).is_some());
@@ -710,6 +749,30 @@ mod tests {
         // an older hook (no header) is not checked; a bad header is ignored
         assert!(w.choose(&who(7, AWAY), t).is_some());
         assert!(w.choose(&who(8, AWAY).with_car_db(Some("nope")), t).is_some());
+    }
+
+    #[test]
+    fn changed_car_db_leaves_and_is_kicked() {
+        let stock = "4d50013dc7705de0".repeat(4);
+        let w = Worlds::new();
+        let t = Instant::now();
+        let host = who(HOST, HOME).with_car_db(Some(&stock));
+        assert_eq!(call(&w, "POST", "worlds", world(json!({})), &host, t).status, 200);
+        let guest = who(5, AWAY).with_car_db(Some(&stock));
+        let c = w.choose(&guest, t).unwrap();
+        w.assign(5, Some(&c), t);
+        // the guest's database changed: it says so and leaves
+        let changed = who(5, AWAY).with_car_db(Some("changed"));
+        assert!(w.choose(&changed, t).is_none());
+        assert_eq!(call(&w, "POST", "worlds/left", json!({"reason": "cars"}), &changed, t).status, 204);
+        // the host's next heartbeat carries the kick, once
+        let b = call(&w, "POST", "worlds", world(json!({})), &host, t).body.unwrap();
+        assert_eq!(b["kick"], json!(["5"]));
+        let b = call(&w, "POST", "worlds", world(json!({})), &host, t).body.unwrap();
+        assert_eq!(b["kick"], json!([]));
+        // a host whose database changed ends its world
+        assert_eq!(call(&w, "POST", "worlds/left", json!({"reason": "cars"}), &who(HOST, HOME), t).status, 204);
+        assert_eq!(w.counts().0, 0);
     }
 
     #[test]
