@@ -72,6 +72,9 @@ struct World {
     name: String,
     message: String,
     visibility: Visibility,
+    /// On the list and in the automatic join. A private session (the game's "Sessão online
+    /// particular") is not: only ENTRAR NO MUNDO reaches it.
+    listed: bool,
     salt: String,
     /// SHA-1 hex of salt:password; None: no password.
     password: Option<String>,
@@ -291,7 +294,7 @@ impl Worlds {
         let best = s
             .worlds
             .iter()
-            .filter(|(host, w)| w.password.is_none() && s.why(**host, w, caller).is_empty())
+            .filter(|(host, w)| w.listed && w.password.is_none() && s.why(**host, w, caller).is_empty())
             .max_by_key(|(host, w)| (w.host_ip == caller.ip, s.players(**host), w.heartbeat))
             .map(|(host, _)| *host)?;
         Some(pick(best, Via::Auto))
@@ -365,6 +368,11 @@ impl Worlds {
             Some("off") => Visibility::Off,
             _ => return bad("visibility: public, friends or off".into()),
         };
+        let listed = match &body["listed"] {
+            Value::Null => true,
+            Value::Bool(b) => *b,
+            _ => return bad("listed: true or false".into()),
+        };
         let password = match text(body, "password", 32, false) {
             Ok(p) => p,
             Err(e) => return bad(e),
@@ -427,6 +435,7 @@ impl Worlds {
             name,
             message,
             visibility,
+            listed,
             max_players,
             port,
             lan,
@@ -438,6 +447,7 @@ impl Worlds {
         let changed = old.as_ref().is_none_or(|o| {
             o.name != world.name
                 || o.visibility != world.visibility
+                || o.listed != world.listed
                 || o.password.is_some() != world.password.is_some()
                 || o.port != world.port
                 || o.host_ip != world.host_ip
@@ -489,7 +499,8 @@ impl Worlds {
             .worlds
             .iter()
             .filter(|(host, w)| {
-                w.password.is_none()
+                w.listed
+                    && w.password.is_none()
                     && w.visibility != Visibility::Off
                     && !w.banned.contains(&caller.xuid)
                     && (w.visibility == Visibility::Public || **host == caller.xuid || caller.is_friend(**host))
@@ -634,6 +645,23 @@ mod tests {
         host_world(&w, HOST, HOME, json!({}), t0 + Duration::from_secs(30));
         assert!(w.choose(&who(5, AWAY), t0 + Duration::from_secs(60)).is_some());
         assert_eq!(w.counts().0, 1);
+    }
+
+    #[test]
+    fn unlisted_world_is_joined_only_by_choice() {
+        // a private session: not on the list, not picked automatically, joinable by a friend
+        let w = Worlds::new();
+        let t = Instant::now();
+        host_world(&w, HOST, HOME, json!({"listed": false, "visibility": "friends"}), t);
+        let r = call(&w, "GET", "worlds", Value::Null, &who(1, AWAY), t);
+        assert_eq!(r.body.unwrap()["worlds"], json!([]));
+        assert!(w.choose(&who(1, AWAY), t).is_none());
+        assert_eq!(call(&w, "POST", "worlds/100/join", json!({"password": ""}), &who(1, AWAY), t).status, 200);
+        assert_eq!(w.choose(&who(1, AWAY), t).unwrap().host, HOST);
+        // not a friend: no
+        assert_eq!(call(&w, "POST", "worlds/100/join", json!({"password": ""}), &who(5, AWAY), t).status, 403);
+        // the host still goes to it
+        assert_eq!(w.choose(&who(HOST, HOME), t).unwrap().via, Via::Hosting);
     }
 
     #[test]
