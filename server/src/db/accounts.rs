@@ -63,8 +63,8 @@ impl Account {
     }
 }
 
-/// Longest name. The game shows 15 characters of a gamertag: a longer "Name#12345" shows as the
-/// name alone there (Store::game_tag).
+/// Longest name. The game shows 15 characters of a gamertag: a longer "Name#12345" keeps its
+/// number there and the name is cut to fit (Store::game_tag).
 pub const MAX_NAME: usize = 20;
 
 /// 1 to MAX_NAME ASCII letters or digits starting with a letter.
