@@ -6,6 +6,7 @@
 
 use std::{
     path::PathBuf,
+    sync::mpsc,
     process::exit,
     sync::atomic::AtomicBool,
     time::Duration,
@@ -22,7 +23,24 @@ fn usage() -> ! {
     exit(0)
 }
 
+/// Commands for the relay, one per stdin line (the hook writes them through a pipe; there is no
+/// network control). At the end of stdin (the parent closed it) the reader just stops; the
+/// server goes on.
+fn stdin_commands() -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || relay::read_commands(std::io::stdin().lock(), &tx));
+    rx
+}
+
 fn main() {
+    // a panic while handling a packet is caught and logged by the relay (once per address); the
+    // default hook would print every one of them, so a hostile peer could flood the console
+    std::panic::set_hook(Box::new(|info| {
+        static SHOWN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if SHOWN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
+            eprintln!("erro interno: {}", relay::sanitize_line(&info.to_string()));
+        }
+    }));
     let mut config_path: Option<PathBuf> = None;
     let mut port: Option<u16> = None;
     let mut verbose = false;
@@ -117,10 +135,12 @@ fn main() {
     if let Some(m) = mirror {
         println!("  espelho:   ligado, carro {:.1} s atrasado (jogador {})", m.as_secs_f64(), relay::MIRROR_INDEX);
     }
+    println!("Comandos (uma linha cada): kick <xuid> [motivo], allow <ip>, allowonly 1|0");
     println!("Pronto. Ctrl+C para fechar.");
 
     let settings = relay::Settings { max_players: cfg.max_players, mirror, verbose, ..Default::default() };
     let mut r = relay::Relay::new(sock, settings);
+    r.set_commands(stdin_commands());
     let stop = AtomicBool::new(false);
     if let Err(e) = r.run(&stop) {
         eprintln!("erro no socket: {e}");
