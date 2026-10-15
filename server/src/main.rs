@@ -297,6 +297,10 @@ fn main() {
     });
     println!("  database:  {}", db_path.display());
     let bests = store.import_all_save_bests();
+    let filled = store.fill_all_save_cars();
+    if filled > 0 {
+        println!("  saves:     {filled} save best(s) given the player's car");
+    }
     if bests > 0 {
         println!("  saves:     {bests} speed trap / zone best(s) taken from cloud saves");
     }
