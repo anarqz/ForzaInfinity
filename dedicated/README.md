@@ -37,12 +37,13 @@ As outras chaves já são lidas e conferidas, mas só passam a valer nas próxim
 - O servidor escuta em **UDP 5101** (ou na `Port` do `server.cfg`), em IPv6 e IPv4 no mesmo socket.
 - **Windows:** na primeira vez, aceite o aviso do Firewall do Windows para o `dedicated_server.exe` (redes privadas, e públicas se for o caso). Também dá para criar a regra à mão:
   `netsh advfirewall firewall add rule name="FH2 dedicated_server" dir=in action=allow protocol=UDP localport=5101`
-- **Linux:** libere a porta no firewall, se houver um (por exemplo `sudo ufw allow 5101/udp`).
+- **Linux:** libere a porta no firewall, se houver um (por exemplo `sudo ufw allow 5101/udp`, ou `sudo nft add rule inet filter input udp dport 5101 accept`). No Steam Deck (SteamOS) o firewalld vem ligado: para hospedar nele, `sudo firewall-cmd --add-port=5101/udp` (some no reinício; com `--permanent` fica). Para só jogar não precisa, porque as respostas do mundo entram como conexão já aberta.
 - **Pela internet:** encaminhe a porta UDP 5101 do roteador para o IP deste PC. O UPnP automático chega na F3. Na rede local não é preciso.
 - **O seu próprio jogo**, no mesmo PC, entra por `127.0.0.1` (ou `::1`).
 
 ## Compilar
 
 - **Linux:** `~/.cargo/bin/cargo build --release` e `cargo test`.
+- **Linux para distribuir** (qualquer x86_64, inclusive o SteamOS do Deck): `./build-linux.sh`. Gera um binário estático (musl), que não depende da glibc do sistema, e precisa do `rustup target add x86_64-unknown-linux-musl`. A saída é `target/x86_64-unknown-linux-musl/release/dedicated_server`. Para rodar: `chmod +x dedicated_server && ./dedicated_server`, com o `server.cfg` na mesma pasta.
 - **`.exe` a partir do Linux:** `./build-windows.sh`. Usa o zig como linker e precisa do `rustup target add x86_64-pc-windows-gnu`. A saída é `target/x86_64-pc-windows-gnu/release/dedicated_server.exe`.
 - **No Windows:** `cargo build --release`.
