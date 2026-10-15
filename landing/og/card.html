@@ -1,0 +1,192 @@
+<!doctype html>
+<!-- The social sharing card (public/og.png, 1200x630). Rendered by og/render.sh; edit and
+     render again when the page's look changes. No Microsoft or Xbox marks. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@600;700;800&display=block" rel="stylesheet" />
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html,
+      body {
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+        background: #07090a;
+        font-family: "Open Sans", sans-serif;
+        color: #f4f7f5;
+      }
+      .card {
+        position: relative;
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+      }
+      .sky {
+        position: absolute;
+        inset: 0 0 32% 0;
+        background: linear-gradient(to bottom, #070512 0%, #1c0d33 24%, #5a1c4a 46%, #c4433f 62%, #ff8a3d 76%, #ffd27a 92%);
+      }
+      .sun {
+        position: absolute;
+        left: 820px;
+        bottom: 168px;
+        width: 360px;
+        height: 360px;
+        border-radius: 50%;
+        transform: translateX(-50%);
+        background: radial-gradient(circle at 50% 45%, #fff6d6 0%, #ffd27a 45%, #ff8a3d 80%);
+        box-shadow: 0 0 140px 50px rgba(255, 150, 60, 0.5);
+      }
+      .hills {
+        position: absolute;
+        left: 0;
+        bottom: 160px;
+        width: 1200px;
+        height: 130px;
+      }
+      .ground {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 202px;
+        background: linear-gradient(#0b1d0f, #050806);
+        perspective: 260px;
+        perspective-origin: 820px 0;
+        overflow: hidden;
+      }
+      .road {
+        position: absolute;
+        left: 820px;
+        top: 0;
+        width: 300px;
+        height: 700px;
+        transform: translateX(-50%) rotateX(72deg);
+        transform-origin: 50% 0;
+        background: linear-gradient(90deg, #3ddc84 0 1.4%, transparent 1.4% 98.6%, #3ddc84 98.6%),
+          linear-gradient(90deg, #1a1d1c, #2a2e2c 50%, #1a1d1c);
+        box-shadow: 0 0 60px rgba(61, 220, 132, 0.4);
+      }
+      .road::after {
+        content: "";
+        position: absolute;
+        left: 49.2%;
+        width: 1.6%;
+        top: 0;
+        bottom: 0;
+        background: repeating-linear-gradient(to bottom, #f5f5f5 0 60px, transparent 60px 140px);
+      }
+      .shade {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, rgba(4, 3, 10, 0.82) 0%, rgba(4, 3, 10, 0.5) 42%, transparent 66%),
+          linear-gradient(to bottom, transparent 70%, rgba(7, 9, 10, 0.7) 100%);
+      }
+      .content {
+        position: absolute;
+        left: 72px;
+        top: 60px;
+        width: 760px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+      }
+      .brand b {
+        margin-left: 6px;
+        color: #3ddc84;
+        font-weight: 800;
+      }
+      .brand svg {
+        width: 46px;
+        height: 46px;
+        filter: drop-shadow(0 0 14px rgba(61, 220, 132, 0.6));
+      }
+      .kicker {
+        margin-top: 64px;
+        font-size: 20px;
+        font-weight: 700;
+        letter-spacing: 0.22em;
+        color: #ffd9a8;
+      }
+      h1 {
+        margin-top: 10px;
+        font-size: 116px;
+        font-weight: 800;
+        line-height: 0.92;
+        letter-spacing: -0.035em;
+      }
+      .glow {
+        background: linear-gradient(100deg, #9bf06b, #3ddc84 45%, #1fd1a0);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .features {
+        margin-top: 30px;
+        white-space: nowrap;
+        font-size: 23px;
+        font-weight: 600;
+        color: #e6ece8;
+      }
+      .platforms {
+        position: absolute;
+        left: 72px;
+        bottom: 46px;
+        display: flex;
+        gap: 12px;
+      }
+      .platforms span {
+        padding: 8px 18px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        font-size: 18px;
+        font-weight: 700;
+      }
+      .platforms span.free {
+        background: #107c10;
+        border-color: rgba(155, 240, 107, 0.45);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="sky"></div>
+      <div class="sun"></div>
+      <svg class="hills" viewBox="0 0 1200 130" preserveAspectRatio="none">
+        <path d="M0 70 C150 20 270 55 400 38 C540 18 640 66 780 44 C920 22 1050 52 1200 30 V130 H0Z" fill="#14301a" />
+        <path d="M0 100 C180 70 320 96 470 84 C640 70 760 104 910 90 C1040 78 1120 92 1200 84 V130 H0Z" fill="#0b1d0f" />
+      </svg>
+      <div class="ground"><div class="road"></div></div>
+      <div class="shade"></div>
+      <div class="content">
+        <div class="brand">
+          <svg viewBox="0 0 32 32" aria-hidden="true">
+            <defs>
+              <linearGradient id="bm" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#5ce65c" />
+                <stop offset="1" stop-color="#107c10" />
+              </linearGradient>
+            </defs>
+            <circle cx="16" cy="16" r="15" fill="url(#bm)" />
+            <path d="M9.5 16c2.2-4.4 4.4-4.4 6.5 0s4.3 4.4 6.5 0" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" />
+          </svg>
+          <span>FORZA<b>INFINITY</b></span>
+        </div>
+        <p class="kicker">FORZA HORIZON 2 · ONLINE AGAIN ON PC</p>
+        <h1>Back on<br /><span class="glow">the road.</span></h1>
+        <p class="features">Friends · Clubs · Rival ghosts · Leaderboards · Liveries · Cloud saves</p>
+      </div>
+      <div class="platforms"><span>Windows</span><span>Steam Deck</span><span>Linux</span><span class="free">Free · fan project</span></div>
+    </div>
+  </body>
+</html>

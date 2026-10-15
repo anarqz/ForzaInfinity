@@ -463,7 +463,7 @@ function Install({ t }: { t: Texts }) {
         <div className="tabs" role="tablist">
           {(["windows", "deck", "linux"] as const).map((p) => (
             <button key={p} role="tab" aria-selected={p === platform} className={p === platform ? "on" : ""} onClick={() => setPlatform(p)}>
-              {p === "windows" ? <IconWindowsless /> : p === "deck" ? <IconHandheld /> : <IconTerminal />}
+              {p === "windows" ? <IconMonitor /> : p === "deck" ? <IconHandheld /> : <IconTerminal />}
               {t.install.tabs[p]}
             </button>
           ))}
@@ -604,8 +604,4 @@ function IconHandheld() {
 }
 function IconTerminal() {
   return icon(<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9l3 3-3 3M12 15h5" /></>);
-}
-/** A generic four-pane window (not a brand logo). */
-function IconWindowsless() {
-  return icon(<><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M12 4v16M4 12h16" /></>);
 }
