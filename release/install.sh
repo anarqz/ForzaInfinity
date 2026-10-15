@@ -5,10 +5,12 @@
 #   ./install.sh                         finds azimuth.exe and asks for the server
 #   ./install.sh <azimuth folder> <host:port | https://host>
 #   curl -fsSL https://github.com/anarqz/ForzaInfinity/releases/latest/download/install.sh | bash
-# It needs the Azimuth version the hook was made for (SUPPORTED_AZIMUTH); FORCE=1 installs on
-# another one anyway (the game then plays offline).
+# It needs an Azimuth version the hook was made for (SUPPORTED_AZIMUTH); FORCE=1 installs on
+# another one anyway (the game then plays offline). Updating Azimuth puts its own
+# azimuth-tls.dll back: run the installer again after each update.
 set -euo pipefail
-SUPPORTED_AZIMUTH='0.9.7'
+SUPPORTED_AZIMUTH='0.9.7 0.9.9'
+SUPPORTED_TEXT='0.9.9 (the latest) or 0.9.7'
 DEFAULT_SERVER='__DEFAULT_SERVER__'
 RELEASE='https://github.com/anarqz/ForzaInfinity/releases/latest/download'
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || pwd)"
@@ -56,9 +58,9 @@ azimuth_version() {
 }
 VERSION="$(azimuth_version "$AZIMUTH")"
 if [ -z "$VERSION" ]; then
-    echo "ForzaInfinity: could not read the Azimuth version; it needs Azimuth $SUPPORTED_AZIMUTH." >&2
-elif [ "$VERSION" != "$SUPPORTED_AZIMUTH" ] && [ -z "${FORCE:-}" ]; then
-    fail "This is Azimuth $VERSION. ForzaInfinity needs Azimuth $SUPPORTED_AZIMUTH for now: on $VERSION the game would play offline. Install Azimuth $SUPPORTED_AZIMUTH (keep its folder) and run the installer again, or FORCE=1 to install anyway."
+    echo "ForzaInfinity: could not read the Azimuth version; it needs Azimuth $SUPPORTED_TEXT." >&2
+elif ! [[ " $SUPPORTED_AZIMUTH " == *" $VERSION "* ]] && [ -z "${FORCE:-}" ]; then
+    fail "This is Azimuth $VERSION. ForzaInfinity needs Azimuth $SUPPORTED_TEXT: on $VERSION the game would play offline. Update Azimuth to the latest version and run the installer again, or FORCE=1 to install anyway."
 fi
 
 # 2. the server
@@ -80,7 +82,11 @@ SERVER="$(echo "$SERVER" | tr -d '[:space:]')"
 DLL="$HERE/azimuth-tls.dll"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 if [ ! -f "$DLL" ]; then DLL="$TMP/azimuth-tls.dll"; curl -fsSL "$RELEASE/azimuth-tls.dll" -o "$DLL"; fi
-if [ -f "$BIN/azimuth-tls.dll" ] && [ ! -f "$BIN/azimuth-tls.dll.stock" ]; then cp "$BIN/azimuth-tls.dll" "$BIN/azimuth-tls.dll.stock"; fi
+# keep Azimuth's own (a few KB; ours is far bigger): the first time, and again after an Azimuth
+# update put its own back
+if [ -f "$BIN/azimuth-tls.dll" ] && { [ ! -f "$BIN/azimuth-tls.dll.stock" ] || [ "$(wc -c < "$BIN/azimuth-tls.dll")" -lt 65536 ]; }; then
+    cp "$BIN/azimuth-tls.dll" "$BIN/azimuth-tls.dll.stock"
+fi
 cp "$DLL" "$BIN/azimuth-tls.dll.new" && mv "$BIN/azimuth-tls.dll.new" "$BIN/azimuth-tls.dll"
 
 # 4. the settings: [Network] Mode=Proxy and Server=..., keeping everything else (CRLF file)

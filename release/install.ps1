@@ -3,10 +3,12 @@
 #   Install.cmd                  double click (asks for the folder and the server)
 #   install.ps1 -Folder <dir> -Server host:port|https://host -Quiet
 #   irm https://github.com/anarqz/ForzaInfinity/releases/latest/download/install.ps1 | iex
-# It needs the Azimuth version the hook was made for ($SupportedAzimuth); -Force installs on
-# another one anyway (the game then plays offline).
+# It needs an Azimuth version the hook was made for ($SupportedAzimuth); -Force installs on
+# another one anyway (the game then plays offline). Updating Azimuth puts its own
+# azimuth-tls.dll back: run the installer again after each update.
 param([string]$Folder = '', [string]$Server = '', [switch]$Quiet, [switch]$Force)
-$SupportedAzimuth = '0.9.7'
+$SupportedAzimuth = @('0.9.7', '0.9.9')
+$SupportedText = '0.9.9 (the latest) or 0.9.7'
 $ErrorActionPreference = 'Stop'
 $DefaultServer = '__DEFAULT_SERVER__'
 $Release = 'https://github.com/anarqz/ForzaInfinity/releases/latest/download'
@@ -50,9 +52,9 @@ if (Get-Process -Name 'azimuth' -ErrorAction SilentlyContinue) { Fail 'Close For
 # the Azimuth version: the UTF-16 "0.x.y" string in azimuth.exe
 $text = [Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes((Join-Path $azimuth 'azimuth.exe')))
 $version = [regex]::Matches($text, '(?<![0-9.])0\.[0-9]+\.[0-9]+(?![0-9.])') | Group-Object Value | Sort-Object Count -Descending | Select-Object -First 1 -ExpandProperty Name
-if (-not $version) { Write-Host "Could not read the Azimuth version; ForzaInfinity needs Azimuth $SupportedAzimuth." }
-elseif ($version -ne $SupportedAzimuth -and -not $Force) {
-    Fail "This is Azimuth $version. ForzaInfinity needs Azimuth $SupportedAzimuth for now: on $version the game would play offline.`n`nInstall Azimuth $SupportedAzimuth (keep its folder) and run the installer again, or run install.ps1 -Force to install anyway."
+if (-not $version) { Write-Host "Could not read the Azimuth version; ForzaInfinity needs Azimuth $SupportedText." }
+elseif ($SupportedAzimuth -notcontains $version -and -not $Force) {
+    Fail "This is Azimuth $version. ForzaInfinity needs Azimuth ${SupportedText}: on $version the game would play offline.`n`nUpdate Azimuth to the latest version and run the installer again, or run install.ps1 -Force to install anyway."
 }
 
 # 2. the server
@@ -74,7 +76,9 @@ if (-not (Test-Path $dll)) {
 }
 $target = Join-Path $bin 'azimuth-tls.dll'
 $stock = Join-Path $bin 'azimuth-tls.dll.stock'
-if ((Test-Path $target) -and -not (Test-Path $stock)) { Copy-Item $target $stock }
+# keep Azimuth's own (a few KB; ours is far bigger): the first time, and again after an Azimuth
+# update put its own back
+if ((Test-Path $target) -and (-not (Test-Path $stock) -or (Get-Item $target).Length -lt 65536)) { Copy-Item $target $stock -Force }
 Copy-Item $dll $target -Force
 
 # 4. the settings: [Network] Mode=Proxy and Server=..., keeping everything else
@@ -99,7 +103,9 @@ if (Test-Path $ini) {
 } else {
     $template = Join-Path $here 'FH2_ExtraOptions.ini'
     $text = if (Test-Path $template) { [IO.File]::ReadAllText($template) } else {
-        (Invoke-WebRequest -UseBasicParsing -Uri "$Release/FH2_ExtraOptions.ini").Content
+        # GitHub serves release files as application/octet-stream: Content is then bytes
+        $content = (Invoke-WebRequest -UseBasicParsing -Uri "$Release/FH2_ExtraOptions.ini").Content
+        if ($content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($content) } else { $content }
     }
     [IO.File]::WriteAllText($ini, $text.Replace('__SERVER__', $Server), (New-Object System.Text.ASCIIEncoding))
 }

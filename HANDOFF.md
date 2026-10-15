@@ -2,6 +2,21 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-15, manhã (hook fh2online.36, Azimuth 0.9.9 ligado): leia primeiro
+
+- **Hook .36:** suporta a **0.9.9** (a mais recente) e a 0.9.7. A 0.9.8 continua de fora.
+  - `azimuth_offsets` devolve `offsets_099`.
+  - `azimuth_cloud.c` (`saves_folder`): na 0.9.9 usa `data\titles\1A96545B\saves`; o nome alternativo `title-1a96545b` também é procurado. Se nenhum existir, cai em `data\saves`.
+  - 1A96545B é o TitleId do FH2 no `AppxManifest.xml`. A 0.9.9 cria a pasta e migra os saves na primeira abertura, deixando uma cópia em `data\saves-backup-<sessão>` (log: "title folder: the saves are moved from … to …").
+  - O pad continua só na 0.9.7.
+- **Testado no Deck com a 0.9.9** (o Alex confirmou "Deck está super funcional"): versão .36, menu INFINITY, `Anarqz#08723` no servidor público, "CLOUD: save in sync with the server" (o save foi achado na pasta nova) e 39 de 39 `o.xtsw` com 200.
+- **Instaladores:**
+  - aceitam 0.9.7 e 0.9.9;
+  - quando o `azimuth-tls.dll` atual tem menos de 64 KB (o original que uma atualização do Azimuth devolve), ele vira o novo `.stock`. O original da 0.9.9 é diferente do da 0.9.7;
+  - o `install.ps1` decodifica o INI baixado da release (o GitHub manda `octet-stream`, e o `.Content` vem em bytes).
+- **Modelo `release/FH2_ExtraOptions.ini`:** refeito a partir do da 0.2.74 (o anterior ainda era o da 0.2.34), com Autodrive `Cinematic`/`InEvents` e `[Network]`. `DisableAzimuthSaveChecksums=0` e `EnableMediaOverrides=0`, como testado. O parser de verdade (`settings_read`, rodado no Wine) aceita o modelo novo, o antigo e o do upstream.
+- **Sem release ainda.** O pacote está em `dist/` (`ForzaInfinity.zip`, DLL `bd806ef9…`). Falta o teste no Windows; não tenho acesso a ele.
+
 ## Estado em 2026-10-15, noite (hook fh2online.35, Azimuth 0.9.9 mapeado): leia primeiro
 
 - **Público:** release `v0.1.1` (latest) com o hook **.34** = ExtraOptions **0.2.74** + FH2Online. Testado no Deck (Azimuth 0.9.7): menu INFINITY, conta e as edições de fluxo do upstream convivem. Landing em `https://anarqz.github.io/ForzaInfinity/`, com o card de compartilhamento (`landing/og/`).

@@ -1,17 +1,22 @@
 # Installing ForzaInfinity
 
 ForzaInfinity brings Forza Horizon 2's online services back for the PC version that runs on
-**Azimuth 0.9.7**: friends, car clubs, rivals and ghost races, leaderboards, shared liveries
+**Azimuth 0.9.9 or 0.9.7**: friends, car clubs, rivals and ghost races, leaderboards, shared liveries
 and tunes, and a cloud save. It installs one file into Azimuth (`data/bin/azimuth-tls.dll`)
 and keeps the original as a backup; the game is never modified on disk.
 
 ## Before you start
 
-- Your own copy of Forza Horizon 2 running on **Azimuth 0.9.7**, on Windows or on Linux / Steam
-  Deck through Proton. **Azimuth 0.9.8 and 0.9.9 are not supported yet**: the hook only goes
-  online on the Azimuth build it was made for, so on a newer one the game plays offline. Keep
-  your 0.9.7 folder for now. The installers read the version from `azimuth.exe` and stop on
-  another one (`FORCE=1 ./install.sh` or `install.ps1 -Force` installs anyway).
+- Your own copy of Forza Horizon 2 running on **Azimuth 0.9.9** (the latest) or **0.9.7**, on
+  Windows or on Linux / Steam Deck through Proton. **0.9.8 is not supported**: the hook only goes
+  online on the Azimuth builds it was made for, so on another one the game plays offline. The
+  installers read the version from `azimuth.exe` and stop on another one (`FORCE=1 ./install.sh`
+  or `install.ps1 -Force` installs anyway).
+- **After updating Azimuth, run the installer again.** An Azimuth update puts its own
+  `azimuth-tls.dll` back (the game then plays offline); the installer keeps that new original as
+  the backup and puts ForzaInfinity back, with your server and settings as they were. Azimuth
+  0.9.9 also moves the saves to `data/titles/1A96545B/saves` on its first start (keeping a copy
+  in `data/saves-backup-…`); the cloud save follows them there.
 - A ForzaInfinity server. The installer suggests the public one, `https://infinity.anarqz.dev`
   (150 players at a time, then a waiting line). For another server, use the address its owner
   gives you (`https://host` or `host:port`); to run one yourself, see [SERVER.md](SERVER.md).
