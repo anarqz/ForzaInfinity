@@ -6,6 +6,8 @@
 # Usage: tools/package_release.sh [--zig <zig>] [--server <host:port | https://host>] [--dll <prebuilt dll>]
 #                                 [--release vX.Y.Z]
 #   --server bakes a default server address into the installers (they still ask).
+# Needs the release signing key (FH2_SIGNING_KEY, by default ~/.config/forzainfinity/release-ed25519.pem):
+# tools/sign_release.sh writes azimuth-tls.dll.sig, without which hooks refuse the self-update.
 #   --release also writes server/responses/infinity/latest.json ({hook, release}): the server's
 #   /info names it, and hooks older than it install it from that GitHub release by themselves.
 # Then attach every file in dist/ to the GitHub release (the landing links to releases/latest),
@@ -26,6 +28,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 if [ -n "$SERVER" ] && ! [[ "$SERVER" =~ ^(https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?|[A-Za-z0-9.-]+:[0-9]{1,5})$ ]]; then echo "--server must be host:port or https://host" >&2; exit 2; fi
+
+SIGNING_KEY="${FH2_SIGNING_KEY:-$HOME/.config/forzainfinity/release-ed25519.pem}"
+if [ ! -r "$SIGNING_KEY" ]; then
+    echo "no release signing key at $SIGNING_KEY (FH2_SIGNING_KEY chooses another): a release must ship" >&2
+    echo "azimuth-tls.dll.sig, or the players' hooks refuse to update to it. Not packaging." >&2
+    exit 1
+fi
 
 DIST="$ROOT/dist"
 STAGE="$DIST/ForzaInfinity"
@@ -65,6 +74,7 @@ fi
     printf 'Full guide: https://github.com/anarqz/ForzaInfinity/blob/main/docs/INSTALL.md\r\n'
 } > "$STAGE/README.txt"
 sha256sum "$STAGE/azimuth-tls.dll" | cut -d' ' -f1 > "$STAGE/azimuth-tls.dll.sha256"
+FH2_SIGNING_KEY="$SIGNING_KEY" "$ROOT/tools/sign_release.sh" "$STAGE/azimuth-tls.dll" >/dev/null
 if [ -n "$RELEASE" ]; then
     [[ "$RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "--release must look like v1.2.3" >&2; exit 2; }
     mkdir -p "$ROOT/server/responses/infinity"

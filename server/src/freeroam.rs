@@ -51,7 +51,7 @@ pub const GAMESERVERMS: &str = "gameserverms.xboxlive.com";
 pub const SESSIONDIRECTORY: &str = "sessiondirectory.xboxlive.com";
 pub const MOMATCH: &str = "momatch.xboxlive.com";
 /// Most match tickets kept at once (a ticket lives as long as its sessions' TTL).
-const MAX_TICKETS: usize = 512;
+const MAX_TICKETS: usize = 4096;
 
 // fh2srv.py 86-88
 const GAME_VARIANT: &str = "00000000-0000-0000-0000-00000000f001";
@@ -71,7 +71,7 @@ pub const ADDRESS_PREFIX: &str = "fh2inf:";
 /// Sessions untouched this long are dropped.
 const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 /// Most sessions kept at once (the least recently touched goes first).
-const MAX_SESSIONS: usize = 512;
+const MAX_SESSIONS: usize = 4096;
 /// Largest session document (serialized); a write that would grow past it is refused.
 const MAX_DOC: usize = 128 << 10;
 
@@ -91,9 +91,40 @@ impl Reply {
     }
 }
 
+/// A session document and who may touch it. Security (2026-10-15 review, C1): sessions used to
+/// be keyed only by path, so a player could rewrite another's session (its servers entry: the
+/// world address) and send that player's game to a hostile relay. Now the player who creates a
+/// session owns it and is its only member; nobody else can read, write or delete it, and
+/// `servers` is written by the server alone.
 struct Session {
     doc: Value,
     touched: Instant,
+    /// The creator: the only player who may read, write or delete it.
+    owner: u64,
+}
+
+/// Top-level fields a client may not write: the server's (`servers`, the world address), and
+/// the bookkeeping the server computes.
+const SERVER_FIELDS: [&str; 7] =
+    ["servers", "membersInfo", "correlationId", "contractVersion", "startTime", "nextTimer", "hostCandidates"];
+/// Most sessions / tickets one player keeps (their oldest goes first).
+const MAX_SESSIONS_PER_PLAYER: usize = 16;
+const MAX_TICKETS_PER_PLAYER: usize = 16;
+
+/// Room for one more session of `owner`: their oldest goes past MAX_SESSIONS_PER_PLAYER (one
+/// player cannot push everybody's sessions out), and the oldest of all past MAX_SESSIONS.
+fn make_room(sessions: &mut HashMap<String, Session>, owner: u64) {
+    let theirs: Vec<(&String, Instant)> = sessions.iter().filter(|(_, s)| s.owner == owner).map(|(k, s)| (k, s.touched)).collect();
+    if theirs.len() >= MAX_SESSIONS_PER_PLAYER {
+        if let Some(oldest) = theirs.iter().min_by_key(|(_, t)| *t).map(|(k, _)| (*k).clone()) {
+            sessions.remove(&oldest);
+        }
+    }
+    if sessions.len() >= MAX_SESSIONS {
+        if let Some(oldest) = sessions.iter().min_by_key(|(_, s)| s.touched).map(|(k, _)| k.clone()) {
+            sessions.remove(&oldest);
+        }
+    }
 }
 
 pub struct Freeroam {
@@ -104,7 +135,7 @@ pub struct Freeroam {
     /// MPSD sessions by path (lower-cased: session names are case-insensitive).
     sessions: Mutex<HashMap<String, Session>>,
     /// SmartMatch tickets by id: (ticket session key, its details, created).
-    tickets: Mutex<HashMap<String, (String, Value, Instant)>>,
+    tickets: Mutex<HashMap<String, (String, Value, Instant, u64)>>,
     ids: AtomicU64,
 }
 
@@ -143,7 +174,17 @@ fn now_iso() -> String {
 /// The fake device token of a member (fh2srv.py 200 used md5 of 'fh2net-device-' + xuid): 32
 /// upper-case hex digits, stable per player.
 fn device_token(xuid: u64) -> String {
-    let digest = sha1_smol::Sha1::from(format!("fh2inf-device-{xuid}")).digest().to_string();
+    // a secret of this run, so a token cannot be computed from the public xuid (L6)
+    static SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let secret = SECRET.get_or_init(|| {
+        let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let mut seed = format!("{t}|{}", std::process::id());
+        // the address of a stack value adds some per-run entropy (ASLR)
+        let marker = 0u8;
+        seed.push_str(&format!("|{:p}", &marker));
+        sha1_smol::Sha1::from(seed).digest().to_string()
+    });
+    let digest = sha1_smol::Sha1::from(format!("fh2inf-device-{secret}-{xuid}")).digest().to_string();
     digest[..32].to_ascii_uppercase()
 }
 
@@ -212,9 +253,14 @@ impl Freeroam {
         let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let sid = request["sessionId"].as_str().unwrap_or("").to_ascii_lowercase();
         let last = sid.rsplit('/').next().unwrap_or("");
-        if !sid.is_empty() {
+        // the caller's own session, by its exact name (C1: a partial match let anyone rewrite
+        // any session's server)
+        if !last.is_empty() {
+            let wanted = format!("/sessions/{last}");
             let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(session) = sessions.iter_mut().find(|(k, _)| k.ends_with(last) || k.contains(&sid)).map(|(_, s)| s) {
+            if let Some(session) =
+                sessions.iter_mut().find(|(k, s)| s.owner == xuid && k.ends_with(&wanted)).map(|(_, s)| s)
+            {
                 let location = session.doc["constants"]["custom"]["gameServerPlatform"]["location"]
                     .as_str()
                     .unwrap_or(LOCATION)
@@ -253,6 +299,10 @@ impl Freeroam {
         let key = path.to_ascii_lowercase();
         let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
         sessions.retain(|_, s| now.saturating_duration_since(s.touched) < SESSION_TTL);
+        // another player's session does not exist for the caller (C1)
+        if sessions.get(&key).is_some_and(|s| s.owner != xuid) {
+            return Some(Reply::json(404, json!({})));
+        }
         match method {
             "GET" => {
                 return Some(match sessions.get_mut(&key) {
@@ -295,6 +345,9 @@ impl Freeroam {
             Some(Value::Object(m)) => m,
             _ => Map::new(),
         };
+        for field in SERVER_FIELDS {
+            request.remove(field);
+        }
         if let Value::Object(d) = &mut doc {
             merge(d, request);
             // a body may null these out; the code below and the game need them
@@ -307,21 +360,13 @@ impl Freeroam {
                 d.insert("membersInfo".into(), json!({ "first": 0, "next": 0, "count": 0, "accepted": 0, "active": 0 }));
             }
         }
-        // fh2srv.py 189-202: "me" (and "reserve_N") is the caller. A reservation that names a
-        // player (constants.system.xuid) is that player (fh2srv.py used the caller for those too).
+        // fh2srv.py 189-202: "me" is the caller. Reservations of other players ("reserve_N",
+        // constants.system.xuid) are not taken: nobody writes another player into a session (C1).
         for (name, member) in members {
-            if name != "me" && !name.starts_with("reserve_") {
+            if name != "me" {
                 continue;
             }
-            let who = if name == "me" {
-                xuid
-            } else {
-                member["constants"]["system"]["xuid"]
-                    .as_str()
-                    .and_then(|x| x.parse().ok())
-                    .or_else(|| member["constants"]["system"]["xuid"].as_u64())
-                    .unwrap_or(xuid)
-            };
+            let who = xuid;
             let index = doc["members"]
                 .as_object()
                 .and_then(|m| m.iter().find(|(_, v)| v["constants"]["system"]["xuid"] == json!(who.to_string())))
@@ -393,14 +438,10 @@ impl Freeroam {
             return Some(Reply::json(413, json!({ "error": "session too large" })));
         }
         if created {
-            if sessions.len() >= MAX_SESSIONS {
-                if let Some(oldest) = sessions.iter().min_by_key(|(_, s)| s.touched).map(|(k, _)| k.clone()) {
-                    sessions.remove(&oldest);
-                }
-            }
+            make_room(&mut sessions, xuid);
             println!("freeroam: session {} created (xuid {xuid}, {} in memory)", short(&key), sessions.len() + 1);
         }
-        sessions.insert(key, Session { doc: doc.clone(), touched: now });
+        sessions.insert(key, Session { doc: doc.clone(), touched: now, owner: xuid });
         // fh2srv.py 216
         Some(Reply::json(if created { 201 } else { 200 }, doc))
     }
@@ -441,13 +482,16 @@ impl Freeroam {
             ("GET", Some("tickets"), Some(id)) => {
                 let tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
                 return Some(match tickets.get(*id) {
-                    Some((_, details, _)) => Reply::json(200, details.clone()),
-                    None => Reply::json(404, json!({})),
+                    Some(t) if t.3 == xuid => Reply::json(200, t.1.clone()),
+                    _ => Reply::json(404, json!({})),
                 });
             }
             ("DELETE", Some("tickets"), id) => {
                 if let Some(id) = id {
-                    self.tickets.lock().unwrap_or_else(|p| p.into_inner()).remove(*id);
+                    let mut tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
+                    if tickets.get(*id).is_some_and(|t| t.3 == xuid) {
+                        tickets.remove(*id);
+                    }
                 }
                 return Some(Reply { status: 204, body: None });
             }
@@ -469,15 +513,16 @@ impl Freeroam {
         let ticket_scid = ticket_ref["scid"].as_str().unwrap_or(scid);
         let ticket_key = format!("/serviceconfigs/{ticket_scid}/sessiontemplates/{ticket_template}/sessions/{ticket_name}")
             .to_ascii_lowercase();
-        // the player's own session for this hopper (see above); the world is its game server
-        let target_name = format!("fh2inf-{}-{xuid}", hopper.to_ascii_lowercase());
+        // the player's own session for this hopper (see above); the world is its game server.
+        // A random name: nobody can guess another player's target session (C1).
+        let target_name = format!("fh2inf-{}-{}", hopper.to_ascii_lowercase(), self.uuid(&ticket_key).replace('-', ""));
         let target_ref = json!({ "scid": ticket_scid, "templateName": ticket_template, "name": target_name });
         let target_key = format!("/serviceconfigs/{ticket_scid}/sessiontemplates/{ticket_template}/sessions/{target_name}")
             .to_ascii_lowercase();
 
         let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
         sessions.retain(|_, s| now.saturating_duration_since(s.touched) < SESSION_TTL);
-        let Some(ticket_session) = sessions.get_mut(&ticket_key) else {
+        let Some(ticket_session) = sessions.get_mut(&ticket_key).filter(|s| s.owner == xuid) else {
             return Some(Reply::json(404, json!({ "error": "the ticket session does not exist" })));
         };
         let target_constants = ticket_session.doc["properties"]["system"]["matchmaking"]["targetSessionConstants"].clone();
@@ -495,7 +540,9 @@ impl Freeroam {
         if !sessions.contains_key(&target_key) {
             let ts = now_iso();
             println!("freeroam: world session {target_name} created for hopper {hopper}");
+            make_room(&mut sessions, xuid);
             sessions.insert(target_key.clone(), Session {
+                owner: xuid,
                 doc: json!({
                     "contractVersion": 105, "correlationId": self.uuid(&target_key), "startTime": ts, "nextTimer": ts,
                     "constants": { "system": { "visibility": "open", "maxMembersCount": 12 }, "custom": {} },
@@ -563,13 +610,20 @@ impl Freeroam {
             "ticketAttributes": request["ticketAttributes"].clone(),
         });
         let mut tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
-        tickets.retain(|_, (_, _, made)| now.saturating_duration_since(*made) < SESSION_TTL);
+        tickets.retain(|_, t| now.saturating_duration_since(t.2) < SESSION_TTL);
+        let theirs: Vec<(String, Instant)> =
+            tickets.iter().filter(|(_, t)| t.3 == xuid).map(|(k, t)| (k.clone(), t.2)).collect();
+        if theirs.len() >= MAX_TICKETS_PER_PLAYER {
+            if let Some((oldest, _)) = theirs.iter().min_by_key(|(_, t)| *t) {
+                tickets.remove(oldest);
+            }
+        }
         if tickets.len() >= MAX_TICKETS {
             if let Some(oldest) = tickets.iter().min_by_key(|(_, t)| t.2).map(|(k, _)| k.clone()) {
                 tickets.remove(&oldest);
             }
         }
-        tickets.insert(ticket_id.clone(), (ticket_key, details, now));
+        tickets.insert(ticket_id.clone(), (ticket_key, details, now, xuid));
         println!("freeroam: ticket {ticket_id} for {hopper} found -> {target_name}, world {world} via {via} (xuid {xuid})");
         Some(Reply::json(200, json!({ "ticketId": ticket_id, "waitTime": 0 })))
     }
@@ -735,23 +789,65 @@ mod tests {
         assert_eq!(m["gamertag"], "Player#111");
         assert_eq!(m["nat"], "open");
         assert_eq!(m["deviceToken"].as_str().unwrap().len(), 32);
-        // the same player again: same member; another player: a second one
-        call(&f, "PUT", SESSIONDIRECTORY, SESSION, me.clone(), 111);
-        let doc = call(&f, "PUT", SESSIONDIRECTORY, SESSION, me, 222).body.unwrap();
-        assert_eq!(doc["members"]["1"]["constants"]["system"]["xuid"], "222");
-        assert_eq!(doc["membersInfo"]["count"], 2);
-        assert_eq!(doc["membersInfo"]["active"], 2);
-        assert_eq!(doc["membersInfo"]["next"], 2);
-        // a reservation naming a player is that player
+        // the same player again: same member
+        let doc = call(&f, "PUT", SESSIONDIRECTORY, SESSION, me.clone(), 111).body.unwrap();
+        assert_eq!(doc["membersInfo"]["count"], 1);
+        // another player cannot write into it (C1)
+        assert_eq!(call(&f, "PUT", SESSIONDIRECTORY, SESSION, me, 222).status, 404);
+        // a reservation naming another player is not taken
         let doc = call(&f, "PUT", SESSIONDIRECTORY, SESSION, json!({"members": {"reserve_0": {"constants": {"system": {"xuid": "333"}}}}}), 111)
             .body
             .unwrap();
-        assert_eq!(doc["members"]["2"]["gamertag"], "Player#333");
+        assert_eq!(doc["membersInfo"]["count"], 1);
         // leaving
         let doc = call(&f, "PUT", SESSIONDIRECTORY, SESSION, json!({"members": {"me": null}}), 111).body.unwrap();
         assert!(doc["members"].get("0").is_none());
-        assert_eq!(doc["membersInfo"]["count"], 2);
-        assert_eq!(doc["membersInfo"]["first"], 1);
+        assert_eq!(doc["membersInfo"]["count"], 0);
+    }
+
+    #[test]
+    fn sessions_belong_to_their_creator() {
+        // security review C1: nobody else reads, writes, deletes or re-points a session
+        let world: WorldAddr = "192.168.68.40:5101".parse().unwrap();
+        let f = Freeroam::new(Some(world));
+        let created = call(&f, "PUT", SESSIONDIRECTORY, SESSION, json!({"constants": {"custom": {"gameServerPlatform": {}}}}), 7);
+        assert_eq!(created.status, 201);
+        let evil = json!({"servers": {"gameServerPlatform": {"properties": {"custom": {"secureDeviceAddress": "ZXZpbA=="}}}}});
+        assert_eq!(call(&f, "GET", SESSIONDIRECTORY, SESSION, Value::Null, 66).status, 404);
+        assert_eq!(call(&f, "PUT", SESSIONDIRECTORY, SESSION, evil.clone(), 66).status, 404);
+        assert_eq!(call(&f, "DELETE", SESSIONDIRECTORY, SESSION, Value::Null, 66).status, 404);
+        // the owner cannot write the server's fields either
+        let doc = call(&f, "PUT", SESSIONDIRECTORY, SESSION, evil, 7).body.unwrap();
+        assert_eq!(
+            doc["servers"]["gameServerPlatform"]["properties"]["custom"]["secureDeviceAddress"],
+            json!(secure_device_address(&world))
+        );
+        // a cluster request naming someone else's session does not touch it
+        let name = SESSION.rsplit('/').next().unwrap();
+        let body = format!(r#"{{"sessionId":"x/{name}"}}"#);
+        f.handle("POST", GAMESERVERMS, "/titles/1368890819/clusters", body.as_bytes(), &me(66)).unwrap();
+        f.handle("POST", GAMESERVERMS, "/titles/1368890819/clusters", br#"{"sessionId":"/"}"#, &me(66)).unwrap();
+        let doc = call(&f, "GET", SESSIONDIRECTORY, SESSION, Value::Null, 7).body.unwrap();
+        assert_eq!(
+            doc["servers"]["gameServerPlatform"]["properties"]["custom"]["secureDeviceAddress"],
+            json!(secure_device_address(&world))
+        );
+        // tickets: someone else's ticket session is refused, someone else's ticket is not theirs
+        let scid = "788f0100-a4bc-46c3-b19b-d1001a96545b";
+        let hopper = format!("/serviceconfigs/{scid}/hoppers/FreeRoam_qos");
+        let tsession = format!("/serviceconfigs/{scid}/sessionTemplates/defaultTemplate_qos/sessions/T9");
+        call(&f, "PUT", SESSIONDIRECTORY, &tsession, json!({}), 7);
+        let r = call(&f, "POST", MOMATCH, &hopper, json!({"ticketSessionRef": {"name": "T9", "scid": scid, "templateName": "defaultTemplate_qos"}}), 66);
+        assert_eq!(r.status, 404);
+        let r = call(&f, "POST", MOMATCH, &hopper, json!({"ticketSessionRef": {"name": "T9", "scid": scid, "templateName": "defaultTemplate_qos"}}), 7);
+        let id = r.body.unwrap()["ticketId"].as_str().unwrap().to_owned();
+        assert_eq!(call(&f, "GET", MOMATCH, &format!("{hopper}/tickets/{id}"), Value::Null, 66).status, 404);
+        call(&f, "DELETE", MOMATCH, &format!("{hopper}/tickets/{id}"), Value::Null, 66);
+        assert_eq!(call(&f, "GET", MOMATCH, &format!("{hopper}/tickets/{id}"), Value::Null, 7).status, 200);
+        // the target session's name is not guessable from the player
+        let t = call(&f, "GET", SESSIONDIRECTORY, &tsession, Value::Null, 7).body.unwrap();
+        let target = t["servers"]["matchmaking"]["properties"]["system"]["targetSessionRef"]["name"].as_str().unwrap().to_owned();
+        assert!(target.starts_with("fh2inf-freeroam_qos-") && !target.ends_with("-7") && target.len() > 40);
     }
 
     #[test]
@@ -805,13 +901,19 @@ mod tests {
         let r = f.handle_at("GET", SESSIONDIRECTORY, SESSION, b"", &me(7), later).unwrap();
         assert_eq!(r.status, 404);
         assert_eq!(f.session_count(), 0);
-        for i in 0..MAX_SESSIONS + 5 {
+        // one player keeps at most MAX_SESSIONS_PER_PLAYER: their oldest goes
+        for i in 0..MAX_SESSIONS_PER_PLAYER + 5 {
             put(&format!("{SESSION}{i}"), t0 + Duration::from_millis(i as u64));
         }
-        assert_eq!(f.session_count(), MAX_SESSIONS);
-        // the oldest went first
+        assert_eq!(f.session_count(), MAX_SESSIONS_PER_PLAYER);
         let r = f.handle_at("GET", SESSIONDIRECTORY, &format!("{SESSION}0"), b"", &me(7), t0).unwrap();
         assert_eq!(r.status, 404);
+        // and everybody together at most MAX_SESSIONS
+        for i in 0..MAX_SESSIONS + 5 {
+            f.handle_at("PUT", SESSIONDIRECTORY, &format!("{SESSION}p{i}"), b"{}", &me(1000 + i as u64), t0 + Duration::from_secs(1) + Duration::from_millis(i as u64))
+                .unwrap();
+        }
+        assert_eq!(f.session_count(), MAX_SESSIONS);
     }
 
     #[test]
@@ -839,9 +941,10 @@ mod tests {
         let t = call(&f, "GET", SESSIONDIRECTORY, &ticket_session, Value::Null, 7).body.unwrap();
         let mm = &t["servers"]["matchmaking"]["properties"]["system"];
         assert_eq!(mm["status"], json!("found"));
-        assert_eq!(mm["targetSessionRef"]["name"], json!("fh2inf-freeroam_qos-7"));
+        let name7 = mm["targetSessionRef"]["name"].as_str().unwrap().to_owned();
+        assert!(name7.starts_with("fh2inf-freeroam_qos-"));
         // the target: the ticket's constants, the world, the player reserved
-        let target = format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/fh2inf-freeroam_qos-7");
+        let target = format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/{name7}");
         let w = call(&f, "GET", SESSIONDIRECTORY, &target, Value::Null, 7).body.unwrap();
         assert_eq!(w["constants"]["custom"]["hopperId"], json!(2));
         assert_eq!(
@@ -861,9 +964,10 @@ mod tests {
         call(&f, "POST", MOMATCH, &hopper,
             json!({ "ticketSessionRef": { "name": "T2", "scid": scid, "templateName": "defaultTemplate_qos" } }), 8);
         let t2 = call(&f, "GET", SESSIONDIRECTORY, &format!("/serviceconfigs/{scid}/sessionTemplates/defaultTemplate_qos/sessions/T2"), Value::Null, 8).body.unwrap();
-        assert_eq!(t2["servers"]["matchmaking"]["properties"]["system"]["targetSessionRef"]["name"], json!("fh2inf-freeroam_qos-8"));
+        let name8 = t2["servers"]["matchmaking"]["properties"]["system"]["targetSessionRef"]["name"].as_str().unwrap().to_owned();
+        assert_ne!(name8, name7);
         let w2 = call(&f, "GET", SESSIONDIRECTORY,
-            &format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/fh2inf-freeroam_qos-8"), Value::Null, 8).body.unwrap();
+            &format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/{name8}"), Value::Null, 8).body.unwrap();
         assert_eq!(w2["membersInfo"]["count"], json!(1));
         assert_eq!(w2["servers"]["gameServerPlatform"], w["servers"]["gameServerPlatform"]);
         // ticket details, stats, delete
@@ -891,9 +995,12 @@ mod tests {
         f.handle("POST", MOMATCH, &hopper, &serde_json::to_vec(&body).unwrap(), c).unwrap()
     }
 
-    fn target_address(f: &Freeroam, c: &Caller) -> String {
+    fn target_address(f: &Freeroam, c: &Caller, ticket_name: &str) -> String {
         let scid = "788f0100-a4bc-46c3-b19b-d1001a96545b";
-        let path = format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/fh2inf-freeroam_qos-{}", c.xuid);
+        let ticket = format!("/serviceconfigs/{scid}/sessionTemplates/defaultTemplate_qos/sessions/{ticket_name}");
+        let t = f.handle("GET", SESSIONDIRECTORY, &ticket, b"", c).unwrap().body.unwrap();
+        let name = t["servers"]["matchmaking"]["properties"]["system"]["targetSessionRef"]["name"].as_str().unwrap().to_owned();
+        let path = format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/{name}");
         let doc = f.handle("GET", SESSIONDIRECTORY, &path, b"", c).unwrap().body.unwrap();
         let b64 = doc["servers"]["gameServerPlatform"]["properties"]["custom"]["secureDeviceAddress"].as_str().unwrap().to_owned();
         String::from_utf8(B64.decode(b64).unwrap()).unwrap()
@@ -922,11 +1029,11 @@ mod tests {
         assert_eq!(f.worlds.api("POST", "worlds", &serde_json::to_vec(&hosting).unwrap(), &host).status, 200);
         // the host: loopback; the same public address: the LAN one; anybody else: the public one
         assert_eq!(ticket(&f, &host, "H").status, 200);
-        assert_eq!(target_address(&f, &host), "fh2inf:127.0.0.1:5200");
+        assert_eq!(target_address(&f, &host, "H"), "fh2inf:127.0.0.1:5200");
         assert_eq!(ticket(&f, &lan_guest, "L").status, 200);
-        assert_eq!(target_address(&f, &lan_guest), "fh2inf:192.168.68.40:5200");
+        assert_eq!(target_address(&f, &lan_guest, "L"), "fh2inf:192.168.68.40:5200");
         assert_eq!(ticket(&f, &guest, "G").status, 200);
-        assert_eq!(target_address(&f, &guest), "fh2inf:203.0.113.5:5200");
+        assert_eq!(target_address(&f, &guest, "G"), "fh2inf:203.0.113.5:5200");
         // they count as players there
         let of = f.worlds.api("GET", "worlds/of/52", b"", &guest).body.unwrap();
         assert_eq!(of["world"]["players"], json!(3));
