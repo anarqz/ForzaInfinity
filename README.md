@@ -1,10 +1,11 @@
 # ForzaInfinity
 
-Forza Horizon 2's online services, back for the PC version running on **Azimuth 0.9.7**
+Forza Horizon 2's online services, back for the PC version running on **Azimuth 0.9.9 or 0.9.7**
 (Windows, or Linux and the Steam Deck through Proton).
 
-> **Requires Azimuth 0.9.7.** Azimuth 0.9.8 and 0.9.9 are not supported yet: on them the game
-> plays offline. Keep your 0.9.7 folder for now; the installers check the version.
+> **Requires Azimuth 0.9.9 (the latest) or 0.9.7.** 0.9.8 is not supported: on it the game plays
+> offline. The installers check the version. Updating Azimuth puts its own `azimuth-tls.dll`
+> back, so run the installer again after each update.
 
 - **Friends**: add each other by `Name#12345` from the game, see who is online.
 - **Car Clubs**: create, invite, roles, notice board.
