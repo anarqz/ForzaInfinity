@@ -62,7 +62,7 @@ Status: proposta, nada implementado. Datado de 15/10/2026. É o plano da M7 (`MI
 
 | Peça | Onde roda | Função |
 |---|---|---|
-| **`Host_My_Server.exe`** + `server.cfg` | PC do jogador que hospeda | Relay NerdCore (UDP 5101), em Rust só com std, no `server/` ou num crate irmão. Anuncia o mundo ao ForzaInfinity e coordena o hole punching. O jogo do próprio host entra por loopback. |
+| **`dedicated_server.exe`** + `server.cfg` | PC do jogador que hospeda | Relay NerdCore (UDP 5101), em Rust só com std, no `server/` ou num crate irmão. Anuncia o mundo ao ForzaInfinity e coordena o hole punching. O jogo do próprio host entra por loopback. |
 | **Servidor ForzaInfinity** | GCP, atrás do Cloudflare (só HTTPS) | Diretório de mundos (anúncios), `variants`/`qosservers`, MPSD com o truque do `gameServerPlatform`, troca de endereços para o punching, senha e amizades. **Nada de UDP e nada de tráfego de jogo.** A VM não muda. |
 | **Hook** | Cada jogador | Stubs da tabela acima reescritos no nosso padrão (C freestanding, sem CRT). STUN e punching no socket do jogo. A `Association` devolve o endereço do mundo escolhido, não um valor do INI. |
 
@@ -147,7 +147,7 @@ Na tela INFINITY, em linguagem simples:
 - UPnP: disponível ou não;
 - conclusão, por exemplo "Você entra na maioria dos mundos, mas não consegue hospedar para todos", com o link do guia.
 
-### No `Host_My_Server.exe`
+### No `dedicated_server.exe`
 
 - O mesmo diagnóstico ao abrir, mais a tentativa de UPnP/NAT-PMP para a porta 5101.
 - Selo no anúncio: 🟢 aberto, 🟡 só NAT compatível, 🔴 só rede local.
@@ -167,7 +167,7 @@ Correções em ordem de facilidade:
 3. **Duplo NAT** (modem da operadora mais roteador próprio): modem em modo bridge.
 4. **CGNAT:** pedir "IP público" à operadora (comum no Brasil, muitas vezes gratuito).
 5. Encaminhar UDP 5101 à mão para o PC do host.
-6. Firewall do Windows: regra para o `azimuth.exe` e o `Host_My_Server.exe` (o instalador cria).
+6. Firewall do Windows: regra para o `azimuth.exe` e o `dedicated_server.exe` (o instalador cria).
 7. Desligar VPN.
 
 ### Logs e Report
@@ -180,12 +180,55 @@ Correções em ordem de facilidade:
 
 | Fase | Entrega | Risco |
 |---|---|---|
-| **F0. Dois jogadores reais** | Stubs no hook (0.9.7 e 0.9.9), patches de stateflow, relay em Rust, `variants`/`qosservers`/MPSD no servidor, endereço do relay ainda no INI. **Teste: PC Linux e Deck no mesmo mundo, na rede local.** Prova o que o fh2-mods não provou. | Médio |
-| **F1. Host e anúncios** | `Host_My_Server.exe`, `server.cfg`, `/worlds`, endereço do mundo vindo da sessão MPSD, join automático pela latência, XUIDs liberados. | Baixo |
+| **F0. Dois jogadores reais** 🟡 (código pronto, falta o teste no jogo) | Stubs no hook (0.9.7 e 0.9.9), patches de stateflow, relay em Rust, `variants`/`qosservers`/MPSD no servidor, endereço do relay ainda no INI. **Teste: PC Linux e Deck no mesmo mundo, na rede local.** Prova o que o fh2-mods não provou. | Médio |
+| **F1. Host e anúncios** | `dedicated_server.exe`, `server.cfg`, `/worlds`, endereço do mundo vindo da sessão MPSD, join automático pela latência, XUIDs liberados. | Baixo |
 | **F2. JOIN WORLD** | Item nas ações do jogador, senha, só amigos, allow e ban. | Baixo a médio |
 | **F3. Conexão direta pela internet** | STUN, punching coordenado pela API, ordem rede local → IPv6 → IPv4, UPnP no host, teste de alcance, diagnóstico no jogo e no exe, guia, logs no Report. | Médio |
 | **F4. Corridas e clima** | RE da entrada em corrida: `ParticipatingInRace`, `Ready`, `GameOptions`, grid, contagem pelo relógio do TimeSync. Clima compartilhado (msgs 53/54, router 10). Mensagens 35/71/72. | Alto |
 | Depois | Road Trip (router 9), Bucket List (router 12). O tráfego de IA fica de fora: era simulado pelo servidor original. | — |
+
+## F0: estado e como testar
+
+**Feito em 15/10/2026** (branch `freeroam` do monorepo e do hook; nada disso está na `main` nem no servidor público):
+
+- **Hook** (`adapters/azimuth_freeroam.c`, `tests/freeroam_test.py`):
+  - liga com `[FreeRoam] Enabled=1`, que exige `[Network] Mode=Proxy`;
+  - embrulha `QualityOfService`, `SecureDeviceAddress`, `SecureDeviceAssociationTemplate` e `Party`;
+  - leva os imports ws2_32 do jogo para o ws2_32 do Windows, com `[::]:5100` dual-stack;
+  - aplica os patches de clima e tráfego (bytes conferidos no nosso exe);
+  - o mundo vem da sessão (`fh2inf:<host>:<port>` em base64), ou de `[FreeRoam] World`, ou é `[::1]:5101`.
+- **Servidor** (`server/src/freeroam.rs`, `docs/SERVER.md`):
+  - responde `variants` (FreeRoam), `qosservers`, `gameserverms /clusters` e o MPSD em memória com o `gameServerPlatform` preenchido;
+  - só com `--freeroam-world HOST:PORT` (ou `--freeroam`); sem a flag, nada muda.
+- **`dedicated_server`** (`dedicated/`, Rust só com std):
+  - relay NerdCore (handshake, objetos, carros, FinaliseSessionEntry, ping, saída e volta);
+  - histórico compacto, reenvio do que o console não confirmou, limite de jogadores e `server.cfg`;
+  - `build-windows.sh` gera o `.exe`.
+
+**Ainda não visto no jogo.** O roteiro abaixo é o teste da F0 (PC Linux 192.168.68.40 + Deck, servidor local):
+
+1. No PC Linux: `cd dedicated && cargo build --release && ./target/release/dedicated_server` (UDP 5101 aberta na rede local).
+2. No PC Linux, o servidor local com o mundo: `cd server && ./run.sh --freeroam-world 192.168.68.40:5101`.
+3. O hook da branch `freeroam` (`python build.py <zig> --azimuth`) nos dois aparelhos, com o jogo fechado, conferindo o SHA-256. Nos dois INIs:
+   ```ini
+   [Network]
+   Mode=Proxy
+   Server=http://192.168.68.40:8081
+   [FreeRoam]
+   Enabled=1
+   ```
+   O modelo de INI da release ainda não leva `[FreeRoam]`: um hook antigo recusaria o arquivo inteiro.
+4. Nos dois: ONLINE → FREE ROAM ONLINE.
+5. O que olhar:
+   - `FH2_ExtraOptions.log`: linhas `FREEROAM:` (statics embrulhados, `world [192.168.68.40]:5101 (from the session)`, socket dual-stack);
+   - console do `dedicated_server`: "jogador N entrou no mundo";
+   - no jogo: os dois carros no mapa, colidindo.
+6. Para testar com um aparelho só: `dedicated_server --mirror 3` (o seu carro volta 3 s atrasado, como jogador 250).
+
+**Riscos a observar no teste:**
+- **0.9.9 (Deck):** o hook de ativação já tem os offsets da 0.9.9, mas os stubs de rede dessa versão nunca foram vistos com o free roam.
+- **Reason de "mundo cheio":** usamos 4, sem confirmação.
+- **SessionEntryFinalised dos outros:** o relay não repassa as variáveis do servidor de um jogador para os outros, igual ao `relay.py`. Pode importar na F4.
 
 ## Pendências do relay herdadas da fh2net
 

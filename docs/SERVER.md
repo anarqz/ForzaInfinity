@@ -44,6 +44,32 @@ copy.sqlite"`) or with the server stopped.
 
 Hooks before fh2online.33 call `/fh2online/v1/…`; the server answers both.
 
+## Free roam online (F0)
+
+Desligado por padrão: sem as opções abaixo, `gameserverds`, `gameserverms` e `sessiondirectory`
+continuam respondendo pelos stubs de `responses/hosts/`. Ligado, o servidor responde
+(`server/src/freeroam.rs`, portado do `fh2srv.py` do fh2-mods), só para quem tem conta:
+
+| Chamada | Resposta |
+|---|---|
+| `POST gameserverds …/titles/1368890819/variants` | Uma variant `Release_6CC152FD.FreeRoam`, todos os campos como string JSON. |
+| `GET gameserverds /qosservers` | Exatamente uma chave `qosServers`, com um servidor. |
+| `POST gameserverms …/clusters` | `Fulfilled` na hora, com o endereço do mundo. |
+| `sessiondirectory /serviceconfigs/…/sessions/<nome>` | MPSD (contrato 105) em memória: PUT mescla (201 ao criar, 200 depois), GET, DELETE (204). `me` vira o XUID da conta. |
+| `GET sessiondirectory …/sessions` (listagem) | Sempre `{"results":[]}`: listar sessões velhas fazia o jogo tentar reentrar nelas. |
+
+Quando a sessão tem `constants.custom.gameServerPlatform`, o servidor preenche
+`servers.gameServerPlatform.properties.custom` com `status: "Active"`, `datacenter`,
+`secureDeviceAddress` e `hostName`. O `secureDeviceAddress` é o base64 do texto
+`fh2inf:<ip>:<porta>` (IPv6 entre colchetes: `fh2inf:[2001:db8::1]:5101`), que o hook decodifica.
+
+```sh
+fh2-server … --freeroam-world 192.168.68.40:5101   # liga e manda todos para esse relay
+fh2-server … --freeroam                            # liga sem mundo (endereço de mentira, 127.0.0.1)
+```
+
+Sessões paradas por 30 min somem; no máximo 512 em memória e 128 KB cada. Nada vai para o banco.
+
 ## Limits
 
 - Any request body: 2 MB. Account requests: 4 KB.
