@@ -198,7 +198,9 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         (false, "CarClub", "SearchForClubByTag") => {
             match ctx.store.club_by_tag(params["clubTag"].as_str().unwrap_or("")).filter(|c| visible(ctx, c)) {
                 Some(c) => json!({ "clubDetails": club_data(ctx, &c, me) }),
-                None => json!({ "clubDetails": {} }),
+                // an error, not an empty club: the game lists empty details as a blank club (id 0)
+                // and crashes when it is opened
+                None => error(1, "no club with that tag"),
             }
         }
         (false, "CarClub", "SearchForClubsByName") => {
