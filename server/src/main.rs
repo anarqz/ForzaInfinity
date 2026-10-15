@@ -297,6 +297,10 @@ fn main() {
     });
     println!("  database:  {}", db_path.display());
     let bests = store.import_all_save_bests();
+    let granted = store.grant_expansions();
+    if granted > 0 {
+        println!("  accounts:  {granted} expansion grant(s) added (Storm Island)");
+    }
     let filled = store.fill_all_save_cars();
     if filled > 0 {
         println!("  saves:     {filled} save best(s) given the player's car");
