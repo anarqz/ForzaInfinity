@@ -4,18 +4,24 @@
 #   dist/<each file>          the same files loose, uploaded next to the zip so that
 #                             install.sh / install.ps1 run straight from the release URL
 # Usage: tools/package_release.sh [--zig <zig>] [--server <host:port | https://host>] [--dll <prebuilt dll>]
+#                                 [--release vX.Y.Z]
 #   --server bakes a default server address into the installers (they still ask).
-# Then attach every file in dist/ to a GitHub release (the landing links to releases/latest).
+#   --release also writes server/responses/infinity/latest.json ({hook, release}): the server's
+#   /info names it, and hooks older than it install it from that GitHub release by themselves.
+# Then attach every file in dist/ to the GitHub release (the landing links to releases/latest),
+# and only then deploy the server with the new latest.json (infra/deploy.sh).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ZIG="${ZIG:-$HOME/tools/zig/zig}"
 SERVER=""
 DLL=""
+RELEASE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --zig) ZIG="$2"; shift 2 ;;
         --server) SERVER="$2"; shift 2 ;;
         --dll) DLL="$2"; shift 2 ;;
+        --release) RELEASE="$2"; shift 2 ;;
         *) echo "unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -34,10 +40,11 @@ fi
 cp "$DLL" "$STAGE/azimuth-tls.dll"
 VERSION="$(grep -o 'MOD_VERSION "[^"]*"' "$ROOT/hook/extra_options.h" | cut -d'"' -f2)"
 
-for f in Install.cmd Uninstall.cmd install.ps1 uninstall.ps1 install.sh uninstall.sh FH2_ExtraOptions.ini; do
+for f in Install.cmd Uninstall.cmd Update.cmd install.ps1 uninstall.ps1 update.ps1 install.sh uninstall.sh update.sh \
+    FH2_ExtraOptions.ini; do
     cp "$ROOT/release/$f" "$STAGE/$f"
 done
-chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh"
+chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/update.sh"
 if [ -n "$SERVER" ]; then
     sed -i "s|__DEFAULT_SERVER__|$SERVER|" "$STAGE/install.sh" "$STAGE/install.ps1"
 fi
@@ -45,10 +52,17 @@ fi
     printf 'ForzaInfinity %s\r\n\r\n' "$VERSION"
     printf 'Windows: double click Install.cmd (Uninstall.cmd puts the original file back).\r\n'
     printf 'Steam Deck / Linux: run ./install.sh (./uninstall.sh puts the original file back).\r\n\r\n'
+    printf 'Updates install by themselves (the game asks to restart). By hand: close the game and run\r\n'
+    printf 'ForzaInfinity-Update in the Azimuth folder (Update.cmd / update.sh here do the same).\r\n\r\n'
     printf 'Then start the game and open Settings > INFINITY > Create profile.\r\n'
     printf 'Full guide: https://github.com/anarqz/ForzaInfinity/blob/main/docs/INSTALL.md\r\n'
 } > "$STAGE/README.txt"
 sha256sum "$STAGE/azimuth-tls.dll" | cut -d' ' -f1 > "$STAGE/azimuth-tls.dll.sha256"
+if [ -n "$RELEASE" ]; then
+    [[ "$RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "--release must look like v1.2.3" >&2; exit 2; }
+    mkdir -p "$ROOT/server/responses/infinity"
+    printf '{ "hook": "%s", "release": "%s" }\n' "$VERSION" "$RELEASE" > "$ROOT/server/responses/infinity/latest.json"
+fi
 
 (cd "$DIST" && python3 -c "
 import os, sys, zipfile

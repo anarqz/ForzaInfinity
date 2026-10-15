@@ -126,6 +126,7 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
     match (request.method.as_str(), route) {
         ("GET", "info") => {
             let (online, queued) = app.admission.counts();
+            let latest = latest_release(&app.root);
             json_reply(
                 200,
                 &json!({
@@ -135,6 +136,9 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
                     "online": online,
                     "queued": queued,
                     "capacity": app.admission.capacity(),
+                    // the newest ForzaInfinity: the hook tells an outdated player to update
+                    "latestHook": latest["hook"],
+                    "latestRelease": latest["release"],
                 }),
             )
         }
@@ -657,6 +661,17 @@ fn json_reply(status: u16, value: &Value) -> Vec<u8> {
 
 fn redirect(to: &str) -> Vec<u8> {
     response(302, "text/plain", &format!("Location: {to}\r\n"), b"")
+}
+
+/// The newest release, {"hook": "0.2.74+fh2online.37", "release": "v0.1.3"}, from
+/// responses/infinity/latest.json (tools/package_release.sh writes it; deploy it with the
+/// release). Null fields when missing.
+fn latest_release(root: &Path) -> Value {
+    std::fs::read(root.join("responses").join("infinity").join("latest.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
 }
 
 fn static_file(root: &Path, rest: &str) -> Vec<u8> {
