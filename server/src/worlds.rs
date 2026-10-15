@@ -336,7 +336,11 @@ impl Worlds {
         let best = s
             .worlds
             .iter()
-            .filter(|(host, w)| w.listed && w.password.is_none() && s.why(**host, w, caller).is_empty())
+            // FREE ROAM ONLINE goes straight only to a friend's world: a stranger's relay could be
+            // hostile, so those are offered one by one (worlds/browse) with a warning instead
+            .filter(|(host, w)| {
+                w.listed && w.password.is_none() && caller.is_friend(**host) && s.why(**host, w, caller).is_empty()
+            })
             .max_by_key(|(host, w)| (w.host_ip == caller.ip, s.players(**host), w.heartbeat))
             .map(|(host, _)| *host)?;
         Some(pick(best, Via::Auto))
@@ -378,6 +382,10 @@ impl Worlds {
             }
             ("POST", ["worlds", "left"]) => self.left(&body, caller, now),
             ("GET", ["worlds"]) => self.list(caller, now),
+            ("GET", ["worlds", "browse", after]) => match after.parse::<u64>() {
+                Ok(after) => self.browse(after, caller, now),
+                Err(_) => bad("bad xuid".into()),
+            },
             ("GET", ["worlds", "of", who]) => match who.parse::<u64>() {
                 Ok(who) => self.of(who, caller, now),
                 Err(_) => bad("bad xuid".into()),
@@ -624,6 +632,33 @@ impl Worlds {
         } }))
     }
 
+    /// GET worlds/browse/<after>: the next open world the caller could join, after the one of
+    /// host `after` (0: the first), in a stable order (host xuid): listed, no password, the same
+    /// cars, not full, not the caller's. The INFINITY screen's FIND WORLD walks them one by one,
+    /// with a warning for a stranger's (`friend`: false).
+    fn browse(&self, after: u64, caller: &Caller, now: Instant) -> Reply {
+        let mut s = self.lock();
+        s.purge(now);
+        let next = s
+            .worlds
+            .iter()
+            .filter(|(host, w)| {
+                **host > after && **host != caller.xuid && w.listed && w.password.is_none() && s.why(**host, w, caller).is_empty()
+            })
+            .min_by_key(|(host, _)| **host);
+        let Some((host, w)) = next else {
+            return Reply::json(200, json!({ "world": null }));
+        };
+        Reply::json(200, json!({ "world": {
+            "id": host.to_string(),
+            "name": w.name,
+            "host": caller.game_tag(*host),
+            "players": s.players(*host),
+            "maxPlayers": w.max_players,
+            "friend": caller.is_friend(*host),
+        } }))
+    }
+
     /// POST worlds/<id>/join {password}: the caller's next FREE ROAM ONLINE goes there.
     fn join(&self, host: u64, body: &Value, caller: &Caller, now: Instant) -> Reply {
         let password = body["password"].as_str().unwrap_or("");
@@ -692,6 +727,16 @@ mod tests {
         Caller::new(xuid, ip.parse().unwrap(), &tag, &friends)
     }
 
+    fn everyone(x: u64) -> Vec<u64> {
+        (0..=1000).filter(|&y| y != x).collect()
+    }
+
+    /// A player who is everybody's friend: FREE ROAM ONLINE goes straight to friends' worlds
+    /// only, and these tests are about the rest of the choice.
+    fn pal(xuid: u64, ip: &str) -> Caller<'static> {
+        Caller::new(xuid, ip.parse().unwrap(), &tag, &everyone)
+    }
+
     fn world(extra: Value) -> Value {
         let mut b = json!({
             "name": "Mundo do Alex", "message": "bem-vindos", "visibility": "public", "password": "",
@@ -722,7 +767,7 @@ mod tests {
         assert_eq!(b, json!({"id": "100", "address": "203.0.113.5:5101", "players": 1, "expiresIn": 45, "kick": []}));
         // heartbeat keeps it past 45 s
         host_world(&w, HOST, HOME, json!({}), t0 + Duration::from_secs(30));
-        assert!(w.choose(&who(5, AWAY), t0 + Duration::from_secs(60)).is_some());
+        assert!(w.choose(&pal(5, AWAY), t0 + Duration::from_secs(60)).is_some());
         assert_eq!(w.counts().0, 1);
     }
 
@@ -734,13 +779,13 @@ mod tests {
         host_world(&w, HOST, HOME, json!({"listed": false, "visibility": "friends"}), t);
         let r = call(&w, "GET", "worlds", Value::Null, &who(1, AWAY), t);
         assert_eq!(r.body.unwrap()["worlds"], json!([]));
-        assert!(w.choose(&who(1, AWAY), t).is_none());
+        assert!(w.choose(&pal(1, AWAY), t).is_none());
         assert_eq!(call(&w, "POST", "worlds/100/join", json!({"password": ""}), &who(1, AWAY), t).status, 200);
-        assert_eq!(w.choose(&who(1, AWAY), t).unwrap().host, HOST);
+        assert_eq!(w.choose(&pal(1, AWAY), t).unwrap().host, HOST);
         // not a friend: no
         assert_eq!(call(&w, "POST", "worlds/100/join", json!({"password": ""}), &who(5, AWAY), t).status, 403);
         // the host still goes to it
-        assert_eq!(w.choose(&who(HOST, HOME), t).unwrap().via, Via::Hosting);
+        assert_eq!(w.choose(&pal(HOST, HOME), t).unwrap().via, Via::Hosting);
     }
 
     #[test]
@@ -752,7 +797,7 @@ mod tests {
         let host = who(HOST, HOME).with_car_db(Some(&stock));
         assert_eq!(call(&w, "POST", "worlds", world(json!({})), &host, t).status, 200);
         // the same cars: listed and picked
-        let same = who(5, AWAY).with_car_db(Some(&stock.to_uppercase()));
+        let same = pal(5, AWAY).with_car_db(Some(&stock.to_uppercase()));
         assert_eq!(call(&w, "GET", "worlds", Value::Null, &same, t).body.unwrap()["worlds"].as_array().unwrap().len(), 1);
         assert!(w.choose(&same, t).is_some());
         // other cars: not listed, not picked, and a join says why
@@ -763,8 +808,8 @@ mod tests {
         assert_eq!(of["world"]["why"], json!("cars"));
         assert_eq!(call(&w, "POST", "worlds/100/join", json!({"password": ""}), &other, t).status, 403);
         // an older hook (no header) is not checked; a bad header is ignored
-        assert!(w.choose(&who(7, AWAY), t).is_some());
-        assert!(w.choose(&who(8, AWAY).with_car_db(Some("nope")), t).is_some());
+        assert!(w.choose(&pal(7, AWAY), t).is_some());
+        assert!(w.choose(&pal(8, AWAY).with_car_db(Some("nope")), t).is_some());
     }
 
     #[test]
@@ -774,7 +819,7 @@ mod tests {
         let t = Instant::now();
         let host = who(HOST, HOME).with_car_db(Some(&stock));
         assert_eq!(call(&w, "POST", "worlds", world(json!({})), &host, t).status, 200);
-        let guest = who(5, AWAY).with_car_db(Some(&stock));
+        let guest = pal(5, AWAY).with_car_db(Some(&stock));
         let c = w.choose(&guest, t).unwrap();
         w.assign(5, Some(&c), t);
         // the guest's database changed: it says so and leaves
@@ -808,6 +853,31 @@ mod tests {
         assert_eq!(r["world"], Value::Null);
         let r = call(&w, "GET", "worlds/of/100", Value::Null, &who(1, AWAY), t).body.unwrap();
         assert_eq!(r["world"]["id"], json!("100"));
+    }
+
+    #[test]
+    fn auto_join_only_friends_and_browse_the_rest() {
+        let w = Worlds::new();
+        let t = Instant::now();
+        host_world(&w, HOST, HOME, json!({}), t);
+        host_world(&w, 300, "192.0.2.30", json!({}), t);
+        host_world(&w, 400, "192.0.2.40", json!({"password": "x"}), t);
+        // player 1 is HOST's friend: FREE ROAM ONLINE takes them there
+        assert_eq!(w.choose(&pal(1, AWAY), t).unwrap().host, HOST);
+        // player 5 has no friend hosting: nothing automatic
+        assert!(w.choose(&who(5, AWAY), t).is_none());
+        // FIND WORLD walks the open ones (not the password one), then null
+        let b = |after: u64| call(&w, "GET", &format!("worlds/browse/{after}"), Value::Null, &who(5, AWAY), t).body.unwrap();
+        assert_eq!(b(0)["world"]["id"], json!("100"));
+        assert_eq!(b(0)["world"]["friend"], json!(false));
+        assert_eq!(b(100)["world"]["id"], json!("300"));
+        assert_eq!(b(300)["world"], Value::Null);
+        // choosing one sends them there
+        assert_eq!(call(&w, "POST", "worlds/300/join", json!({"password": ""}), &who(5, AWAY), t).status, 200);
+        assert_eq!(w.choose(&pal(5, AWAY), t).unwrap().host, 300);
+        // a friend sees it as a friend's
+        let f = call(&w, "GET", "worlds/browse/0", Value::Null, &who(1, AWAY), t).body.unwrap();
+        assert_eq!(f["world"]["friend"], json!(true));
     }
 
     #[test]
@@ -853,7 +923,7 @@ mod tests {
         let w = Worlds::new();
         let t = Instant::now();
         host_world(&w, HOST, HOME, json!({"visibility": "off", "password": "x"}), t);
-        let c = w.choose(&who(HOST, HOME), t).unwrap();
+        let c = w.choose(&pal(HOST, HOME), t).unwrap();
         assert_eq!(c.via, Via::Hosting);
         assert_eq!(c.addr, "127.0.0.1:5101".parse().unwrap());
     }
@@ -865,7 +935,7 @@ mod tests {
         let w = Worlds::new();
         let t = Instant::now();
         host_world(&w, HOST, "127.0.0.1", json!({}), t);
-        let c = w.choose(&who(7, "192.168.68.93"), t).unwrap();
+        let c = w.choose(&pal(7, "192.168.68.93"), t).unwrap();
         assert_eq!(c.addr, "192.168.68.40:5101".parse().unwrap());
     }
 
@@ -880,18 +950,18 @@ mod tests {
             let c = Choice { addr: "192.0.2.2:5101".parse().unwrap(), host: 300, via: Via::Auto };
             w.assign(p, Some(&c), t);
         }
-        let c = w.choose(&who(5, AWAY), t).unwrap();
+        let c = w.choose(&pal(5, AWAY), t).unwrap();
         assert_eq!((c.host, c.via), (300, Via::Auto));
         assert_eq!(c.addr, "192.0.2.2:5101".parse().unwrap());
         // somebody behind the same public address as host 200: its LAN address
-        let c = w.choose(&who(6, "192.0.2.1"), t).unwrap();
+        let c = w.choose(&pal(6, "192.0.2.1"), t).unwrap();
         assert_eq!(c.host, 200);
         assert_eq!(c.addr, "192.168.68.40:5101".parse().unwrap());
         // a tie in players: the latest heartbeat
         let w = Worlds::new();
         host_world(&w, 200, "192.0.2.1", json!({}), t);
         host_world(&w, 300, "192.0.2.2", json!({}), t + Duration::from_secs(1));
-        assert_eq!(w.choose(&who(5, AWAY), t + Duration::from_secs(2)).unwrap().host, 300);
+        assert_eq!(w.choose(&pal(5, AWAY), t + Duration::from_secs(2)).unwrap().host, 300);
     }
 
     #[test]
@@ -904,7 +974,7 @@ mod tests {
         host_world(&w, 400, "192.0.2.4", json!({"maxPlayers": 1}), t);
         assert!(w.choose(&who(5, AWAY), t).is_none());
         // the host's friend goes to the friends-only world
-        assert_eq!(w.choose(&who(1, AWAY), t).unwrap().host, HOST);
+        assert_eq!(w.choose(&pal(1, AWAY), t).unwrap().host, HOST);
     }
 
     #[test]
@@ -976,7 +1046,7 @@ mod tests {
         assert_eq!(join(HOST, 7), (403, "banned".into()));
         assert_eq!(join(HOST, 1).0, 200);
         assert_eq!(join(200, 5).0, 200);
-        let c = w.choose(&who(5, AWAY), t).unwrap();
+        let c = w.choose(&pal(5, AWAY), t).unwrap();
         w.assign(5, Some(&c), t);
         // 200 holds 2: the host and player 5
         assert_eq!(join(200, 6), (403, "full".into()));
@@ -984,9 +1054,9 @@ mod tests {
         let w2 = Worlds::new();
         host_world(&w2, 200, "192.0.2.1", json!({"maxPlayers": 2}), t);
         call(&w2, "POST", "worlds/200/join", json!({}), &who(6, AWAY), t);
-        let c = w2.choose(&who(5, AWAY), t).unwrap();
+        let c = w2.choose(&pal(5, AWAY), t).unwrap();
         w2.assign(5, Some(&c), t);
-        assert!(w2.choose(&who(6, AWAY), t).is_none());
+        assert!(w2.choose(&pal(6, AWAY), t).is_none());
     }
 
     #[test]
@@ -1014,11 +1084,11 @@ mod tests {
         let w = Worlds::new();
         let t0 = Instant::now();
         host_world(&w, 200, "192.0.2.1", json!({}), t0);
-        let c = w.choose(&who(5, AWAY), t0).unwrap();
+        let c = w.choose(&pal(5, AWAY), t0).unwrap();
         w.assign(5, Some(&c), t0);
-        assert!(w.choose(&who(5, AWAY), t0 + Duration::from_secs(44)).is_some());
+        assert!(w.choose(&pal(5, AWAY), t0 + Duration::from_secs(44)).is_some());
         let later = t0 + WORLD_TTL + Duration::from_secs(1);
-        assert!(w.choose(&who(5, AWAY), later).is_none());
+        assert!(w.choose(&pal(5, AWAY), later).is_none());
         assert_eq!(w.counts(), (0, 0, 0));
         assert_eq!(call(&w, "GET", "worlds", Value::Null, &who(5, AWAY), later).body.unwrap(), json!({"worlds": []}));
     }
@@ -1028,7 +1098,7 @@ mod tests {
         let w = Worlds::new();
         let t = Instant::now();
         host_world(&w, 200, "192.0.2.1", json!({}), t);
-        let c = w.choose(&who(5, AWAY), t).unwrap();
+        let c = w.choose(&pal(5, AWAY), t).unwrap();
         w.assign(5, Some(&c), t);
         call(&w, "POST", "worlds/200/join", json!({}), &who(6, AWAY), t);
         assert_eq!(w.counts(), (1, 1, 1));
@@ -1036,7 +1106,7 @@ mod tests {
         assert_eq!(r.status, 204);
         assert!(r.body.is_none());
         assert_eq!(w.counts(), (0, 0, 0));
-        assert!(w.choose(&who(5, AWAY), t).is_none());
+        assert!(w.choose(&pal(5, AWAY), t).is_none());
         // deleting nothing is fine too
         assert_eq!(call(&w, "DELETE", "worlds", Value::Null, &who(200, AWAY), t).status, 204);
     }
