@@ -82,6 +82,8 @@ struct World {
     port: u16,
     lan: Vec<IpAddr>,
     version: String,
+    /// The host's car database (Caller::car_db).
+    car_db: Option<String>,
     /// The host's address as this server sees it.
     host_ip: IpAddr,
     heartbeat: Instant,
@@ -95,12 +97,23 @@ pub struct Caller<'a> {
     gamertag: &'a dyn Fn(u64) -> String,
     friends: &'a dyn Fn(u64) -> Vec<u64>,
     friend_list: OnceCell<Vec<u64>>,
+    /// The SHA-256 of the caller's car database (X-Fh2-CarDb): players only meet with the
+    /// same cars installed. None: an older hook, not checked.
+    car_db: Option<String>,
 }
 
 impl<'a> Caller<'a> {
     /// `friends(x)`: the players x is friends with (both added each other).
     pub fn new(xuid: u64, ip: IpAddr, gamertag: &'a dyn Fn(u64) -> String, friends: &'a dyn Fn(u64) -> Vec<u64>) -> Self {
-        Caller { xuid, ip: ip.to_canonical(), gamertag, friends, friend_list: OnceCell::new() }
+        Caller { xuid, ip: ip.to_canonical(), gamertag, friends, friend_list: OnceCell::new(), car_db: None }
+    }
+
+    /// The X-Fh2-CarDb header (64 hex digits; anything else is ignored).
+    pub fn with_car_db(mut self, header: Option<&str>) -> Self {
+        self.car_db = header
+            .map(|h| h.trim().to_ascii_lowercase())
+            .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+        self
     }
 
     pub fn gamertag(&self, xuid: u64) -> String {
@@ -183,6 +196,9 @@ impl State {
         if caller.xuid == host {
             return "";
         }
+        if cars_differ(w, caller) {
+            return "cars";
+        }
         if w.visibility == Visibility::Off {
             return "off";
         }
@@ -215,6 +231,12 @@ impl State {
         };
         SocketAddr::new(ip, w.port)
     }
+}
+
+/// Both the host and the caller sent their car database and the two differ: they cannot
+/// play together (different cars installed, imported or modified).
+fn cars_differ(w: &World, caller: &Caller) -> bool {
+    matches!((&w.car_db, &caller.car_db), (Some(a), Some(b)) if a != b)
 }
 
 pub struct Worlds {
@@ -440,6 +462,7 @@ impl Worlds {
             port,
             lan,
             version,
+            car_db: caller.car_db.clone(),
             host_ip: caller.ip,
             heartbeat: now,
             banned,
@@ -500,6 +523,7 @@ impl Worlds {
             .iter()
             .filter(|(host, w)| {
                 w.listed
+                    && !cars_differ(w, caller)
                     && w.password.is_none()
                     && w.visibility != Visibility::Off
                     && !w.banned.contains(&caller.xuid)
@@ -662,6 +686,30 @@ mod tests {
         assert_eq!(call(&w, "POST", "worlds/100/join", json!({"password": ""}), &who(5, AWAY), t).status, 403);
         // the host still goes to it
         assert_eq!(w.choose(&who(HOST, HOME), t).unwrap().via, Via::Hosting);
+    }
+
+    #[test]
+    fn worlds_only_with_the_same_cars() {
+        let stock = "4d50013dc7705de0".repeat(4);
+        let modded = "0123456789abcdef".repeat(4);
+        let w = Worlds::new();
+        let t = Instant::now();
+        let host = who(HOST, HOME).with_car_db(Some(&stock));
+        assert_eq!(call(&w, "POST", "worlds", world(json!({})), &host, t).status, 200);
+        // the same cars: listed and picked
+        let same = who(5, AWAY).with_car_db(Some(&stock.to_uppercase()));
+        assert_eq!(call(&w, "GET", "worlds", Value::Null, &same, t).body.unwrap()["worlds"].as_array().unwrap().len(), 1);
+        assert!(w.choose(&same, t).is_some());
+        // other cars: not listed, not picked, and a join says why
+        let other = who(6, AWAY).with_car_db(Some(&modded));
+        assert_eq!(call(&w, "GET", "worlds", Value::Null, &other, t).body.unwrap()["worlds"], json!([]));
+        assert!(w.choose(&other, t).is_none());
+        let of = call(&w, "GET", "worlds/of/100", Value::Null, &other, t).body.unwrap();
+        assert_eq!(of["world"]["why"], json!("cars"));
+        assert_eq!(call(&w, "POST", "worlds/100/join", json!({"password": ""}), &other, t).status, 403);
+        // an older hook (no header) is not checked; a bad header is ignored
+        assert!(w.choose(&who(7, AWAY), t).is_some());
+        assert!(w.choose(&who(8, AWAY).with_car_db(Some("nope")), t).is_some());
     }
 
     #[test]

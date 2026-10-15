@@ -159,7 +159,8 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
             (Some(a), Some(f)) => {
                 let gamertag = |x| app.store.gamertag(x);
                 let friends = |x| crate::mutual_friends(&app.store, x);
-                let caller = crate::freeroam::Caller::new(a.xuid, request.client_ip(), &gamertag, &friends);
+                let caller = crate::freeroam::Caller::new(a.xuid, request.client_ip(), &gamertag, &friends)
+                    .with_car_db(request.header("x-fh2-cardb"));
                 let reply = f.worlds.api(&request.method, route, &request.body, &caller);
                 match reply.body {
                     Some(body) => json_reply(reply.status, &body),

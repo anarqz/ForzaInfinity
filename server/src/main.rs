@@ -557,7 +557,8 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
         Some(f) if !specific && ctx.xuid != 0 && target.forza_class.is_none() => {
             let gamertag = |x| app.store.gamertag(x);
             let friends = |x| mutual_friends(&app.store, x);
-            let caller = freeroam::Caller::new(ctx.xuid, request.client_ip(), &gamertag, &friends);
+            let caller = freeroam::Caller::new(ctx.xuid, request.client_ip(), &gamertag, &friends)
+                .with_car_db(request.header("x-fh2-cardb"));
             f.handle(&request.method, &target.host, &target.path, &request.body, &caller)
         }
         _ => None,
