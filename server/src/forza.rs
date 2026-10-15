@@ -45,16 +45,33 @@ impl Ctx<'_> {
         self.events.borrow_mut().push(e);
     }
 
-    /// The player's friends: players who added each other (FH2Online only lets players
-    /// interact with friends; every friend is also a rival).
+    /// The player's friends: players who added each other. Friends are the social side (the
+    /// friends list, presence, messages, Meus Rivais and challenges) and come first in drivatar
+    /// grids and rival picks; everything else is open to the whole server.
     fn friend_ids(&self) -> Vec<u64> {
         self.store.friends(self.xuid).into_iter().filter(|f| f.2).map(|f| f.0).collect()
     }
 
-    /// The player, one of their friends or someone in their club.
+    /// Whether the player sees `xuid`'s times, ghosts, drivatar, liveries and shared files:
+    /// themselves or any player on the server (an account not banned).
     fn can_see(&self, xuid: u64) -> bool {
-        let club = |x: u64| self.store.membership(x).map(|m| m.0);
-        xuid == self.xuid || self.friend_ids().contains(&xuid) || (club(self.xuid).is_some() && club(self.xuid) == club(xuid))
+        xuid == self.xuid || (xuid != 0 && self.store.is_public_player(xuid))
+    }
+
+    /// Other players' drivatars, in the order they are offered: friends first, then everyone
+    /// else on the server (the most recently trained, shuffled per request so grids vary).
+    fn drivatar_candidates(&self) -> Vec<u64> {
+        let friends: Vec<u64> = self.friend_ids().into_iter().filter(|x| self.store.is_public_player(*x)).collect();
+        let mut others: Vec<u64> =
+            self.store.drivatar_owners(400).into_iter().filter(|x| *x != self.xuid && !friends.contains(x)).collect();
+        let mut seed = (crate::unix_ms() as u64) ^ self.xuid.rotate_left(17) | 1;
+        for i in (1..others.len()).rev() {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            others.swap(i, (seed % (i as u64 + 1)) as usize);
+        }
+        friends.into_iter().chain(others).collect()
     }
 
     fn car_name(&self, id: i64) -> String {
@@ -102,7 +119,7 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
             }
             json!({ "versionedLiveryId": id })
         }
-        // A friend's car paint (drivatars in races and car meets carry its id as LiveryId).
+        // A player's car paint (drivatars in races and car meets carry its id as LiveryId).
         (false, "ContentVersioning", "RetrieveVersionedLiveryById") => {
             let id = params["versionedLiveryId"].as_i64().unwrap_or(0);
             if id >= BASE_LIVERY_IDS {
@@ -134,16 +151,17 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
             ctx.event("livery", format!("Pintura salva para {}", ctx.car_name(car)), json!({ "name": params["name"], "carId": car }));
             json!({})
         }
-        // a friend's time; without one the method stays down and the game shows no rival
-        (false, "Scoreboard", "GetRival") => return challenge_rival(ctx, params).or_else(|| friend_rival(ctx, params)),
+        // a friend's time, else anyone's; without one the method stays down and the game shows no rival
+        (false, "Scoreboard", "GetRival") => return challenge_rival(ctx, params).or_else(|| pick_rival(ctx, params)),
         (false, "Scoreboard", "UploadFile") => upload_file(ctx, params),
         (false, "Scoreboard", "DownloadFile") => download_file(ctx, params),
         (false, "Drivatar", "SaveDrivatarInformation") => save_drivatar(ctx, params),
         (false, "Drivatar", "GetDrivatarInformationForRace") => drivatars_for_race(ctx, params),
         (false, "Drivatar", "GetDrivatarsForCache") => {
             let n = params["numberOfDrivatars"].as_i64().unwrap_or(0).clamp(0, 200) as usize;
+            // the drivatars the game keeps for free roam and car meets: the whole server
             let infos: Vec<Value> =
-                ctx.friend_ids().into_iter().filter_map(|owner| racing_info(ctx, owner, -1, None)).take(n).collect();
+                ctx.drivatar_candidates().into_iter().filter_map(|owner| racing_info(ctx, owner, -1, None)).take(n).collect();
             json!({ "drivatarInfos": infos })
         }
         // telemetry: acknowledged, not kept
@@ -343,7 +361,7 @@ pub fn live_service(ctx: &Ctx, req: &LiveRequest) -> Option<Value> {
         let records: Vec<Value> = ctx.friend_ids().into_iter().map(|friend| presence_record(ctx, friend)).collect();
         return Some(Value::Array(records));
     }
-    // One player's presence: friends only.
+    // One player's presence (anyone on the server: a leaderboard or a grid opens their card).
     if host == "userpresence.xboxlive.com" && req.method == "GET" && path.ends_with(')') {
         if let Some(x) = path_xuid(path) {
             if ctx.can_see(x) {
@@ -358,7 +376,7 @@ pub fn live_service(ctx: &Ctx, req: &LiveRequest) -> Option<Value> {
 /// One profile.xboxlive.com user with the requested settings.
 fn profile_user(ctx: &Ctx, xuid: u64, wanted: &[String]) -> Value {
     // The game looks up every grid driver here: offline AI drivatars are not players, so they
-    // get a stable generated name; real players show their name only to themselves and friends.
+    // get a stable generated name; real players show their own.
     let known = if ctx.can_see(xuid) { ctx.store.gamertag(xuid) } else { String::new() };
     let tag = if known.is_empty() { generated_gamertag(xuid) } else { known };
     let settings: Vec<Value> = wanted
@@ -670,7 +688,7 @@ fn upload_file(ctx: &Ctx, params: &Value) -> Value {
 const MAX_GHOST: usize = 256_000;
 
 /// Scoreboard.DownloadFile: a stored ghost by the id the leaderboards hand out (ghostFileId):
-/// the player's own or a friend's.
+/// anyone's on the server.
 fn download_file(ctx: &Ctx, params: &Value) -> Value {
     let id = params["id"].as_i64().unwrap_or(0);
     let max = params["maxSize"].as_i64().unwrap_or(i64::MAX).max(0) as usize;
@@ -724,10 +742,11 @@ fn rows_anthem(ctx: &Ctx, params: &Value) -> Value {
     out
 }
 
-/// A leaderboard of the player and their friends: there are no public boards. Boards without a
-/// track (speed traps and zones: scoreboardType 9, skills: 4) name their event in pivotId, which
-/// is the gameScoreboardId the scores were submitted with; track boards are the whole route.
-/// Also Scoreboard.GetRows (VIEW SCOREBOARD).
+/// A leaderboard of everyone on the server, with each row's real position (club boards:
+/// isClubBoard, the caller's club). Boards without a track (speed traps and zones:
+/// scoreboardType 9, skills: 4) name their event in pivotId, which is the gameScoreboardId the
+/// scores were submitted with; track boards are the whole route. Also Scoreboard.GetRows (VIEW
+/// SCOREBOARD). `view` (2 there, 5 after an event) is not used yet: every view is the whole board.
 fn score_rows(ctx: &Ctx, params: &Value) -> Value {
     let track = params["trackId"].as_i64().filter(|t| *t >= 0);
     let event = if track.is_none() { params["pivotId"].as_i64() } else { None };
@@ -737,9 +756,16 @@ fn score_rows(ctx: &Ctx, params: &Value) -> Value {
         track,
         event,
     );
-    let mut circle = ctx.friend_ids();
-    circle.push(ctx.xuid);
-    rows.retain(|r| circle.contains(&r.xuid));
+    // which view the game asks for where (to tell a friends filter apart, once one is seen)
+    println!(
+        "scoreboard view {} (type {}, scoreType {}, track {}, pivot {}, club {})",
+        params["view"], params["scoreboardType"], params["scoreType"], params["trackId"], params["pivotId"], params["isClubBoard"]
+    );
+    if params["isClubBoard"].as_bool() == Some(true) {
+        let club = ctx.store.membership(ctx.xuid).map(|m| m.0);
+        let members: Vec<u64> = club.map(|c| ctx.store.club_members(c).iter().map(|m| m.0).collect()).unwrap_or_default();
+        rows.retain(|r| r.xuid == ctx.xuid || members.contains(&r.xuid));
+    }
     let start = params["startAt"].as_i64().unwrap_or(1).max(1) as usize;
     let max = params["maxResults"].as_i64().unwrap_or(50).clamp(0, 500) as usize;
     let row_json = |position: usize, r: &crate::db::ScoreRow| {
@@ -911,14 +937,15 @@ fn base_livery(car: i64, colour: i64) -> Option<String> {
 
 /// The race grid: playerData is the player's own drivatar (what the server learned so far,
 /// so the game keeps training it); drivatarInfos are the other players' drivatars. With a
-/// single player the list is empty and the game uses its offline AI.
+/// single player the list is empty and the game uses its offline AI. Friends come first, then
+/// the rest of the server.
 fn drivatars_for_race(ctx: &Ctx, params: &Value) -> Value {
     let bucket = params["bucketId"].as_i64().unwrap_or(-1);
     let n = params["numberOfDrivatars"].as_i64().unwrap_or(0).clamp(0, 64) as usize;
     let ids = |k: &str| -> Vec<u64> { params[k].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default() };
     let (cached, new_cars) = (ids("cachedDrivatars"), ids("cachedDrivatarsNewCars"));
     let others: Vec<Value> = ctx
-        .friend_ids()
+        .drivatar_candidates()
         .into_iter()
         .filter(|x| !cached.contains(x) || new_cars.contains(x))
         .filter_map(|owner| racing_info(ctx, owner, bucket, None))
@@ -962,9 +989,9 @@ pub fn generated_gamertag(xuid: u64) -> String {
 }
 
 /// Scoreboard.GetRival: the friend whose best on this route is closest to the player's own
-/// (in the car class the game asks for: pivotId), raced against their ghost. None (the method
-/// stays down, no rival shown) until a friend has a time there.
-fn friend_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
+/// (in the car class the game asks for: pivotId), else anyone on the server, raced against
+/// their ghost. None (the method stays down, no rival shown) until someone else has a time there.
+fn pick_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
     let int = |k: &str| params[k].as_i64().unwrap_or(-1);
     let (board, score_type, track, class) = (int("scoreboardType"), int("scoreType"), int("trackId"), int("pivotId"));
     let rows = ctx.store.leaderboard(board, score_type, Some(track), None);
@@ -974,10 +1001,12 @@ fn friend_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
         class < 0 || ctx.catalog.car(r.data["carId"].as_i64().unwrap_or(-1)).map(|c| c.class_id) == Some(class)
     };
     let distance = |r: &crate::db::ScoreRow| mine.map(|m| (r.score - m).abs()).unwrap_or(0.0);
-    let rival = rows
-        .iter()
-        .filter(|r| friends.contains(&r.xuid) && in_class(r))
-        .min_by(|a, b| distance(a).partial_cmp(&distance(b)).unwrap_or(std::cmp::Ordering::Equal))?;
+    let closest = |friend: bool| {
+        rows.iter()
+            .filter(|r| r.xuid != ctx.xuid && friends.contains(&r.xuid) == friend && in_class(r))
+            .min_by(|a, b| distance(a).partial_cmp(&distance(b)).unwrap_or(std::cmp::Ordering::Equal))
+    };
+    let rival = closest(true).or_else(|| closest(false))?;
     let car = rival.data["carId"].as_i64().unwrap_or(461);
     let class = rival.data["carClassId"].as_i64().unwrap_or(0);
     let ghost = rival_ghost(ctx, params, rival.xuid, rival.score);
@@ -985,7 +1014,7 @@ fn friend_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
 }
 
 /// GetRival for an event the player was challenged on (Meus Rivais -> "Ir para"), or with an
-/// explicit rivalXuid: that friend's time.
+/// explicit rivalXuid: that player's time.
 fn challenge_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
     let int = |k: &str| params[k].as_i64().unwrap_or(-1);
     let (board, score_type, track) = (int("scoreboardType"), int("scoreType"), int("trackId"));
@@ -1001,8 +1030,8 @@ fn challenge_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
     } else {
         return None;
     };
-    // only friends are rivals (a challenge from someone no longer a friend is ignored)
-    if !ctx.friend_ids().contains(&xuid) {
+    // challenges come from friends; a time asked by xuid can be anyone's on the server
+    if xuid == ctx.xuid || !ctx.can_see(xuid) {
         return None;
     }
     ctx.store.record_race_event(board, score_type, int("rivalEventId"), track, int("pivotId"));
@@ -1010,8 +1039,8 @@ fn challenge_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
     Some(rival_reply(ctx, params, xuid, score, car, class, ghost))
 }
 
-/// The rival's own ghost on this route, else the friend's (or the player's) ghost closest to
-/// that time, else 0 (a time without a car to chase).
+/// The rival's own ghost on this route, else anyone's ghost closest to that time, else 0 (a
+/// time without a car to chase).
 fn rival_ghost(ctx: &Ctx, params: &Value, rival: u64, score: f64) -> i64 {
     let int = |k: &str| params[k].as_i64().unwrap_or(-1);
     let (board, score_type, track) = (int("scoreboardType"), int("scoreType"), int("trackId"));
@@ -1021,11 +1050,7 @@ fn rival_ghost(ctx: &Ctx, params: &Value, rival: u64, score: f64) -> i64 {
         .into_iter()
         .find(|r| r.xuid == rival)
         .and_then(|r| ctx.store.ghost_id(rival, board, score_type, r.data["gameScoreboardId"].as_i64().unwrap_or(-1), track));
-    own.or_else(|| {
-        let mut circle = ctx.friend_ids();
-        circle.push(ctx.xuid);
-        ctx.store.nearest_ghost(&circle, board, score_type, track, score).map(|g| g.0)
-    })
+    own.or_else(|| ctx.store.nearest_ghost(None, board, score_type, track, score).map(|g| g.0))
     .unwrap_or(0)
 }
 
@@ -1120,6 +1145,60 @@ pub fn merge(base: &mut Value, over: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Players who are not friends see each other's times, ghosts and drivatars; a banned
+    /// player is left out; friends come first in the grid and as rivals.
+    #[test]
+    fn open_to_the_whole_server() {
+        let dir = std::env::temp_dir().join(format!("fh2-open-{}", crate::db::accounts::new_token()));
+        let store = Store::open(&dir.join("t.sqlite")).unwrap();
+        let catalog = Catalog::default();
+        let pc = |n: u8| format!("{n:02x}").repeat(32);
+        let [a, b, c, d] = [1u8, 2, 3, 4].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n)).unwrap().0.xuid);
+        let ctx = |xuid| Ctx { store: &store, catalog: &catalog, xuid, events: RefCell::new(Vec::new()) };
+        let call = |xuid, method: &str, params: Value| handle(&ctx(xuid), "Scoreboard", method, &params).unwrap();
+        let route = json!({ "scoreboardType": 0, "scoreType": 1, "trackId": 7, "gameScoreboardId": 70, "carId": 461 });
+        for (x, time) in [(a, 100.0), (b, 90.0), (c, 80.0)] {
+            let mut data = route.clone();
+            data["score"] = json!(time);
+            let id = store.add_score(x, 1, &data);
+            assert!(store.save_ghost(x, &id, b"ghost").is_some());
+        }
+        store.set_banned(c, true);
+        // D is nobody's friend and sees A and B with their real positions, not banned C
+        let board = call(d, "GetRows", json!({ "scoreboardType": 0, "scoreType": 1, "view": 2, "trackId": 7, "startAt": 1, "maxResults": 50 }));
+        let rows = board["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["user"]["qwXuid"], b);
+        assert_eq!(rows[1]["position"], 2);
+        let ghost = rows[0]["ghostFileId"].as_i64().unwrap();
+        assert!(ghost > 0);
+        assert!(call(d, "DownloadFile", json!({ "id": ghost, "maxSize": 1000 }))["data"].is_string());
+        let banned = store.ghost_id(c, 0, 1, 70, 7).unwrap();
+        assert!(call(d, "DownloadFile", json!({ "id": banned, "maxSize": 1000 }))["__xtsw_error"].is_object());
+        // drivatars: everyone not banned, a friend first
+        let garage = json!({ "garageCars": [{ "id": 1, "carId": 461, "numRaces": 3 }] });
+        for x in [a, b, c] {
+            store.save_drivatar(x, &json!({ "info": {}, "curveTypes": [], "segmentInformation": [] }));
+            store.apply_tables(x, &garage);
+        }
+        store.add_friend(d, a);
+        let cache = handle(&ctx(d), "Drivatar", "GetDrivatarsForCache", &json!({ "numberOfDrivatars": 10 })).unwrap();
+        let owners: Vec<u64> = cache["drivatarInfos"].as_array().unwrap().iter().map(|i| i["Xuid"].as_u64().unwrap()).collect();
+        assert_eq!(owners, vec![a, b]);
+        assert_eq!(cache["drivatarInfos"][0]["IsFriend"], true);
+        assert_eq!(cache["drivatarInfos"][1]["IsFriend"], false);
+        // rival: the friend A, even though B is closer to D's time
+        let mut mine = route.clone();
+        mine["score"] = json!(91.0);
+        store.add_score(d, 1, &mine);
+        let rival = call(d, "GetRival", json!({ "scoreboardType": 0, "scoreType": 1, "trackId": 7, "pivotId": -1 }));
+        assert_eq!(rival["rival"]["scoreData"]["score"], 100.0);
+        // without friends, the closest time on the server
+        let rival = call(b, "GetRival", json!({ "scoreboardType": 0, "scoreType": 1, "trackId": 7, "pivotId": -1 }));
+        assert_eq!(rival["rival"]["scoreData"]["score"], 91.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn text() {

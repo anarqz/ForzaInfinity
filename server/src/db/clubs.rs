@@ -529,6 +529,13 @@ impl Store {
         self.club_ladder(club).iter().map(|r| r.1).sum::<f64>() as i64
     }
 
+    /// A club's place among all clubs by club XP (1 = most), with its XP.
+    pub fn club_xp_rank(&self, club: i64) -> (i64, i64) {
+        let all: Vec<(i64, i64)> = self.clubs().iter().map(|c| (c.id, self.club_xp(c.id))).collect();
+        let xp = all.iter().find(|c| c.0 == club).map(|c| c.1).unwrap_or(0);
+        (1 + all.iter().filter(|c| c.1 > xp).count() as i64, xp)
+    }
+
     pub fn accepts_club_invites(&self, xuid: u64) -> bool {
         self.with(|db| {
             db.query_row("SELECT accepts_club_invites FROM user_settings WHERE xuid = ?1", [xuid as i64], |r| {

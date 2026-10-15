@@ -77,10 +77,10 @@ const en = {
       card: { synced: "Save synced", from: "PC", to: "Steam Deck" },
     },
     more: [
-      { title: "Leaderboards", body: "Speed traps, zones and skill chains among friends." },
-      { title: "Drivatars", body: "Friends race you and park at car meets, in their colours." },
+      { title: "Leaderboards", body: "Speed traps, zones and skill chains against every player on the server." },
+      { title: "Drivatars", body: "Every player's drivatar races you and fills the roads and car meets, friends first." },
       { title: "Fair play", body: "Impossible profile jumps are refused; reports take files down." },
-      { title: "Private by design", body: "No public lists: only you, your friends and your club." },
+      { title: "One open world", body: "Everyone sees everyone's times, ghosts and shared designs; rivals are your friends." },
     ],
   },
   install: {
@@ -132,7 +132,7 @@ const en = {
       },
       {
         q: "What about my privacy?",
-        a: "There are no public lists. You see your own data, your friends' and your club's. This page only shows server totals. Delete profile removes everything you have on the server.",
+        a: "Your gamertag, times, ghosts, drivatar, car club and shared designs are seen by every player on the server. Messages, challenges and Meus Rivais are only between friends. This page only shows server totals. Delete profile removes everything you have on the server.",
       },
       {
         q: "Is live multiplayer back?",
@@ -226,10 +226,10 @@ const pt: Texts = {
       card: { synced: "Save sincronizado", from: "PC", to: "Steam Deck" },
     },
     more: [
-      { title: "Placares", body: "Radares, zonas e combos de habilidade entre amigos." },
-      { title: "Drivatars", body: "Os amigos correm contra você e aparecem nos encontros, nas cores deles." },
+      { title: "Placares", body: "Radares, zonas e combos de habilidade contra todos os jogadores do servidor." },
+      { title: "Drivatars", body: "Os drivatars de todos os jogadores correm contra você e enchem as estradas e os encontros, amigos primeiro." },
       { title: "Jogo limpo", body: "Saltos impossíveis no perfil são barrados; denúncias derrubam arquivos." },
-      { title: "Privado por padrão", body: "Sem listas públicas: só você, seus amigos e seu clube." },
+      { title: "Um mundo aberto", body: "Todos veem os tempos, fantasmas e criações de todos; os rivais são os seus amigos." },
     ],
   },
   install: {
@@ -282,7 +282,7 @@ const pt: Texts = {
       },
       {
         q: "E a minha privacidade?",
-        a: "Não há listas públicas. Você vê os seus dados, os dos seus amigos e os do seu clube. Esta página só mostra totais do servidor. Excluir o perfil apaga tudo o que você tem no servidor.",
+        a: "Seu gamertag, tempos, fantasmas, drivatar, clube e criações compartilhadas ficam visíveis para todos os jogadores do servidor. Mensagens, desafios e Meus Rivais são só entre amigos. Esta página só mostra totais do servidor. Excluir o perfil apaga tudo o que você tem no servidor.",
       },
       {
         q: "O multiplayer ao vivo voltou?",

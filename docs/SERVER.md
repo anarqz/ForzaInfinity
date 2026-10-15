@@ -58,6 +58,9 @@ Hooks before fh2online.33 call `/fh2online/v1/…`; the server answers both.
 
 ## Privacy
 
-There are no public lists. A player sees their own data, their friends' and their club's;
-`/infinity/v1/stats` only gives totals. A player deleting their profile from the game removes
+The server is one open world: every player sees everyone's gamertag, times and positions,
+ghosts, drivatar, car club and shared files (banned accounts are left out). Friends are the
+social side: the friends list and presence, messages, challenges and Meus Rivais, and they come
+first in drivatar grids and as rivals. Hidden clubs (privacy 3) are seen only by their members
+and the members' friends. `/infinity/v1/stats` only gives totals. A player deleting their profile from the game removes
 every record of them, including friendships and shared files.

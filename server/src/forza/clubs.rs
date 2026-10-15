@@ -58,6 +58,7 @@ pub fn club_data(ctx: &Ctx, club: &Club, viewer: u64) -> Value {
     // The member with the highest career level stands in for the club champion.
     let champion = members.iter().map(|m| m.0).max_by_key(|&x| ctx.store.login(x)["currentCareerLevel"].as_u64().unwrap_or(0));
     let some = |x: Option<u64>| x.map(|x| member_data(ctx, x)).unwrap_or_else(|| json!({}));
+    let (rank, xp) = ctx.store.club_xp_rank(club.id);
     json!({
         "clubId": club.id,
         "clubTag": club.tag,
@@ -74,15 +75,18 @@ pub fn club_data(ctx: &Ctx, club: &Club, viewer: u64) -> Value {
         "attitudeKeyword": keyword(club.attitude),
         "interestKeyword": keyword(club.interest),
         "clubPrivacy": club.privacy,
-        "clubXP": ctx.store.club_xp(club.id),
-        // no public rankings
-        "clubXPRank": 0,
+        "clubXP": xp,
+        // among every club on the server
+        "clubXPRank": rank,
     })
 }
 
-/// Players see their own club and the clubs their friends are in; nothing else exists for
-/// them (FH2Online has no public discovery).
+/// Every club is visible to everyone, except hidden ones (privacy 3): those only to their
+/// members and the members' friends.
 fn visible(ctx: &Ctx, club: &Club) -> bool {
+    if club.privacy != 3 {
+        return true;
+    }
     let friends = ctx.friend_ids();
     ctx.store.club_members(club.id).iter().any(|m| m.0 == ctx.xuid || friends.contains(&m.0))
 }
@@ -398,8 +402,8 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                     Some(name) => ctx.store.xuid_by_gamertag(name).unwrap_or(0),
                     None => param_xuid(params, "userToInvite"),
                 };
-                // only friends can be invited
-                if who == 0 || !ctx.friend_ids().contains(&who) {
+                // anyone on the server can be invited (acceptsClubInvites still says no for them)
+                if who == 0 || who == me || !ctx.can_see(who) {
                     return Some(error(1, "unknown player"));
                 }
                 match ctx.store.invite_to_club(club.id, me, who) {
