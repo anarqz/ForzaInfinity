@@ -12,7 +12,7 @@ use std::{
 
 use dedicated_server::{
     bits::{Bits, Reader},
-    nerd::{self, Acks, Car, Handle, Header, Msg, ObjectMsg, OpenConnection, OpenResponse},
+    nerd::{self, Acks, Car, CarEvent, Handle, Header, Msg, ObjectMsg, OpenConnection, OpenResponse},
     relay::{Relay, Settings},
 };
 
@@ -394,4 +394,39 @@ fn unacked_object_messages_are_resent() {
     }
     assert_eq!(ids.len(), 2, "resent");
     assert_ne!(ids[0], ids[1], "in a new packet");
+}
+
+/// What the Steam Deck sent on joining: RepairDamage and ServerTrafficMessage ahead of a car in
+/// one packet. The car still gets through, the repair is relayed with the relay handle, and the
+/// traffic message is not relayed.
+#[test]
+fn repair_and_traffic_do_not_lose_the_car() {
+    let server = Server::start(settings());
+    let mut a = Client::new(&server, 1);
+    let mut b = Client::new(&server, 2);
+    a.join();
+    b.join();
+    let a_idx = 1u8;
+    let car_body = payload(nerd::CAR_BODY_BITS, 7);
+    let repair = Msg::CarEvent(CarEvent { id: nerd::MSG_REPAIR_DAMAGE, handle: Handle::Own(2), body: Bits::new() });
+    let car = Msg::Car(Car { handle: Handle::Own(2), body: car_body.clone() });
+    a.send_unsequenced(&[repair, car.clone()]);
+    match b.wait_for("A's car after the repair", |m| matches!(m, Msg::Car(_))) {
+        Msg::Car(c) => assert_eq!((c.handle, c.body), (Handle::Relay(2, a_idx), car_body.clone())),
+        _ => unreachable!(),
+    }
+    b.wait_for("A's repair", |m| {
+        matches!(m, Msg::CarEvent(e) if e.id == nerd::MSG_REPAIR_DAMAGE && e.handle == Handle::Relay(2, a_idx))
+    });
+
+    // traffic first, then a glass break and the car: all read
+    let traffic = Msg::Traffic { id: nerd::MSG_SERVER_TRAFFIC_MESSAGE, body: payload(72, 3) };
+    let glass_body = payload(352, 4);
+    let glass = Msg::CarEvent(CarEvent { id: nerd::MSG_BREAK_GLASS, handle: Handle::Own(2), body: glass_body.clone() });
+    a.send_unsequenced(&[traffic, glass, car]);
+    b.wait_for("A's glass", |m| {
+        matches!(m, Msg::CarEvent(e) if e.id == nerd::MSG_BREAK_GLASS && e.handle == Handle::Relay(2, a_idx) && e.body == glass_body)
+    });
+    b.wait_for("A's second car", |m| matches!(m, Msg::Car(_)));
+    b.expect_none(Duration::from_millis(300), "relayed traffic", |m| matches!(m, Msg::Traffic { .. }));
 }

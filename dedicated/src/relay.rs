@@ -60,7 +60,7 @@ use std::{
 
 use crate::{
     bits::{Bits, Reader},
-    nerd::{self, Car, Handle, Header, Msg, ObjectDelete, ObjectMsg, OpenResponse, ReadError},
+    nerd::{self, Car, CarEvent, Handle, Header, Msg, ObjectDelete, ObjectMsg, OpenResponse, ReadError},
     net,
 };
 
@@ -764,6 +764,36 @@ impl Relay {
                         self.mirror_queue.push_back((now + delay, addr, m));
                     }
                     cars.push(Msg::Car(Car { handle: Handle::Relay(id, index), body: c.body }).write());
+                }
+                Msg::CarEvent(e) => {
+                    // the sender's car: relayed like the car itself, with the relay handle
+                    let Handle::Own(id) = e.handle else {
+                        self.log_once(format!("peer {index}: {} with handle {:?} not relayed", nerd::msg_name(e.id), e.handle));
+                        continue;
+                    };
+                    self.debug(&format!("peer {index} {} car {id}", nerd::msg_name(e.id)));
+                    let relayed = |peer| Msg::CarEvent(CarEvent { handle: Handle::Relay(id, peer), ..e.clone() }).write();
+                    if self.settings.mirror.is_some() {
+                        ghost.push(relayed(MIRROR_INDEX));
+                    }
+                    // RepairDamage goes on the console's reliable channel (2), so it is resent
+                    // until acked; glass and collisions on channel 5, unreliable, like the cars
+                    if e.id == nerd::MSG_REPAIR_DAMAGE {
+                        fwd.push(relayed(index));
+                    } else {
+                        cars.push(relayed(index));
+                    }
+                }
+                // Read only so the rest of the packet is: the traffic and the collidable objects
+                // were the Xbox server's own simulation, which this relay does not run; Tag's
+                // second car would need a handle per receiver (Playground games, not free roam);
+                // chat management and InactivePlayersPulled are for the server's matchmaking.
+                Msg::TagCollision(_)
+                | Msg::Traffic { .. }
+                | Msg::CollObjRest { .. }
+                | Msg::ChatManagement { .. }
+                | Msg::InactivePlayersPulled(_) => {
+                    self.debug(&format!("peer {index} {} (not relayed)", nerd::msg_name(msg.id())));
                 }
                 Msg::FinaliseSessionEntry => {
                     self.debug(&format!("peer {index} FinaliseSessionEntry"));
