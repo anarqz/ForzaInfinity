@@ -2,6 +2,18 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-15, tarde (hook fh2online.38, v0.1.4 Latest): leia primeiro
+
+- **v0.1.4 é a Latest** (hook .38, SHA `f222edbc…`). Os servidores público e local anunciam essa versão; hooks .37 ou mais novos se atualizam sozinhos.
+- **Atualização automática provada** no Deck: build de teste .36 → `.37` do GitHub.
+- **Message Center:** o `azimuth_ui.c` reescreve o `MessageCenter.str` de cada idioma ao abrir (reconhecido pelo tamanho). O nome da equipe (0x229b) vira INFINITY, a linha "De:" também, e o título da lista (0x3232) vira INFINITY. Os textos mudam no mesmo lugar e nunca crescem. Testado nos 17 idiomas (`tests/ui_edits_test.py`, `FH2_RUN` = wine do Proton). **Ainda não visto no jogo**; o log mostra "UI: Message Center texts name INFINITY".
+- **Nomes de 1 a 20 letras** (servidor e hook). Os campos de gamertag do jogo têm 15 caracteres (`max_chars` 15 no schema): o jogo recebe `Store::game_tag` (Nome#12345 se couber, senão só o nome cortado em 15), e o hook usa o mesmo como nome do jogador.
+- **Erro ao criar perfil, entrar ou adicionar amigo:** popup com "Try again" e "Cancel".
+- **Travamento no PC** ao criar o perfil "DominicToretto" (14 letras, acima do limite antigo de 9) logo depois do teclado virtual, na 0.9.9. Não houve pedido de `register`. Causa não confirmada: ou o teclado da 0.9.9 ignora o limite de tamanho, ou o popup aberto ao fechar o teclado trava. Com o limite de 20 o nome passa direto; falta ver se um nome válido cria o perfil sem travar.
+- **Placares:** `view` 0 Global, 1 Perto de mim, 2 Amigos, 3 Clube, 4 Amigos e clube, 5 depois do evento. Posição sempre a real no servidor. Os recordes de radar e zona vêm do save (`db/save_bests.rs`).
+- **PC Linux:** Azimuth 0.9.9 + hook .37 + INI 0.2.74, servidor local `127.0.0.1:8081`. Backup em `Forza Horizon 2/fh2online-backup-az097-20261015-110137`. **Windows (diablo):** 0.9.9 + build de teste .36 (vai se atualizar sozinho). Ver memória `windows-pc-diablo`.
+- **Atenção:** um instalador rodado a partir de uma release *pré-lançamento* baixa o DLL e o `update.sh` da Latest (`releases/latest/download`). Por isso a Latest tem que ser sempre a versão completa.
+
 ## Estado em 2026-10-15, meio-dia (hook fh2online.37, atualização automática): leia primeiro
 
 - **Hook .37** (`5cd49b5`), na release **`v0.1.3`, publicada como pré-lançamento** (os instaladores, que usam `releases/latest`, ainda entregam a v0.1.2). SHA `f791ffe4…`.
