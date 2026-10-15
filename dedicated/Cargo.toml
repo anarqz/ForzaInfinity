@@ -1,0 +1,15 @@
+[package]
+name = "dedicated_server"
+version = "0.1.0"
+edition = "2024"
+description = "Forza Horizon 2 free roam game server (NerdCore UDP relay), hosted by a player"
+
+# std only, on purpose: builds with the GNU toolchain (no dlltool) and cross-builds
+# for Windows with zig as the linker (build-windows.sh).
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

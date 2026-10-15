@@ -18,6 +18,9 @@
 //!   d. `responses/_default.json`;
 //!   e. built-in 404.
 //!
+//! With --freeroam / --freeroam-world, the game-server and session calls of online free roam
+//! (gameserverds, gameserverms, sessiondirectory) are answered by freeroam.rs before c.
+//!
 //! Forza RPC bodies are `bin/xtsw` (xtsw.rs). The request is decoded into the capture as JSON,
 //! and a spec can answer with `"xtsw": { <_Results as JSON> }` (merged over the built-in
 //! handler, missing fields = zero) or `"xtsw_error": { "code": n, "message": "..." }`.
@@ -37,6 +40,7 @@ mod admission;
 mod api;
 mod db;
 mod forza;
+mod freeroam;
 mod gamedb;
 mod strtable;
 mod gamerpic;
@@ -90,6 +94,8 @@ struct App {
     registration_open: bool,
     /// Player slots and the waiting line (--max-players).
     admission: admission::Admission,
+    /// Online free roam (--freeroam / --freeroam-world): game servers and sessions.
+    freeroam: Option<freeroam::Freeroam>,
 }
 
 impl App {
@@ -236,6 +242,8 @@ fn main() {
     let mut behind_proxy = false;
     let mut registration_open = true;
     let mut max_players = 150;
+    let mut freeroam_on = false;
+    let mut freeroam_world = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -249,6 +257,16 @@ fn main() {
                     _ => panic!("--registration open|closed"),
                 }
             }
+            "--freeroam" => freeroam_on = true,
+            "--freeroam-world" => {
+                use std::net::ToSocketAddrs;
+                let world = args.next().expect("--freeroam-world HOST:PORT");
+                let addr = world.to_socket_addrs().ok().and_then(|mut a| a.next()).unwrap_or_else(|| {
+                    eprintln!("--freeroam-world: cannot resolve {world}");
+                    std::process::exit(2);
+                });
+                freeroam_world = Some(addr);
+            }
             "--listen" => listen = args.next().expect("--listen ADDR").parse().expect("bad address"),
             "--root" => root = PathBuf::from(args.next().expect("--root DIR")),
             "--gamedb" => gamedb_path = Some(PathBuf::from(args.next().expect("--gamedb FILE"))),
@@ -256,7 +274,7 @@ fn main() {
             "--db" => db_path = Some(PathBuf::from(args.next().expect("--db FILE"))),
             "-h" | "--help" => {
                 println!(
-                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist] [--capture] [--behind-proxy] [--registration open|closed] [--max-players 150 (0: no limit)]"
+                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist] [--capture] [--behind-proxy] [--registration open|closed] [--max-players 150 (0: no limit)] [--freeroam] [--freeroam-world HOST:PORT]"
                 );
                 return;
             }
@@ -332,6 +350,7 @@ fn main() {
         behind_proxy,
         registration_open,
         admission: admission::Admission::new(max_players),
+        freeroam: (freeroam_on || freeroam_world.is_some()).then(|| freeroam::Freeroam::new(freeroam_world)),
     });
     match max_players {
         0 => println!("  players:   no limit"),
@@ -342,6 +361,11 @@ fn main() {
     }
     if !registration_open {
         println!("  accounts:  registration closed");
+    }
+    match (&app.freeroam, freeroam_world) {
+        (None, _) => {}
+        (Some(_), Some(world)) => println!("  freeroam:  on, world {world}"),
+        (Some(_), None) => println!("  freeroam:  on, no world (placeholder address)"),
     }
     for stream in listener.incoming() {
         match stream {
@@ -522,6 +546,14 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
         events: Default::default(),
     };
 
+    // Online free roam (freeroam.rs): only for an account, and not over a routes.json rule.
+    let mut freeroam_reply = match &app.freeroam {
+        Some(f) if !specific && ctx.xuid != 0 && target.forza_class.is_none() => {
+            f.handle(&request.method, &target.host, &target.path, &request.body, ctx.xuid, &|x| app.store.gamertag(x))
+        }
+        _ => None,
+    };
+
     let mut request_xtsw = None;
     let mut response_xtsw = None;
     let (status, out_headers, out_body) = match forza_answer(app, &ctx, &target, request, spec.as_ref(), specific) {
@@ -535,6 +567,21 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
                 Some(reply) => reply,
                 None => build_body(spec, &source),
             }
+        }
+        None if freeroam_reply.is_some() => {
+            let reply = freeroam_reply.take().unwrap_or_else(|| freeroam::Reply { status: 500, body: None });
+            source = Some(format!("builtin:freeroam:{}", target.host));
+            let mut headers = BTreeMap::new();
+            let body = match reply.body {
+                Some(body) => {
+                    headers.insert("Content-Type".into(), "application/json; charset=utf-8".into());
+                    // fh2srv.py 305: every JSON answer has an ETag
+                    headers.insert("ETag".into(), format!("\"{seq}\""));
+                    serde_json::to_vec(&body).unwrap_or_default()
+                }
+                None => Vec::new(),
+            };
+            (reply.status, headers, body)
         }
         None if !specific && target.host == gamerpic::HOST => {
             // the picture URL we put in the Xbox profile settings
