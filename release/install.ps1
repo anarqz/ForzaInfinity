@@ -110,4 +110,14 @@ if (Test-Path $ini) {
     [IO.File]::WriteAllText($ini, $text.Replace('__SERVER__', $Server), (New-Object System.Text.ASCIIEncoding))
 }
 
+# 5. the updater, left in the Azimuth folder: ForzaInfinity-Update.cmd installs the latest release
+$updater = Join-Path $bin 'forzainfinity-update.ps1'
+try {
+    $source = Join-Path $here 'update.ps1'
+    if (Test-Path $source) { Copy-Item $source $updater -Force }
+    else { Invoke-WebRequest -UseBasicParsing -Uri "$Release/update.ps1" -OutFile $updater }
+    $cmd = "@echo off`r`nrem ForzaInfinity: close the game, then double click to update to the latest release.`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0data\bin\forzainfinity-update.ps1`" -Folder `"%~dp0.`"`r`nif errorlevel 1 pause`r`n"
+    [IO.File]::WriteAllText((Join-Path $azimuth 'ForzaInfinity-Update.cmd'), $cmd, (New-Object System.Text.ASCIIEncoding))
+} catch { Write-Host "The updater could not be set up: $_" }
+
 Say "ForzaInfinity is installed in $azimuth.`n`nServer: $Server`n`nStart the game, then open Settings > INFINITY to create your profile."

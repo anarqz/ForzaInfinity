@@ -108,6 +108,11 @@ else
     sed "s|__SERVER__|$SERVER|" "$TEMPLATE" > "$INI"
 fi
 
+# 5. the updater, left in the Azimuth folder: ForzaInfinity-Update.sh installs the latest release
+UPDATER="$HERE/update.sh"
+if [ ! -f "$UPDATER" ]; then UPDATER="$TMP/update.sh"; curl -fsSL "$RELEASE/update.sh" -o "$UPDATER" || UPDATER=""; fi
+if [ -n "$UPDATER" ]; then cp "$UPDATER" "$AZIMUTH/ForzaInfinity-Update.sh" && chmod +x "$AZIMUTH/ForzaInfinity-Update.sh"; fi
+
 say "ForzaInfinity is installed in $AZIMUTH.
 
 Server: $SERVER

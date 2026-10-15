@@ -20,6 +20,8 @@ Forza Horizon 2's online services, back for the PC version running on **Azimuth 
   strikes from different players take a file down.
 - **Cloud save**: your profile starts from your offline progress and follows you to another
   PC or the Deck.
+- **Updates itself**: a new release installs on its own (from this repository's GitHub
+  releases, checked against their SHA-256) and the game asks you to restart.
 
 Live multiplayer (Online Road Trip, online free roam) is planned for a later version; see
 [MILESTONES.md](MILESTONES.md) (M7).

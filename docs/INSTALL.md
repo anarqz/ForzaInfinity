@@ -63,8 +63,24 @@ In `<Azimuth>/data/bin`:
 |---|---|
 | `azimuth-tls.dll` | Replaced by ForzaInfinity's. The original is kept as `azimuth-tls.dll.stock` (only the first time). |
 | `FH2_ExtraOptions.ini` | Created from the template, or, if you have one, only `[Network]` changes: `Mode=Proxy` and `Server=<your server>`. Everything else stays. |
+| `forzainfinity-update.ps1` (Windows) | The updater that `ForzaInfinity-Update.cmd` runs. |
 
-Running it again updates the DLL and the server address.
+Next to `azimuth.exe` it leaves the updater: `ForzaInfinity-Update.cmd` (Windows) or
+`ForzaInfinity-Update.sh` (Linux / Steam Deck). Running the installer again updates the DLL
+and the server address.
+
+## Updates
+
+ForzaInfinity updates itself. The server says which version is the newest; when the game
+starts with an older one, the hook downloads that release's `azimuth-tls.dll` from this
+repository's GitHub releases (never from the game server), checks it against the release's
+SHA-256, and puts it in place. The pause menu then reads *UPDATE INSTALLED · RESTART THE
+GAME*, and **Settings › INFINITY** offers to restart. The **UPDATE** tile there shows the state
+at any time.
+
+By hand (or with `AutoUpdate=0` under `[Network]` in `FH2_ExtraOptions.ini`, which turns the
+self-update off): close the game and run `ForzaInfinity-Update` next to `azimuth.exe`. It
+installs the latest release and keeps your server and settings.
 
 ## Your profile
 
@@ -84,7 +100,8 @@ friends. Your offline save on the PC is not touched.
 ## Uninstall
 
 Double click **Uninstall.cmd** (Windows) or run `./uninstall.sh` (Linux / Steam Deck). It puts
-`azimuth-tls.dll.stock` back. Saves and `FH2_ExtraOptions.ini` are left as they are.
+`azimuth-tls.dll.stock` back and removes the updater. Saves and `FH2_ExtraOptions.ini` are left
+as they are.
 
 ## Troubleshooting
 
