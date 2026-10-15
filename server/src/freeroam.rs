@@ -420,10 +420,15 @@ impl Freeroam {
     /// DeleteMatchTicketAsync, GetHopperStatisticsAsync). After writing its ticket session
     /// (properties.system.matchmaking.targetSessionConstants), the game creates a ticket for a
     /// hopper (FreeRoam_qos, CarMeet_qos, RoadTrip_qos); with no answer it deletes the ticket and
-    /// shows an error. Here every ticket is found at once: the hopper has one shared target
-    /// session (the world), made from the ticket's targetSessionConstants with the player
-    /// reserved in it and its game server filled, and the ticket session's
-    /// servers.matchmaking says "found" with the targetSessionRef, as SmartMatch wrote it.
+    /// shows an error. Here every ticket is found at once: the player gets a target session of
+    /// its own, made from the ticket's targetSessionConstants with the player reserved in it and
+    /// its game server filled (the world), and the ticket session's servers.matchmaking says
+    /// "found" with the targetSessionRef, as SmartMatch wrote it.
+    ///
+    /// One target session per player, not one per hopper: the first console in a session makes
+    /// itself its host (properties.system.host = its deviceToken), and a console that finds
+    /// another host waits for that host and gives up after ~14 s (seen on 2026-10-15 with the
+    /// PC and the Deck). The players meet in the world's relay, not in the session.
     ///   POST   /serviceconfigs/{scid}/hoppers/{hopper}              -> {ticketId, waitTime}
     ///   GET    /serviceconfigs/{scid}/hoppers/{hopper}/tickets/{id} -> ticket details
     ///   DELETE /serviceconfigs/{scid}/hoppers/{hopper}/tickets/{id} -> 204
@@ -475,8 +480,8 @@ impl Freeroam {
         let ticket_scid = ticket_ref["scid"].as_str().unwrap_or(scid);
         let ticket_key = format!("/serviceconfigs/{ticket_scid}/sessiontemplates/{ticket_template}/sessions/{ticket_name}")
             .to_ascii_lowercase();
-        // one world per hopper: everybody who looks for FreeRoam_qos meets in the same session
-        let target_name = format!("fh2inf-{}", hopper.to_ascii_lowercase());
+        // the player's own session for this hopper (see above); the world is its game server
+        let target_name = format!("fh2inf-{}-{xuid}", hopper.to_ascii_lowercase());
         let target_ref = json!({ "scid": ticket_scid, "templateName": ticket_template, "name": target_name });
         let target_key = format!("/serviceconfigs/{ticket_scid}/sessiontemplates/{ticket_template}/sessions/{target_name}")
             .to_ascii_lowercase();
@@ -831,9 +836,9 @@ mod tests {
         let t = call(&f, "GET", SESSIONDIRECTORY, &ticket_session, Value::Null, 7).body.unwrap();
         let mm = &t["servers"]["matchmaking"]["properties"]["system"];
         assert_eq!(mm["status"], json!("found"));
-        assert_eq!(mm["targetSessionRef"]["name"], json!("fh2inf-freeroam_qos"));
+        assert_eq!(mm["targetSessionRef"]["name"], json!("fh2inf-freeroam_qos-7"));
         // the target: the ticket's constants, the world, the player reserved
-        let target = format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/fh2inf-freeroam_qos");
+        let target = format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/fh2inf-freeroam_qos-7");
         let w = call(&f, "GET", SESSIONDIRECTORY, &target, Value::Null, 7).body.unwrap();
         assert_eq!(w["constants"]["custom"]["hopperId"], json!(2));
         assert_eq!(
@@ -842,15 +847,22 @@ mod tests {
         );
         assert_eq!(w["members"]["0"]["constants"]["system"]["xuid"], json!("7"));
         assert_eq!(w["members"]["0"]["reserved"], json!(true));
-        // a second player meets in the same world; the first joining with "me" is not doubled
+        // the player joining with "me" is not doubled
+        call(&f, "PUT", SESSIONDIRECTORY, &target, json!({ "members": { "me": { "properties": { "system": { "active": true } } } } }), 7);
+        let w = call(&f, "GET", SESSIONDIRECTORY, &target, Value::Null, 7).body.unwrap();
+        assert_eq!(w["membersInfo"]["count"], json!(1));
+        assert_eq!(w["membersInfo"]["active"], json!(1));
+        // a second player gets a session of its own, alone in it, with the same world
         call(&f, "PUT", SESSIONDIRECTORY, &format!("/serviceconfigs/{scid}/sessionTemplates/defaultTemplate_qos/sessions/T2"),
             json!({ "properties": { "system": { "matchmaking": { "targetSessionConstants": constants } } } }), 8);
         call(&f, "POST", MOMATCH, &hopper,
             json!({ "ticketSessionRef": { "name": "T2", "scid": scid, "templateName": "defaultTemplate_qos" } }), 8);
-        call(&f, "PUT", SESSIONDIRECTORY, &target, json!({ "members": { "me": { "properties": { "system": { "active": true } } } } }), 7);
-        let w = call(&f, "GET", SESSIONDIRECTORY, &target, Value::Null, 7).body.unwrap();
-        assert_eq!(w["membersInfo"]["count"], json!(2));
-        assert_eq!(w["membersInfo"]["active"], json!(1));
+        let t2 = call(&f, "GET", SESSIONDIRECTORY, &format!("/serviceconfigs/{scid}/sessionTemplates/defaultTemplate_qos/sessions/T2"), Value::Null, 8).body.unwrap();
+        assert_eq!(t2["servers"]["matchmaking"]["properties"]["system"]["targetSessionRef"]["name"], json!("fh2inf-freeroam_qos-8"));
+        let w2 = call(&f, "GET", SESSIONDIRECTORY,
+            &format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/fh2inf-freeroam_qos-8"), Value::Null, 8).body.unwrap();
+        assert_eq!(w2["membersInfo"]["count"], json!(1));
+        assert_eq!(w2["servers"]["gameServerPlatform"], w["servers"]["gameServerPlatform"]);
         // ticket details, stats, delete
         let d = call(&f, "GET", MOMATCH, &format!("{hopper}/tickets/{id}"), Value::Null, 7).body.unwrap();
         assert_eq!(d["ticketStatus"], json!("found"));
