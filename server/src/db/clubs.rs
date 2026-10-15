@@ -289,7 +289,7 @@ impl Store {
         if role != ROLE_LEADER {
             if let Some(c) = self.club(club) {
                 self.club_history_add(xuid, &c, role, ACTION_JOINED);
-                let tag = self.gamertag(xuid);
+                let tag = self.game_tag(xuid);
                 self.notify(xuid, note::CLUB_MEMBER_ACCEPTED, json!({ "clubName": c.name, "clubTag": c.tag }));
                 self.notify_members(club, xuid, note::CLUB_NEW_MEMBER, json!({
                     "newMemberXuid": xuid, "newMemberGamertag": tag, "clubName": c.name, "clubTag": c.tag,
@@ -315,7 +315,7 @@ impl Store {
         self.with(|db| db.execute("DELETE FROM club_members WHERE xuid = ?1", [xuid as i64]));
         if let Some(c) = &club {
             self.club_history_add(xuid, c, role, action);
-            let tag = self.gamertag(xuid);
+            let tag = self.game_tag(xuid);
             if action == ACTION_REMOVED {
                 self.notify(xuid, note::CLUB_KICK, json!({
                     "kickedXuid": xuid, "kickedGamertag": tag, "clubName": c.name, "clubTag": c.tag,
@@ -355,7 +355,7 @@ impl Store {
             self.club_history_add(xuid, &c, role, ACTION_ROLE);
             if role < before {
                 // a lower number is a higher role
-                let tag = self.gamertag(xuid);
+                let tag = self.game_tag(xuid);
                 self.notify_members(club, 0, note::CLUB_NEW_PROMOTION, json!({
                     "newRole": role, "newPromotedXuid": xuid, "newPromotedGamertag": tag,
                     "clubName": c.name, "clubTag": c.tag,
@@ -389,7 +389,7 @@ impl Store {
             if let Some(c) = self.club(club) {
                 self.notify(xuid, note::CLUB_INVITATION, json!({
                     "sponsorXuid": sender, "clubId": club, "clubName": c.name, "clubTag": c.tag,
-                    "sponsorGamertag": self.gamertag(sender),
+                    "sponsorGamertag": self.game_tag(sender),
                 }));
             }
         })
@@ -441,13 +441,19 @@ impl Store {
     }
 
     pub fn request_to_join(&self, club: i64, xuid: u64) {
-        self.with(|db| {
-            db.execute(
-                "INSERT OR REPLACE INTO club_requests (club, xuid, created) VALUES (?1, ?2, ?3)",
-                params![club, xuid as i64, unix_ms()],
-            )
-        });
-        let tag = self.gamertag(xuid);
+        // asking again keeps the first request (and does not notify the officers again)
+        let new = self
+            .with(|db| {
+                db.execute(
+                    "INSERT OR IGNORE INTO club_requests (club, xuid, created) VALUES (?1, ?2, ?3)",
+                    params![club, xuid as i64, unix_ms()],
+                )
+            })
+            .is_some_and(|n| n > 0);
+        if !new {
+            return;
+        }
+        let tag = self.game_tag(xuid);
         for (member, role, _) in self.club_members(club) {
             if role == ROLE_LEADER || role == ROLE_COLEADER {
                 self.notify(member, note::CLUB_MEMBERSHIP_REQUEST, json!({
