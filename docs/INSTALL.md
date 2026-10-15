@@ -64,9 +64,10 @@ In `<Azimuth>/data/bin`:
 | `azimuth-tls.dll` | Replaced by ForzaInfinity's. The original is kept as `azimuth-tls.dll.stock` (only the first time). |
 | `FH2_ExtraOptions.ini` | Created from the template, or, if you have one, only `[Network]` changes: `Mode=Proxy` and `Server=<your server>`. Everything else stays. |
 | `forzainfinity-update.ps1` (Windows) | The updater that `ForzaInfinity-Update.cmd` runs. |
+| `forzainfinity-report.ps1` (Windows) | The report that `ForzaInfinity-Report.cmd` writes. |
 
-Next to `azimuth.exe` it leaves the updater: `ForzaInfinity-Update.cmd` (Windows) or
-`ForzaInfinity-Update.sh` (Linux / Steam Deck). Running the installer again updates the DLL
+Next to `azimuth.exe` it leaves the updater, `ForzaInfinity-Update.cmd` (Windows) or
+`ForzaInfinity-Update.sh` (Linux / Steam Deck), and the report, `ForzaInfinity-Report`. Running the installer again updates the DLL
 and the server address.
 
 ## Updates
@@ -105,6 +106,12 @@ Double click **Uninstall.cmd** (Windows) or run `./uninstall.sh` (Linux / Steam 
 as they are.
 
 ## Troubleshooting
+
+Something wrong? Run **ForzaInfinity-Report** next to `azimuth.exe` (`.cmd` on Windows, `.sh`
+on Linux / Steam Deck). It writes `ForzaInfinity-Report.txt` on your Desktop with the last
+launch (Azimuth and hook versions, the hook's logs of the last launch and the one before, your
+settings, the last requests), without your token or keys, to send to whoever helps you. It
+sends nothing by itself.
 
 | Symptom | Look at |
 |---|---|

@@ -41,7 +41,8 @@ irm https://github.com/anarqz/ForzaInfinity/releases/latest/download/install.ps1
 ```
 
 Then start the game and open **Settings › INFINITY › Create profile**. Full guide:
-[docs/INSTALL.md](docs/INSTALL.md).
+[docs/INSTALL.md](docs/INSTALL.md). Something wrong? Run **ForzaInfinity-Report** next to
+`azimuth.exe` and send the `ForzaInfinity-Report.txt` it writes on your Desktop.
 
 ## Host a server
 

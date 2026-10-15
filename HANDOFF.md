@@ -2,6 +2,17 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-15, fim da noite (hook fh2online.43, v0.1.7 Latest): leia primeiro
+
+- **v0.1.7** (hook .43, SHA `544d09f0…`). A `.43` guarda o log da abertura anterior em `FH2_ExtraOptions.previous.log` (`logging.c`, uma vez por abertura).
+- **ForzaInfinity-Report** (`release/report.sh`, `report.ps1`, `Report.cmd`; os instaladores deixam o script ao lado do `azimuth.exe`): gera `ForzaInfinity-Report.txt` na Área de Trabalho, sem enviar nada. Leva as versões, os dois logs, o INI e o `FH2Online_Accounts.ini` com `Token`/`Key`/`WebKey` removidos, e os últimos 40 pedidos. Para um jogador com problema: peça esse arquivo.
+- **Integridade (`server/src/forza/gates.rs`):**
+  - nas primeiras `ARRIVAL_HOURS` = 3 h da conta, o perfil e a garagem do save offline entram como vierem; os limites do jogo (`MAX_*`) valem sempre;
+  - carros de pacote (DLC) passam até o id 4095, porque o `gamedbRC.slt` só tem os 354 carros base.
+- **Recordes do save sem carro** (`carId -1`, que o jogo mostrava como "DLC Car", D 100): o save chega antes da garagem. O `fill_save_cars` os preenche quando a garagem chega e, no início, para todos.
+- **Placar de XP de clube:** `scoreboardType 8`, `scoreType 4`, `isClubBoard` vêm de `club_xp_rows`, com `clubData` (ClubShortData). O NÍVEL é do jogo: XP ÷ 100.000 + 1.
+- **`game_tag`:** um nome com mais de 15 caracteres é cortado, mas mantém o `#número`.
+
 ## Estado em 2026-10-15, noite (hook fh2online.42, v0.1.6 Latest): leia primeiro
 
 - **v0.1.6** (hook .42, SHA `042bd365…`), instalado nos três aparelhos. O servidor anuncia a versão.
