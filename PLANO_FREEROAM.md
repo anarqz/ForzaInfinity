@@ -181,8 +181,8 @@ Correções em ordem de facilidade:
 | Fase | Entrega | Risco |
 |---|---|---|
 | **F0. Dois jogadores reais** ✅ (15/10/2026) | Stubs no hook (0.9.7 e 0.9.9), patches de stateflow, relay em Rust, `variants`/`qosservers`/MPSD no servidor, endereço do relay ainda no INI. **Teste: PC Linux e Deck no mesmo mundo, na rede local.** Prova o que o fh2-mods não provou. | Médio |
-| **F1. Host e anúncios** | `dedicated_server.exe`, `server.cfg`, `/worlds`, endereço do mundo vindo da sessão MPSD, join automático pela latência, XUIDs liberados. | Baixo |
-| **F2. JOIN WORLD** | Item nas ações do jogador, senha, só amigos, allow e ban. | Baixo a médio |
+| **F1. Hospedar pelo jogo e anúncios** | Botão HOSPEDAR MUNDO (INFINITY) que inicia o `dedicated_server.exe` num Job Object; `server.cfg` criado pelo hook; `/worlds` (anúncio, heartbeat, fim); o servidor manda cada jogador para o mundo certo (o próprio, se hospeda; senão o melhor público com vaga; mesmo IP público → endereço da rede local). | Baixo a médio |
+| **F2. ENTRAR NO MUNDO** | Item nas ações do jogador quando ele está num mundo (hospedando ou não); senha no teclado virtual; só amigos, allow e ban; o relay recusa quem o servidor não liberou. | Baixo a médio |
 | **F3. Conexão direta pela internet** | STUN, punching coordenado pela API, ordem rede local → IPv6 → IPv4, UPnP no host, teste de alcance, diagnóstico no jogo e no exe, guia, logs no Report. | Médio |
 | **F4. Corridas e clima** | RE da entrada em corrida: `ParticipatingInRace`, `Ready`, `GameOptions`, grid, contagem pelo relógio do TimeSync. Clima compartilhado (msgs 53/54, router 10). Mensagens 35/71/72. | Alto |
 | Depois | Road Trip (router 9), Bucket List (router 12). O tráfego de IA fica de fora: era simulado pelo servidor original. | — |
@@ -247,5 +247,7 @@ O roteiro do teste (PC Linux 192.168.68.40 + Deck, servidor local):
 
 1. **Decidido (Alex, 15/10/2026):** os jogadores hospedam os mundos; o servidor ForzaInfinity só anuncia e coordena.
 2. **Decidido (Alex, 15/10/2026):** só conexão direta por hole punching. Nenhum relay nosso, nem como reserva. O investimento vai para o diagnóstico e o guia.
-3. A decidir: host só como exe separado, ou também um "HOSPEDAR MUNDO" no menu INFINITY que abre o mesmo relay. Proposta: começar pelo exe.
-4. A decidir: começar a F0 já ou depois de fechar a V1 assíncrona.
+3. **Decidido (Alex, 15/10/2026):** hospedar é um botão **HOSPEDAR MUNDO** no menu INFINITY (sem iniciar sozinho). O hook roda o `dedicated_server.exe` escondido, como processo filho, dentro de um **Job Object com `KILL_ON_JOB_CLOSE`**: o relay morre junto com o jogo, inclusive num crash ou num kill. O relay continua um código só (o Rust de `dedicated/`), que também roda separado para quem quiser um mundo sempre ligado.
+4. **Decidido (Alex, 15/10/2026):** a configuração do mundo fica num `server.cfg` próprio, na pasta do jogo (`data/bin`), não no `FH2_ExtraOptions.ini`: o parser do INI é estrito (uma seção nova faria hooks antigos recusarem o arquivo inteiro), a senha não pode ir no ForzaInfinity-Report, e o mesmo arquivo serve ao `dedicated_server` separado. O hook cria o `server.cfg` com os padrões comentados no primeiro HOSPEDAR MUNDO e o lê a cada vez que o mundo é iniciado.
+5. **Decidido (Alex, 15/10/2026):** um mundo com senha **não aparece na lista** do FREE ROAM ONLINE; só se entra pelo **ENTRAR NO MUNDO** nas ações do jogador (que aparece quando ele está online num mundo), com a senha pedida no teclado virtual. A senha é conferida pelo servidor ForzaInfinity.
+6. F0 feita antes de fechar a V1 (o Alex seguiu direto para ela).
