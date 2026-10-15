@@ -180,7 +180,7 @@ Correções em ordem de facilidade:
 
 | Fase | Entrega | Risco |
 |---|---|---|
-| **F0. Dois jogadores reais** 🟡 (código pronto, falta o teste no jogo) | Stubs no hook (0.9.7 e 0.9.9), patches de stateflow, relay em Rust, `variants`/`qosservers`/MPSD no servidor, endereço do relay ainda no INI. **Teste: PC Linux e Deck no mesmo mundo, na rede local.** Prova o que o fh2-mods não provou. | Médio |
+| **F0. Dois jogadores reais** ✅ (15/10/2026) | Stubs no hook (0.9.7 e 0.9.9), patches de stateflow, relay em Rust, `variants`/`qosservers`/MPSD no servidor, endereço do relay ainda no INI. **Teste: PC Linux e Deck no mesmo mundo, na rede local.** Prova o que o fh2-mods não provou. | Médio |
 | **F1. Host e anúncios** | `dedicated_server.exe`, `server.cfg`, `/worlds`, endereço do mundo vindo da sessão MPSD, join automático pela latência, XUIDs liberados. | Baixo |
 | **F2. JOIN WORLD** | Item nas ações do jogador, senha, só amigos, allow e ban. | Baixo a médio |
 | **F3. Conexão direta pela internet** | STUN, punching coordenado pela API, ordem rede local → IPv6 → IPv4, UPnP no host, teste de alcance, diagnóstico no jogo e no exe, guia, logs no Report. | Médio |
@@ -205,7 +205,13 @@ Correções em ordem de facilidade:
   - histórico compacto, reenvio do que o console não confirmou, limite de jogadores e `server.cfg`;
   - `build-windows.sh` gera o `.exe`.
 
-**Ainda não visto no jogo.** O roteiro abaixo é o teste da F0 (PC Linux 192.168.68.40 + Deck, servidor local):
+**Provado em 15/10/2026:** PC Linux e Deck (Azimuth 0.9.9) no mesmo mundo, vendo e encontrando um ao outro, inclusive com um carro de pintura em camadas. O que o teste exigiu além do plano:
+
+- **SmartMatch** (`momatch.xboxlive.com`): depois de gravar a sessão de busca, o jogo cria um ticket de matchmaking para o hopper (`FreeRoam_qos`, `CarMeet_qos`, `RoadTrip_qos`). O servidor encontra o ticket na hora e aponta para uma sessão-alvo **própria de cada jogador** (`fh2inf-<hopper>-<xuid>`): numa sessão compartilhada, o segundo console esperava o host (o primeiro) e desistia em ~14 s.
+- **Mensagens do relay:** 35 (reparo), 20 e 21 (vidro, colisão) são repassadas como eventos de carro; o tráfego (16, 17, 71–74) e 24, 33, 36, 70 são lidos e descartados.
+- **Pintura em camadas de outro jogador** (Azimuth 0.9.9, `azimuth_livery.c`): a textura de leitura pela CPU (4096², 13 mips, sem BindFlags) passa a ser criada como recurso de shader, e as duas checagens de "GPU write into a CPU-tiled title texture" deixam a cópia da GPU seguir. A pintura apareceu certa.
+
+O roteiro do teste (PC Linux 192.168.68.40 + Deck, servidor local):
 
 1. No PC Linux: `cd dedicated && cargo build --release && ./target/release/dedicated_server` (UDP 5101 aberta na rede local).
 2. No PC Linux, o servidor local com o mundo: `cd server && ./run.sh --freeroam-world 192.168.68.40:5101`.

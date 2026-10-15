@@ -88,7 +88,7 @@ Só depois da V1. Levantamento de 2026-10-14 (ONLINE ROAD TRIP mostra "UNABLE TO
 - **Plano:** `PLANO_FREEROAM.md`.
   - **Decidido (Alex, 15/10/2026):** os jogadores hospedam os mundos (`dedicated_server.exe` + `server.cfg`). O servidor ForzaInfinity só anuncia os mundos, preenche a sessão MPSD e troca os endereços.
   - **Decidido (Alex, 15/10/2026):** só conexão direta (hole punching com STUN público). Nenhum relay nosso, nem como reserva. Diagnóstico de NAT no jogo e no host, mais um guia.
-  - 🟡 **F0:** dois jogadores reais no mesmo mundo, na rede local. Código pronto na branch `freeroam` (hook `azimuth_freeroam.c`, `server/src/freeroam.rs`, `dedicated/`); falta o teste no jogo (roteiro em `PLANO_FREEROAM.md`).
+  - ✅ **F0 (15/10/2026):** PC e Deck (Azimuth 0.9.9) no mesmo mundo, na rede local, dirigindo juntos, inclusive com pintura em camadas. Branch `freeroam` (hook `azimuth_freeroam.c` e `azimuth_livery.c`, `server/src/freeroam.rs` com SmartMatch, `dedicated/`).
   - ⬜ **F1:** host, `server.cfg`, anúncios e join automático pela menor latência no FREE ROAM ONLINE.
   - ⬜ **F2:** JOIN WORLD nas ações do jogador, senha, só amigos.
   - ⬜ **F3:** conexão direta pela internet (STUN, punching, UPnP), diagnóstico e guia.
