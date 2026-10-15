@@ -32,7 +32,12 @@ STAGE="$DIST/ForzaInfinity"
 rm -rf "$DIST"
 mkdir -p "$STAGE"
 
-# the hook: the same build as hook/BUILD.md
+# the hook: the same build as hook/BUILD.md, with the INI template it writes for a player who has
+# none taken from release/FH2_ExtraOptions.template.ini
+python3 "$ROOT/tools/embed_ini_template.py" >/dev/null
+if ! git -C "$ROOT/hook" diff --quiet -- adapters/azimuth_ini_template.h; then
+    echo "warning: hook/adapters/azimuth_ini_template.h changed with the template: commit it in the hook" >&2
+fi
 if [ -z "$DLL" ]; then
     (cd "$ROOT/hook" && python3 build.py "$ZIG" --azimuth --build-dir build --output build/azimuth-tls.dll >/dev/null)
     DLL="$ROOT/hook/build/azimuth-tls.dll"
@@ -41,7 +46,7 @@ cp "$DLL" "$STAGE/azimuth-tls.dll"
 VERSION="$(grep -o 'MOD_VERSION "[^"]*"' "$ROOT/hook/extra_options.h" | cut -d'"' -f2)"
 
 for f in Install.cmd Uninstall.cmd Update.cmd Report.cmd install.ps1 uninstall.ps1 update.ps1 report.ps1 install.sh uninstall.sh update.sh report.sh \
-    FH2_ExtraOptions.ini; do
+    FH2_ExtraOptions.template.ini; do
     cp "$ROOT/release/$f" "$STAGE/$f"
 done
 chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/update.sh" "$STAGE/report.sh"

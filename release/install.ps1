@@ -81,33 +81,70 @@ $stock = Join-Path $bin 'azimuth-tls.dll.stock'
 if ((Test-Path $target) -and (-not (Test-Path $stock) -or (Get-Item $target).Length -lt 65536)) { Copy-Item $target $stock -Force }
 Copy-Item $dll $target -Force
 
-# 4. the settings: [Network] Mode=Proxy and Server=..., keeping everything else
+# 4. the settings. FH2_ExtraOptions.ini is the player's: what is in it stays as it is, and only the
+# options of our template it lacks are added (with their comments), at the end of their section.
+# [Network] is ForzaInfinity's: Mode=Proxy and Server=<the server chosen above>. Before the first
+# change, the file as it was is kept as FH2_ExtraOptions.ini.pre-infinity.
 $ini = Join-Path $bin 'FH2_ExtraOptions.ini'
+$templateFile = Join-Path $here 'FH2_ExtraOptions.template.ini'
+$template = if (Test-Path $templateFile) { [IO.File]::ReadAllText($templateFile) } else {
+    # GitHub serves release files as application/octet-stream: Content is then bytes
+    $content = (Invoke-WebRequest -UseBasicParsing -Uri "$Release/FH2_ExtraOptions.template.ini").Content
+    if ($content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($content) } else { $content }
+}
+$template = $template.Replace('__SERVER__', $Server)
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+function Strip([string]$t) { ($t -replace '[;#].*$', '').Trim() }
+function Section([string]$t) { $n = $t.Substring(1, [Math]::Max(0, $t.IndexOf(']') - 1)).Trim().ToLowerInvariant(); if ($n -eq 'general') { 'global' } else { $n } }
+function Key([string]$t) { $t.Substring(0, $t.IndexOf('=')).Trim().ToLowerInvariant() }
 if (Test-Path $ini) {
-    $lines = [System.Collections.Generic.List[string]]([IO.File]::ReadAllLines($ini))
-    $start = $lines.FindIndex({ param($l) $l.Trim() -eq '[Network]' })
-    if ($start -lt 0) {
-        $lines.Add(''); $lines.Add('[Network]'); $lines.Add('Mode=Proxy'); $lines.Add("Server=$Server")
-    } else {
-        $end = $start + 1
-        while ($end -lt $lines.Count -and -not $lines[$end].Trim().StartsWith('[')) { $end++ }
-        $mode = $false; $srv = $false
-        for ($i = $start + 1; $i -lt $end; $i++) {
-            if ($lines[$i] -match '^\s*Mode\s*=') { $lines[$i] = 'Mode=Proxy'; $mode = $true }
-            elseif ($lines[$i] -match '^\s*Server\s*=') { $lines[$i] = "Server=$Server"; $srv = $true }
+    # the template: its sections in order, and each option with the comments right above it
+    $order = New-Object System.Collections.Generic.List[string]; $headers = @{}; $keys = @{}; $blocks = @{}
+    $s = ''; $notes = New-Object System.Collections.Generic.List[string]
+    foreach ($raw in ($template -split "`r?`n")) {
+        $line = Strip $raw
+        if (-not $line) { if ($raw -match '^\s*[;#]') { $notes.Add($raw) } else { $notes.Clear() }; continue }
+        if ($line.StartsWith('[')) { $s = Section $line; $order.Add($s); $headers[$s] = $line; $keys[$s] = New-Object System.Collections.Generic.List[string]; $notes.Clear(); continue }
+        $k = Key $line; $keys[$s].Add($k); $blocks["$s|$k"] = @($notes) + $raw; $notes.Clear()
+    }
+    # the player's INI: what it has, and where each of its sections ends
+    $original = [IO.File]::ReadAllBytes($ini)
+    $lines = [IO.File]::ReadAllText($ini).TrimEnd("`r", "`n") -split "`r?`n"
+    $seen = @{}; $last = @{}; $has = @{}; $s = ''
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = Strip $lines[$i]
+        if ($line.StartsWith('[')) { $s = Section $line; $seen[$s] = $true; $last[$s] = $i; continue }
+        if (-not $line -or -not $s) { continue }
+        if ($line.Contains('=')) {
+            $k = Key $line; $has["$s|$k"] = $true
+            if ($s -eq 'network' -and $k -eq 'mode') { $lines[$i] = 'Mode=Proxy' }
+            if ($s -eq 'network' -and $k -eq 'server') { $lines[$i] = "Server=$Server" }
         }
-        if (-not $srv) { $lines.Insert($end, "Server=$Server") }
-        if (-not $mode) { $lines.Insert($start + 1, 'Mode=Proxy') }
+        $last[$s] = $i
     }
-    [IO.File]::WriteAllText($ini, (($lines -join "`r`n") + "`r`n"), (New-Object System.Text.ASCIIEncoding))
+    # an option with its comments; blank line before: 1 always, 0 when it has comments, -1 never
+    $out = New-Object System.Collections.Generic.List[string]
+    function Put($block, [int]$blank) { if ($blank -gt 0 -or ($blank -eq 0 -and $block.Count -gt 1)) { $out.Add('') }; foreach ($b in $block) { $out.Add($b) } }
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $out.Add($lines[$i])
+        foreach ($s in $order) {
+            if (-not $seen[$s] -or $last[$s] -ne $i) { continue }
+            $first = 1
+            foreach ($k in $keys[$s]) { if (-not $has["$s|$k"]) { Put $blocks["$s|$k"] $first; $first = 0 } }
+        }
+    }
+    foreach ($s in $order) {
+        if ($seen[$s]) { continue }
+        $out.Add(''); $out.Add($headers[$s]); $m = 0
+        foreach ($k in $keys[$s]) { Put $blocks["$s|$k"] $(if ($m++ -eq 0) { -1 } else { 0 }) }
+    }
+    $merged = $utf8.GetBytes(($out -join "`r`n") + "`r`n")
+    if ([Convert]::ToBase64String($merged) -ne [Convert]::ToBase64String($original)) {
+        if (-not (Test-Path "$ini.pre-infinity")) { [IO.File]::WriteAllBytes("$ini.pre-infinity", $original) }
+        [IO.File]::WriteAllBytes($ini, $merged)
+    }
 } else {
-    $template = Join-Path $here 'FH2_ExtraOptions.ini'
-    $text = if (Test-Path $template) { [IO.File]::ReadAllText($template) } else {
-        # GitHub serves release files as application/octet-stream: Content is then bytes
-        $content = (Invoke-WebRequest -UseBasicParsing -Uri "$Release/FH2_ExtraOptions.ini").Content
-        if ($content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($content) } else { $content }
-    }
-    [IO.File]::WriteAllText($ini, $text.Replace('__SERVER__', $Server), (New-Object System.Text.ASCIIEncoding))
+    [IO.File]::WriteAllText($ini, $template, $utf8)
 }
 
 # 5. the updater, left in the Azimuth folder: ForzaInfinity-Update.cmd installs the latest release
