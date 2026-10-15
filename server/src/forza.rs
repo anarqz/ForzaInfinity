@@ -755,7 +755,53 @@ const VIEW_FRIENDS_AND_CLUB: i64 = 4;
 /// the caller's club as well. Boards without a track (speed traps and zones: scoreboardType 9,
 /// skills: 4) name their event in pivotId, which is the gameScoreboardId the scores were
 /// submitted with; track boards are the whole route. Also Scoreboard.GetRows (VIEW SCOREBOARD).
+/// The car club XP board (CLUB LEADERBOARD: scoreboardType 8, scoreType 4, isClubBoard). XP is
+/// not a submitted score (SubmitXpScore keeps it apart), so the board comes from it: the club
+/// view (3) is the caller's club, its members by the XP they earned in it (as the ladder);
+/// every other view is all clubs by club XP, each shown by its leader (with the club's tag).
+fn club_xp_rows(ctx: &Ctx, params: &Value) -> Value {
+    use crate::db::clubs::ROLE_LEADER;
+    let mine = ctx.store.membership(ctx.xuid).map(|m| m.0);
+    // (xuid shown, score, the caller's own row)
+    let ranked: Vec<(u64, f64, bool)> = if params["view"].as_i64() == Some(VIEW_CLUB) {
+        mine.map(|c| ctx.store.club_ladder(c).into_iter().map(|(x, xp)| (x, xp, x == ctx.xuid)).collect()).unwrap_or_default()
+    } else {
+        let mut clubs: Vec<(u64, f64, bool)> = ctx
+            .store
+            .clubs()
+            .iter()
+            .filter(|c| c.privacy != crate::db::clubs::PRIVACY_PRIVATE || Some(c.id) == mine)
+            .filter_map(|c| {
+                let leader = ctx.store.club_members(c.id).into_iter().find(|m| m.1 == ROLE_LEADER).map(|m| m.0)?;
+                Some((leader, ctx.store.club_xp(c.id) as f64, Some(c.id) == mine))
+            })
+            .collect();
+        clubs.sort_by(|a, b| b.1.total_cmp(&a.1));
+        clubs
+    };
+    let start = params["startAt"].as_i64().unwrap_or(1).max(1) as usize;
+    let max = params["maxResults"].as_i64().unwrap_or(50).clamp(0, 500) as usize;
+    let row = |position: usize, xuid: u64, score: f64| {
+        json!({
+            "position": position, "rank": position, "user": user_data(ctx, xuid), "score": score,
+            "submittedTime": iso_utc(crate::unix_ms()), "isClean": true,
+        })
+    };
+    let page: Vec<Value> = ranked.iter().enumerate().skip(start - 1).take(max).map(|(i, r)| row(i + 1, r.0, r.1)).collect();
+    let user_row = ranked
+        .iter()
+        .position(|r| r.2)
+        .map(|i| row(i + 1, ranked[i].0, ranked[i].1))
+        .unwrap_or_else(|| json!({ "user": user_data(ctx, ctx.xuid) }));
+    json!({ "rows": page, "userRow": user_row, "available": ranked.len() })
+}
+
 fn score_rows(ctx: &Ctx, params: &Value) -> Value {
+    if params["scoreboardType"].as_i64() == Some(8) && params["scoreType"].as_i64() == Some(4)
+        && params["isClubBoard"].as_bool() == Some(true)
+    {
+        return club_xp_rows(ctx, params);
+    }
     let track = params["trackId"].as_i64().filter(|t| *t >= 0);
     let event = if track.is_none() { params["pivotId"].as_i64() } else { None };
     let rows = ctx.store.leaderboard(
@@ -1250,6 +1296,41 @@ mod tests {
         store.add_friend(d, b);
         store.delete_club_request(friends, d);
         assert_eq!(join(d, friends)["requestApproved"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The club XP board: all clubs by club XP (each by its leader), or the caller's club's
+    /// members by XP in the club view.
+    #[test]
+    fn club_xp_board() {
+        use crate::db::clubs::{ClubFields, PRIVACY_OPEN};
+        let dir = std::env::temp_dir().join(format!("fh2-clubxp-{}", crate::db::accounts::new_token()));
+        let store = Store::open(&dir.join("t.sqlite")).unwrap();
+        let catalog = Catalog::default();
+        let pc = |n: u8| format!("{n:02x}").repeat(32);
+        let [a, b, c] = [1u8, 2, 3].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n)).unwrap().0.xuid);
+        let fields = |tag: &str| ClubFields {
+            tag: tag.into(), name: format!("Club {tag}"), description: String::new(), privacy: PRIVACY_OPEN, region: 0, attitude: 0, interest: 0,
+        };
+        let one = store.create_club(a, &fields("ONE")).unwrap();
+        store.create_club(c, &fields("TWO")).unwrap();
+        store.add_member(one, b, crate::db::clubs::ROLE_MEMBER);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.add_xp(a, 100.0);
+        store.add_xp(b, 300.0);
+        store.add_xp(c, 50.0);
+        let ctx = Ctx { store: &store, catalog: &catalog, xuid: b, events: RefCell::new(Vec::new()) };
+        let board = |view: i64| handle(&ctx, "Scoreboard", "GetRows", &json!({
+            "scoreboardType": 8, "scoreType": 4, "view": view, "trackId": -1, "pivotId": 0, "isClubBoard": true, "startAt": 1, "maxResults": 50,
+        })).unwrap();
+        let global = board(0);
+        assert_eq!(global["available"], 2);
+        assert_eq!(global["rows"][0]["user"]["qwXuid"], a);
+        assert_eq!(global["rows"][0]["score"], 400.0);
+        assert_eq!(global["userRow"]["position"], 1);
+        let club = board(3);
+        assert_eq!(club["rows"][0]["user"]["qwXuid"], b);
+        assert_eq!(club["userRow"]["score"], 300.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
