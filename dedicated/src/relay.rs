@@ -8,16 +8,15 @@
 //!
 //! Objects: the server owns one object itself, the lobby's SessionHost (router 6, type 0), which
 //! consoles wait for before they finish joining (stateflow network_matchmaking.xml
-//! wait_for_session_host). Every object a console creates, updates or deletes is forwarded to the
-//! other consoles with the relay handle (its owner's peer index), and kept in a history that
-//! late joiners get as a snapshot. Cars (CarPredictionFull, ~30 a second, unsequenced) are
-//! forwarded the same way and not kept.
+//! wait_for_session_host). Every object a console creates, updates or deletes on a forwarded
+//! router is forwarded to the other consoles with the relay handle (its owner's peer index), and
+//! kept in a history that late joiners get as a snapshot. Cars (CarPredictionFull, ~30 a second,
+//! unsequenced) are forwarded the same way and not kept.
 //!
 //! History (fix: relay.py kept every message forever and replayed all of them). The receiver
 //! applies object updates strictly in seq order (1417B1E70: link+1 mod 255; newer ones wait for
 //! the gap, older ones are dropped), and a Create sets the link to its own seq. Payloads are
-//! (var index, data) lists read to the end (1417B2510), and var data widths are per type and
-//! not known here, so updates cannot be merged per var. They can be concatenated, though: a
+//! (var index, data) lists read to the end (1417B2510), so updates can be concatenated: a
 //! later entry for a var overwrites the earlier one. So each object keeps:
 //!   - `base`: the Create's payload with the oldest updates appended, under the seq of the last
 //!     one appended; a late joiner gets it as one Create with that seq, so the owner's next live
@@ -27,8 +26,7 @@
 //!   - `pending`: updates that came ahead of a gap, until the owner's resend fills it.
 //!
 //! When the tail is full its oldest update is folded into base if it fits, else dropped: a late
-//! joiner then misses that update's vars until they change again (logged once per object). Every
-//! update so far is small, so this should not happen in practice.
+//! joiner then misses that update's vars until they change again (logged once per object).
 //!
 //! Duplicates (fix: relay.py's dedup set grew forever): consoles resend unacked messages, and
 //! a message is new only if its seq is newer than the object's (or, ahead of a gap, not pending
@@ -37,24 +35,62 @@
 //! Reliability (fix): consoles drop out-of-order updates and wait on gaps, so a lost packet of
 //! object messages would stall that object for good. Our sequenced packets are kept until the
 //! console acks them (the ack and ack bits of its packet headers) and resent in a new packet
-//! otherwise.
+//! otherwise; a console that never acks is dropped.
 //!
-//! Peers: by address, plus the XUID from OpenConnection: an OpenConnection from a new address
-//! with the XUID of a connected peer replaces that peer (NAT rebinding, a rejoin). A console that
-//! starts over (an OpenConnection in packet 0), goes quiet for 15 s or closes the connection is
-//! dropped, and the others get an ObjectDelete for each of its objects. Only an OpenConnection
-//! makes a peer: other packets from unknown addresses are ignored. Peer indices are 1..=254,
-//! handed out round-robin so a freed index is reused as late as possible (receivers remember
-//! deletes per handle, 1417AB560, and drop a Create with an older seq for it).
+//! Peers: by address, plus the XUID from OpenConnection. A console that starts over (an
+//! OpenConnection in packet 0), goes quiet for 15 s or closes the connection is dropped, and the
+//! others get an ObjectDelete for each of its objects. Only an OpenConnection makes a peer: other
+//! packets from unknown addresses are ignored. Peer indices are 1..=254, handed out round-robin
+//! so a freed index is reused as late as possible (receivers remember deletes per handle,
+//! 1417AB560, and drop a Create with an older seq for it).
+//!
+//! The group's GPS (SetGroupSatNavEvent, 52): a console asks the server to set the group's
+//! destination, and consoles do not act on the message themselves (their ILobbyEvents slot for it
+//! is `return false`), so it is not relayed: the server sets its SessionHost's GroupSatNavNode
+//! var instead, with an ObjectUpdate to every console, and a late joiner gets it in the
+//! SessionHost's Create.
 //!
 //! Game messages carry no length, so a packet is read only as far as its messages are known; the
 //! rest is dropped (the packet is still acked) and each unknown message id is logged once.
+//!
+//! Security. Everything a peer sends ends up in the other players' games, whose deserializers
+//! trust their input (MsgCollObjDetachPart's reader copies up to 2047 bytes into a 1024-byte
+//! stack buffer; NetworkName's reader keeps a count it did not read). So:
+//!   - Forwarded: only cars (15), car events (20, 21, 35) and ObjectCreate / Update / Delete on
+//!     routers 1, 2 and 3 (nerd::forwarded_router), each written again from what was read:
+//!     payloads var by var (nerd::sanitize_payload: indices, duplicates, widths, finite floats in
+//!     range, NetworkName length, ConsoleSynced's server vars stripped, a size cap per router),
+//!     car positions and event floats checked (nerd::car_ok, car_event_ok). Everything else is
+//!     read only to get past it.
+//!   - Handshake: our OpenConnectionResponse carries a random attempt per peer, which the
+//!     console's ResponseAck must echo before it counts as connected (a spoofed source address
+//!     never sees it). Until then the peer gets only handshake replies, never more bytes than
+//!     it sent, is not a player (max_players), and is dropped after `unsynced_timeout`.
+//!     Handshake replies are capped per IP per second, peers per IP, and peers waiting.
+//!   - XUIDs: a peer cannot change its XUID; a newcomer with the XUID of a connected player
+//!     replaces it only once it has proven its address and the old one has been quiet for
+//!     `takeover_quiet` (otherwise it is turned away).
+//!   - Limits per peer: token buckets on packets, messages and bytes (sustained excess drops the
+//!     peer), its history (`history_max_bits`), what waits to be sent to it (snapshot cap, paced).
+//!   - Access: commands on stdin (main.rs; never the network): `kick <xuid> [reason]` drops the
+//!     player and refuses its XUID (or, for Azimuth's shared XUID, its IP) for `kick_ban`;
+//!     `allow <ip>` and `allowonly 1|0` restrict who may connect (loopback always may).
+//!   - A packet that panics the handling is dropped and logged once per address; log lines are
+//!     stripped of control characters, and refusals are logged at most once per IP per minute.
 
 use std::{
-    collections::VecDeque,
+    collections::{
+        VecDeque,
+        hash_map::RandomState,
+    },
+    hash::{BuildHasher, Hasher},
     io,
-    net::{SocketAddr, UdpSocket},
-    sync::atomic::{AtomicBool, Ordering},
+    net::{IpAddr, SocketAddr, UdpSocket},
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{Receiver, Sender, TryRecvError},
+    },
     time::{Duration, Instant},
 };
 
@@ -64,7 +100,8 @@ use crate::{
     net,
 };
 
-/// The attempt value the server gives in OpenConnectionResponse and ConnectionSyncDone.
+/// The attempt value the server gave before attempts were random (kept for reference: a
+/// ResponseAck echoing it is refused unless it happens to be the peer's own).
 pub const OWN_ATTEMPT: u32 = 1;
 /// The XUID Azimuth gives every player without a ForzaInfinity account (0x0009000000000000).
 pub const AZIMUTH_XUID: u64 = 0x0009_0000_0000_0000;
@@ -85,6 +122,21 @@ const IN_FLIGHT_MAX: usize = 256;
 const RESEND_TRIES_MAX: u8 = 20;
 /// The mirror's delayed cars.
 const MIRROR_QUEUE_MAX: usize = 8192;
+/// Bounded tables: bans, allowed IPs, handshake counters, log throttles, panic logs.
+const BANS_MAX: usize = 256;
+const ALLOW_MAX: usize = 64;
+const IP_TABLE_MAX: usize = 1024;
+const PANIC_LOGGED_MAX: usize = 64;
+/// An `allow` lasts this long unless it is given again.
+const ALLOW_TTL: Duration = Duration::from_secs(600);
+/// A refusal is logged once per IP in this long.
+const REFUSAL_LOG_EVERY: Duration = Duration::from_secs(60);
+/// The longest stdin command line (main.rs cuts there) and log line.
+pub const COMMAND_LINE_MAX: usize = 256;
+const LOG_LINE_MAX: usize = 512;
+/// How often what waits in a peer's queue goes out, and how much each time.
+const PACE_EVERY: Duration = Duration::from_millis(20);
+const PACE_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -102,6 +154,31 @@ pub struct Settings {
     pub verbose: bool,
     /// Nothing on the console (tests).
     pub quiet: bool,
+    /// A peer that has not finished the handshake is dropped after this long.
+    pub unsynced_timeout: Duration,
+    /// Peers (connected or not) from one IP.
+    pub max_peers_per_ip: usize,
+    /// Peers in the handshake at once.
+    pub max_unsynced: usize,
+    /// Handshake replies (OpenConnectionResponse, refusals) per IP per second.
+    pub handshake_per_sec: u32,
+    /// A newcomer takes over a connected XUID only if the old peer has been quiet this long.
+    pub takeover_quiet: Duration,
+    /// Per peer, per second: packets, messages and bytes (bursts up to twice that). A console
+    /// sends ~30 car packets a second plus a few others, ~100 bytes each.
+    pub rate_packets: u32,
+    pub rate_msgs: u32,
+    pub rate_bytes: u32,
+    /// Seconds in a row with packets over the rate before the peer is dropped.
+    pub abuse_secs: u32,
+    /// What a peer's objects may hold in the history, in bits.
+    pub history_max_bits: usize,
+    /// What may wait to be sent to one peer (the snapshot for a late joiner, and what comes
+    /// while it goes out), in bits.
+    pub queue_max_bits: usize,
+    /// How long `kick` refuses the player, and how long a peer dropped for abuse is refused.
+    pub kick_ban: Duration,
+    pub abuse_ban: Duration,
 }
 
 impl Default for Settings {
@@ -114,6 +191,19 @@ impl Default for Settings {
             mirror: None,
             verbose: false,
             quiet: false,
+            unsynced_timeout: Duration::from_secs(3),
+            max_peers_per_ip: 2,
+            max_unsynced: 32,
+            handshake_per_sec: 4,
+            takeover_quiet: Duration::from_secs(3),
+            rate_packets: 300,
+            rate_msgs: 1000,
+            rate_bytes: 256 * 1024,
+            abuse_secs: 5,
+            history_max_bits: 2 * 1024 * 1024,
+            queue_max_bits: 8 * 1024 * 1024,
+            kick_ban: Duration::from_secs(600),
+            abuse_ban: Duration::from_secs(60),
         }
     }
 }
@@ -236,6 +326,7 @@ impl Obj {
     }
 }
 
+
 // ---------------------------------------------------------------------------------------------
 // Peers
 
@@ -246,10 +337,45 @@ struct InFlight {
     tries: u8,
 }
 
+/// Token buckets: packets, messages and bytes a second, bursts up to two seconds' worth.
+#[derive(Debug, Clone)]
+struct Bucket {
+    packets: f64,
+    msgs: f64,
+    bytes: f64,
+    last: Instant,
+}
+
+impl Bucket {
+    fn new(s: &Settings, now: Instant) -> Bucket {
+        Bucket { packets: 2.0 * s.rate_packets as f64, msgs: 2.0 * s.rate_msgs as f64, bytes: 2.0 * s.rate_bytes as f64, last: now }
+    }
+
+    /// Takes one packet of `msgs` messages and `bytes` bytes; false (nothing taken) when over.
+    fn take(&mut self, s: &Settings, now: Instant, msgs: u32, bytes: usize) -> bool {
+        let dt = now.saturating_duration_since(self.last).as_secs_f64();
+        self.last = now;
+        let fill = |v: f64, rate: u32| (v + rate as f64 * dt).min(2.0 * rate as f64);
+        self.packets = fill(self.packets, s.rate_packets);
+        self.msgs = fill(self.msgs, s.rate_msgs);
+        self.bytes = fill(self.bytes, s.rate_bytes);
+        let (m, b) = (msgs as f64, bytes as f64);
+        if self.packets < 1.0 || self.msgs < m || self.bytes < b {
+            return false;
+        }
+        self.packets -= 1.0;
+        self.msgs -= m;
+        self.bytes -= b;
+        true
+    }
+}
+
 struct Peer {
     addr: SocketAddr,
     index: u8,
     xuid: u64,
+    /// Our attempt in its OpenConnectionResponse: random, echoed by its ResponseAck.
+    own_attempt: u32,
     acks: nerd::Acks,
     /// Our next sequenced packet id: 1, 2, ... skipping 0xFFFE (the "no ack" value) and 0xFFFF
     /// (unsequenced).
@@ -258,6 +384,9 @@ struct Peer {
     in_flight_overflow: bool,
     synced: bool,
     sync_index: u16,
+    /// Until synced: bytes from it and to it (we never send more than we got).
+    rx_bytes: usize,
+    tx_bytes: usize,
     /// Its ConsoleSynced object (router 3), and the seq of our last server update to it.
     console_id: Option<u32>,
     console_seq: Option<u8>,
@@ -274,6 +403,15 @@ struct Peer {
     /// Round trip from our pings, ms.
     rtt_ms: Option<u32>,
     cars: u64,
+    bucket: Option<Bucket>,
+    /// Packets over the rate: since when, in a row, and the last one.
+    over_since: Option<Instant>,
+    over_last: Option<Instant>,
+    /// Sequenced messages waiting to go out paced (the snapshot, and what came after it).
+    queue: VecDeque<Bits>,
+    queue_bits: usize,
+    /// It is to be dropped, and why (set where dropping at once would move other peers).
+    doom: Option<String>,
 }
 
 impl Peer {
@@ -282,12 +420,15 @@ impl Peer {
             addr,
             index,
             xuid,
+            own_attempt: random_attempt(addr),
             acks: nerd::Acks::default(),
             next_pid: 1,
             in_flight: VecDeque::new(),
             in_flight_overflow: false,
             synced: false,
             sync_index: 0,
+            rx_bytes: 0,
+            tx_bytes: 0,
             console_id: None,
             console_seq: None,
             finalise_asked: false,
@@ -299,6 +440,12 @@ impl Peer {
             joined: now,
             rtt_ms: None,
             cars: 0,
+            bucket: None,
+            over_since: None,
+            over_last: None,
+            queue: VecDeque::new(),
+            queue_bits: 0,
+            doom: None,
         }
     }
 
@@ -314,6 +461,60 @@ impl Peer {
     fn object(&mut self, key: (u8, u32)) -> Option<&mut Obj> {
         self.objects.iter_mut().find(|(k, _)| *k == key).map(|(_, o)| o)
     }
+
+    /// What its history holds, in bits.
+    fn history_bits(&self) -> usize {
+        let objs: usize = self
+            .objects
+            .iter()
+            .map(|(_, o)| o.base.len() + o.tail_bits + o.pending.iter().map(|(_, p)| p.len()).sum::<usize>())
+            .sum();
+        objs + self.orphans.iter().map(|o| o.payload.len()).sum::<usize>()
+    }
+
+    fn ip(&self) -> IpAddr {
+        norm_ip(self.addr.ip())
+    }
+}
+
+/// An IPv4-mapped IPv6 address as the IPv4 one (the dual-stack socket gives those).
+pub fn norm_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    }
+}
+
+/// A random, nonzero attempt (std only: RandomState's per-process random keys, a counter, the
+/// time and the address).
+fn random_attempt(addr: SocketAddr) -> u32 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut h = RandomState::new().build_hasher();
+    h.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+    if let Ok(t) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        h.write_u128(t.as_nanos());
+    }
+    h.write(addr.to_string().as_bytes());
+    let v = h.finish();
+    match (v ^ (v >> 32)) as u32 {
+        0 | OWN_ATTEMPT => 0x5EED_0001,
+        n => n,
+    }
+}
+
+/// A line for the console: control characters out, length bounded.
+pub fn sanitize_line(s: &str) -> String {
+    s.chars().take(LOG_LINE_MAX).map(|c| if c.is_control() { '?' } else { c }).collect()
+}
+
+fn shared_xuid(xuid: u64) -> bool {
+    xuid == 0 || xuid == AZIMUTH_XUID
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BanKey {
+    Xuid(u64),
+    Ip(IpAddr),
 }
 
 /// What happened to the peer list (tests and the console).
@@ -334,8 +535,24 @@ pub struct Relay {
     other_logged: Vec<String>,
     last_keepalive: Instant,
     last_resend_scan: Instant,
+    last_pace: Instant,
     /// (due, peer address, message): the mirror's delayed cars.
     mirror_queue: VecDeque<(Instant, SocketAddr, Bits)>,
+    /// Our SessionHost: the seq of its last update (its Create is seq 0) and its
+    /// GroupSatNavNode var (0: no group destination).
+    host_seq: u8,
+    group_sat_nav: i32,
+    /// Stdin commands (main.rs).
+    commands: Option<Receiver<String>>,
+    bans: Vec<(BanKey, Instant)>,
+    allow: Vec<(IpAddr, Instant)>,
+    allow_only: bool,
+    /// Per IP: the start of its current second and the handshake replies in it.
+    handshakes: Vec<(IpAddr, Instant, u32)>,
+    refusals_logged: Vec<(IpAddr, Instant)>,
+    panics_logged: Vec<SocketAddr>,
+    /// The largest payload seen per router (verbose log when it grows).
+    payload_seen: [usize; 16],
 }
 
 impl Relay {
@@ -351,8 +568,24 @@ impl Relay {
             other_logged: Vec::new(),
             last_keepalive: now,
             last_resend_scan: now,
+            last_pace: now,
             mirror_queue: VecDeque::new(),
+            host_seq: 0,
+            group_sat_nav: 0,
+            commands: None,
+            bans: Vec::new(),
+            allow: Vec::new(),
+            allow_only: false,
+            handshakes: Vec::new(),
+            refusals_logged: Vec::new(),
+            panics_logged: Vec::new(),
+            payload_seen: [0; 16],
         }
+    }
+
+    /// Where commands come from (stdin lines, main.rs).
+    pub fn set_commands(&mut self, rx: Receiver<String>) {
+        self.commands = Some(rx);
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -366,7 +599,7 @@ impl Relay {
     fn log(&self, line: &str) {
         if !self.settings.quiet {
             let s = self.t0.elapsed().as_secs();
-            println!("[{:02}:{:02}:{:02}] {line}", s / 3600, s / 60 % 60, s % 60);
+            println!("[{:02}:{:02}:{:02}] {}", s / 3600, s / 60 % 60, s % 60, sanitize_line(line));
         }
     }
 
@@ -384,13 +617,27 @@ impl Relay {
         }
     }
 
+    /// A refusal: logged at most once per IP per REFUSAL_LOG_EVERY.
+    fn log_refusal(&mut self, ip: IpAddr, line: &str) {
+        let now = Instant::now();
+        self.refusals_logged.retain(|(_, t)| now.duration_since(*t) < REFUSAL_LOG_EVERY);
+        if self.refusals_logged.iter().any(|(i, _)| *i == ip) {
+            return;
+        }
+        if self.refusals_logged.len() >= IP_TABLE_MAX {
+            self.refusals_logged.remove(0);
+        }
+        self.refusals_logged.push((ip, now));
+        self.log(line);
+    }
+
     /// Our clock for Ping/Pong/TimeSync, ms since start (never 0).
     fn now_ms(&self) -> u32 {
         (self.t0.elapsed().as_millis() as u32).wrapping_add(1)
     }
 
     /// Runs until `stop` is set: packets in, and the timers (keepalive, resends, quiet peers,
-    /// the mirror) between them.
+    /// the mirror, paced queues, commands) between them.
     pub fn run(&mut self, stop: &AtomicBool) -> io::Result<()> {
         self.sock.set_read_timeout(Some(Duration::from_millis(10)))?;
         let mut buf = vec![0u8; 65536];
@@ -405,9 +652,139 @@ impl Relay {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
+            self.poll_commands();
             self.tick(Instant::now());
         }
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Commands (stdin)
+
+    fn poll_commands(&mut self) {
+        let Some(rx) = &self.commands else { return };
+        let mut lines = Vec::new();
+        for _ in 0..64 {
+            match rx.try_recv() {
+                Ok(l) => lines.push(l),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.commands = None;
+                    break;
+                }
+            }
+        }
+        for l in lines {
+            self.command(&l);
+        }
+    }
+
+    /// One command line: `kick <xuid> [reason]`, `allow <ip>`, `allowonly 1|0`. Anything else
+    /// is ignored.
+    pub fn command(&mut self, line: &str) {
+        let line: String = line.chars().take(COMMAND_LINE_MAX).collect();
+        let mut words = line.split_whitespace();
+        match words.next() {
+            Some("kick") => {
+                let Some(xuid) = words.next().and_then(parse_xuid) else {
+                    self.log("comando kick: XUID inválido");
+                    return;
+                };
+                let reason: String = words.collect::<Vec<_>>().join(" ").chars().take(64).collect();
+                let reason = if reason.is_empty() { "pelo anfitrião".to_string() } else { reason };
+                self.kick(xuid, &reason);
+            }
+            Some("allow") => {
+                let Some(ip) = words.next().and_then(|w| w.parse::<IpAddr>().ok()) else {
+                    self.log("comando allow: IP inválido");
+                    return;
+                };
+                self.allow_ip(norm_ip(ip), Instant::now());
+            }
+            Some("allowonly") => match words.next() {
+                Some("1" | "on" | "true") => {
+                    self.allow_only = true;
+                    self.log("só IPs liberados podem entrar");
+                }
+                Some("0" | "off" | "false") => {
+                    self.allow_only = false;
+                    self.log("qualquer IP pode entrar");
+                }
+                _ => self.log("comando allowonly: use 1 ou 0"),
+            },
+            _ => self.debug("comando desconhecido ignorado"),
+        }
+    }
+
+    fn allow_ip(&mut self, ip: IpAddr, now: Instant) {
+        self.allow.retain(|(_, until)| *until > now);
+        let until = now + ALLOW_TTL;
+        if let Some(e) = self.allow.iter_mut().find(|(i, _)| *i == ip) {
+            e.1 = until;
+            return;
+        }
+        if self.allow.len() >= ALLOW_MAX {
+            // the one that would expire first goes
+            if let Some(k) = (0..self.allow.len()).min_by_key(|&k| self.allow[k].1) {
+                self.allow.swap_remove(k);
+            }
+        }
+        self.allow.push((ip, until));
+        self.debug(&format!("IP liberado: {ip}"));
+    }
+
+    fn allowed(&self, ip: IpAddr, now: Instant) -> bool {
+        ip.is_loopback() || !self.allow_only || self.allow.iter().any(|(i, until)| *i == ip && *until > now)
+    }
+
+    fn ban(&mut self, key: BanKey, dur: Duration) {
+        let now = Instant::now();
+        self.bans.retain(|(_, until)| *until > now);
+        let until = now + dur;
+        if let Some(b) = self.bans.iter_mut().find(|(k, _)| *k == key) {
+            b.1 = b.1.max(until);
+            return;
+        }
+        if self.bans.len() >= BANS_MAX
+            && let Some(k) = (0..self.bans.len()).min_by_key(|&k| self.bans[k].1)
+        {
+            self.bans.swap_remove(k);
+        }
+        self.bans.push((key, until));
+    }
+
+    fn banned(&self, xuid: u64, ip: IpAddr, now: Instant) -> bool {
+        self.bans.iter().any(|(k, until)| {
+            *until > now
+                && match k {
+                    BanKey::Xuid(x) => *x == xuid && !shared_xuid(xuid),
+                    BanKey::Ip(i) => *i == ip,
+                }
+        })
+    }
+
+    /// Drops every peer with `xuid` and refuses it for `kick_ban` (Azimuth's shared XUID: their
+    /// IPs instead, so other players without an account are not refused).
+    fn kick(&mut self, xuid: u64, reason: &str) {
+        let shared = shared_xuid(xuid);
+        let mut n = 0;
+        while let Some(i) = self.peers.iter().position(|p| p.xuid == xuid) {
+            let (index, ip) = (self.peers[i].index, self.peers[i].ip());
+            self.drop_peer(i, &format!("expulso: {reason}"));
+            self.log(&format!("jogador {index} expulso ({reason})"));
+            if shared {
+                self.ban(BanKey::Ip(ip), self.settings.kick_ban);
+            }
+            n += 1;
+        }
+        if !shared {
+            self.ban(BanKey::Xuid(xuid), self.settings.kick_ban);
+            if n == 0 {
+                self.log(&format!("xuid {xuid} recusado por {} min (não estava conectado)", self.settings.kick_ban.as_secs() / 60));
+            }
+        } else if n == 0 {
+            self.log("kick: ninguém com esse XUID");
+        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -438,7 +815,8 @@ impl Relay {
         out
     }
 
-    /// Messages to peer `pi`. Sequenced ones are kept until acked and resent.
+    /// Messages to peer `pi`. Sequenced ones are kept until acked and resent. Before the peer
+    /// is synced, a packet that would take what we sent past what it sent is not sent.
     fn send(&mut self, pi: usize, msgs: Vec<Bits>, sequenced: bool) {
         self.send_tries(pi, msgs, sequenced, 0);
     }
@@ -446,10 +824,16 @@ impl Relay {
     fn send_tries(&mut self, pi: usize, msgs: Vec<Bits>, sequenced: bool, tries: u8) {
         let now = Instant::now();
         for chunk in Self::chunks(msgs) {
-            let peer = &mut self.peers[pi];
+            let Some(peer) = self.peers.get_mut(pi) else { return };
             let (ack, ackbits) = peer.acks.header();
             let pid = if sequenced { peer.take_pid() } else { nerd::NO_SEQ };
             let data = nerd::packet(&chunk, pid, ack, ackbits);
+            if !peer.synced {
+                if peer.tx_bytes + data.len() > peer.rx_bytes {
+                    continue;
+                }
+                peer.tx_bytes += data.len();
+            }
             Self::send_raw(&self.sock, peer.addr, &data);
             if sequenced {
                 if peer.in_flight.len() >= IN_FLIGHT_MAX {
@@ -459,19 +843,44 @@ impl Relay {
                 peer.in_flight.push_back(InFlight { pid, msgs: chunk, sent: now, tries });
             }
         }
-        let peer = &mut self.peers[pi];
+        let Some(peer) = self.peers.get_mut(pi) else { return };
         if std::mem::take(&mut peer.in_flight_overflow) {
-            let line = format!("peer {} is not acking: oldest unacked packets dropped", peer.index);
-            self.log(&line);
+            let line = format!("peer {} is not acking: oldest unacked packets dropped (logged once)", peer.index);
+            self.log_once(line);
+        }
+    }
+
+    /// Sequenced messages to peer `pi`, behind what already waits in its queue (so a late
+    /// joiner gets the snapshot before anything newer).
+    fn send_seq(&mut self, pi: usize, msgs: Vec<Bits>) {
+        let Some(peer) = self.peers.get_mut(pi) else { return };
+        if peer.queue.is_empty() {
+            self.send(pi, msgs, true);
+            return;
+        }
+        for m in msgs {
+            if peer.queue_bits + m.len() > self.settings.queue_max_bits {
+                peer.doom.get_or_insert_with(|| "fila de envio cheia".to_string());
+                return;
+            }
+            peer.queue_bits += m.len();
+            peer.queue.push_back(m);
         }
     }
 
     /// An empty unsequenced packet (or one with `msgs`) carrying our acks.
     fn send_unsequenced(&mut self, pi: usize, msgs: Vec<Bits>) {
         if msgs.is_empty() {
-            let peer = &self.peers[pi];
+            let Some(peer) = self.peers.get_mut(pi) else { return };
             let (ack, ackbits) = peer.acks.header();
-            Self::send_raw(&self.sock, peer.addr, &nerd::packet(&[], nerd::NO_SEQ, ack, ackbits));
+            let data = nerd::packet(&[], nerd::NO_SEQ, ack, ackbits);
+            if !peer.synced {
+                if peer.tx_bytes + data.len() > peer.rx_bytes {
+                    return;
+                }
+                peer.tx_bytes += data.len();
+            }
+            Self::send_raw(&self.sock, peer.addr, &data);
         } else {
             self.send(pi, msgs, false);
         }
@@ -481,15 +890,43 @@ impl Relay {
     fn forward(&mut self, from: usize, msgs: &[Bits], sequenced: bool) {
         for j in 0..self.peers.len() {
             if j != from && self.peers[j].synced {
-                self.send(j, msgs.to_vec(), sequenced);
+                if sequenced {
+                    self.send_seq(j, msgs.to_vec());
+                } else {
+                    self.send(j, msgs.to_vec(), false);
+                }
             }
         }
     }
 
-    /// An answer to an address that is not a peer (a refusal), acking its packet.
-    fn send_to_stranger(&self, addr: SocketAddr, pid: u16, msg: Msg) {
+    /// An answer to an address that is not a peer (a refusal), acking its packet: only if it is
+    /// no bigger than what came from there.
+    fn send_to_stranger(&self, addr: SocketAddr, pid: u16, msg: Msg, request_len: usize) {
         let (ack, ackbits) = if pid == nerd::NO_SEQ { (nerd::NO_ACK, 0) } else { (pid, 0) };
-        Self::send_raw(&self.sock, addr, &nerd::packet(&[msg.write()], nerd::NO_SEQ, ack, ackbits));
+        let data = nerd::packet(&[msg.write()], nerd::NO_SEQ, ack, ackbits);
+        if data.len() <= request_len {
+            Self::send_raw(&self.sock, addr, &data);
+        }
+    }
+
+    /// Whether one more handshake reply to `ip` fits this second.
+    fn handshake_ok(&mut self, ip: IpAddr, now: Instant) -> bool {
+        let limit = self.settings.handshake_per_sec;
+        if let Some(e) = self.handshakes.iter_mut().find(|(i, _, _)| *i == ip) {
+            if now.duration_since(e.1) >= Duration::from_secs(1) {
+                e.1 = now;
+                e.2 = 0;
+            }
+            e.2 += 1;
+            return e.2 <= limit;
+        }
+        self.handshakes.retain(|(_, t, _)| now.duration_since(*t) < Duration::from_secs(1));
+        if self.handshakes.len() >= IP_TABLE_MAX {
+            // a flood of sources: the oldest entry goes
+            self.handshakes.remove(0);
+        }
+        self.handshakes.push((ip, now, 1));
+        limit >= 1
     }
 
     // -----------------------------------------------------------------------------------------
@@ -515,8 +952,10 @@ impl Relay {
         None
     }
 
-    /// Forgets a peer: the others delete its objects.
     fn drop_peer(&mut self, pi: usize, why: &str) {
+        if pi >= self.peers.len() {
+            return;
+        }
         let peer = self.peers.remove(pi);
         let deletes: Vec<Bits> = peer
             .objects
@@ -533,11 +972,19 @@ impl Relay {
         if !deletes.is_empty() {
             for j in 0..self.peers.len() {
                 if self.peers[j].synced {
-                    self.send(j, deletes.clone(), true);
+                    self.send_seq(j, deletes.clone());
                 }
             }
         }
         self.mirror_queue.retain(|(_, addr, _)| *addr != peer.addr);
+        if self.peers.is_empty() {
+            // a new group starts without the old destination (the seq goes on: harmless)
+            self.group_sat_nav = 0;
+        }
+        if !peer.synced {
+            self.debug(&format!("conexão {} ({}) desfeita: {why}", peer.index, net::show(&peer.addr)));
+            return;
+        }
         let secs = peer.joined.elapsed().as_secs();
         self.log(&format!(
             "jogador {} saiu ({why}): {} objeto(s) apagado(s) para os outros; ficou {}m{:02}s, {} pacotes de carro",
@@ -548,19 +995,41 @@ impl Relay {
             peer.cars
         ));
         let c = self.counts();
-        self.log(&format!("jogadores: {}/{}", c.peers, self.settings.max_players));
+        self.log(&format!("jogadores: {}/{}", c.synced, self.settings.max_players));
     }
 
-    /// An OpenConnection from an address that is not a peer: a new peer, or a refusal.
-    fn admit(&mut self, addr: SocketAddr, hdr: &Header, oc: &nerd::OpenConnection) -> Option<usize> {
-        let refuse = |relay: &Relay, reason: u8, why: &str| {
+    /// Drops the peers marked for it.
+    fn drop_doomed(&mut self) {
+        while let Some(i) = self.peers.iter().position(|p| p.doom.is_some()) {
+            let why = self.peers[i].doom.clone().unwrap_or_default();
+            self.drop_peer(i, &why);
+        }
+    }
+
+    /// An OpenConnection from an address that is not a peer: a new peer (not a player until
+    /// its ResponseAck echoes our attempt), or a refusal.
+    fn admit(&mut self, addr: SocketAddr, hdr: &Header, oc: &nerd::OpenConnection, len: usize, now: Instant) -> Option<usize> {
+        let ip = norm_ip(addr.ip());
+        if !self.handshake_ok(ip, now) {
+            return None;
+        }
+        let refuse = |relay: &mut Relay, reason: u8, why: &str| {
             relay.send_to_stranger(
                 addr,
                 hdr.id,
-                Msg::OpenResponse(OpenResponse { flags: oc.flags, reason, attempt: oc.attempt, own_attempt: OWN_ATTEMPT }),
+                Msg::OpenResponse(OpenResponse { flags: oc.flags, reason, attempt: oc.attempt, own_attempt: 0 }),
+                len,
             );
-            relay.log(&format!("recusado {} (xuid {}): {why}", net::show(&addr), oc.user));
+            relay.log_refusal(ip, &format!("recusado {} (xuid {}): {why}", net::show(&addr), oc.user));
         };
+        if !self.allowed(ip, now) {
+            refuse(self, nerd::REASON_REFUSED, "IP não liberado");
+            return None;
+        }
+        if self.banned(oc.user, ip, now) {
+            refuse(self, nerd::REASON_BANNED, "expulso há pouco");
+            return None;
+        }
         if oc.version != nerd::VERSION {
             refuse(self, nerd::REASON_VERSION_MISMATCH, &format!("versão {}", String::from_utf8_lossy(&oc.version)));
             return None;
@@ -569,14 +1038,16 @@ impl Relay {
             refuse(self, nerd::REASON_GAME_MISMATCH, &format!("jogo {}", String::from_utf8_lossy(&oc.game)));
             return None;
         }
-        // the same player from a new address (its NAT changed the port, or it came back). Not
-        // for Azimuth's own fixed XUID (and 0): players without an account all share it.
-        let shared = oc.user == 0 || oc.user == AZIMUTH_XUID;
-        if !shared && let Some(old) = self.peers.iter().position(|p| p.xuid == oc.user) {
-            let from = net::show(&self.peers[old].addr);
-            self.drop_peer(old, &format!("voltou por {}, antes {from}", net::show(&addr)));
+        if self.peers.iter().filter(|p| p.ip() == ip).count() >= self.settings.max_peers_per_ip {
+            refuse(self, nerd::REASON_REFUSED, &format!("mais de {} conexões deste IP", self.settings.max_peers_per_ip));
+            return None;
         }
-        if self.peers.len() >= self.settings.max_players as usize {
+        if self.peers.iter().filter(|p| !p.synced).count() >= self.settings.max_unsynced {
+            refuse(self, nerd::REASON_REFUSED, "conexões demais esperando");
+            return None;
+        }
+        let replaces = !shared_xuid(oc.user) && self.peers.iter().any(|p| p.synced && p.xuid == oc.user);
+        if self.counts().synced >= self.settings.max_players as usize && !replaces {
             refuse(self, nerd::REASON_REFUSED, &format!("mundo cheio ({} jogadores)", self.settings.max_players));
             return None;
         }
@@ -584,33 +1055,69 @@ impl Relay {
             refuse(self, nerd::REASON_REFUSED, "sem índice livre");
             return None;
         };
-        self.peers.push(Peer::new(addr, index, oc.user, Instant::now()));
-        self.log(&format!("jogador {index} conectando de {} (xuid {})", net::show(&addr), oc.user));
+        let mut peer = Peer::new(addr, index, oc.user, now);
+        peer.bucket = Some(Bucket::new(&self.settings, now));
+        self.peers.push(peer);
+        self.debug(&format!("conexão {index} de {} (xuid {})", net::show(&addr), oc.user));
         Some(self.peers.len() - 1)
     }
 
+    /// The ResponseAck echoed our attempt: the address is proven. A peer with the same XUID
+    /// gives way only if it has been quiet for `takeover_quiet`; the world must have room.
+    /// Returns the peer's index now (other peers may have gone), or None if it was turned away.
+    fn complete_handshake(&mut self, pi: usize) -> Option<usize> {
+        let now = Instant::now();
+        let (addr, xuid) = (self.peers[pi].addr, self.peers[pi].xuid);
+        if !shared_xuid(xuid)
+            && let Some(old) = self.peers.iter().position(|p| p.synced && p.xuid == xuid && p.addr != addr)
+        {
+            let quiet = now.duration_since(self.peers[old].last_seen);
+            if quiet >= self.settings.takeover_quiet {
+                let from = net::show(&self.peers[old].addr);
+                self.drop_peer(old, &format!("voltou por {}, antes {from}", net::show(&addr)));
+            } else {
+                let ip = norm_ip(addr.ip());
+                self.log_refusal(ip, &format!("recusado {} (xuid {xuid}): esse XUID está jogando", net::show(&addr)));
+                let i = self.find(addr)?;
+                self.drop_peer(i, "XUID já conectado");
+                return None;
+            }
+        }
+        let pi = self.find(addr)?;
+        if self.counts().synced >= self.settings.max_players as usize {
+            self.drop_peer(pi, "mundo cheio");
+            return None;
+        }
+        self.on_synced(pi);
+        Some(pi)
+    }
+
     /// The handshake is done: TimeSync and ConnectionSyncDone, then the server's SessionHost and
-    /// everything the others own.
+    /// everything the others own (queued, sent paced).
     fn on_synced(&mut self, pi: usize) {
         let now_ms = self.now_ms();
         let peer = &mut self.peers[pi];
         peer.synced = true;
+        peer.joined = Instant::now();
         let ts = Msg::TimeSync { index: peer.sync_index, time: now_ms }.write();
         peer.sync_index = peer.sync_index.wrapping_add(1);
-        self.send(pi, vec![ts, Msg::SyncDone(OWN_ATTEMPT).write()], false);
+        let own = peer.own_attempt;
+        self.send(pi, vec![ts, Msg::SyncDone(own).write()], false);
+        // the SessionHost as it is now: the seq of its last update, and the group's destination
+        let payload = if self.group_sat_nav != 0 { nerd::group_sat_nav_payload(self.group_sat_nav) } else { Bits::new() };
         let mut world = vec![
             Msg::Object(ObjectMsg {
                 create: true,
                 router: nerd::ROUTER_LOBBY,
                 handle: Handle::Own(nerd::SESSION_HOST_ID),
                 ty: 0,
-                seq: 0,
-                payload: Bits::new(),
+                seq: self.host_seq,
+                payload,
             })
             .write(),
         ];
         for (j, owner) in self.peers.iter().enumerate() {
-            if j == pi {
+            if j == pi || !owner.synced {
                 continue;
             }
             for ((router, id), o) in &owner.objects {
@@ -618,18 +1125,68 @@ impl Relay {
             }
         }
         let n = world.len();
-        self.send(pi, world, true);
-        let index = self.peers[pi].index;
-        self.log(&format!("jogador {index} entrou no mundo ({} mensagens de estado)", n));
+        let max = self.settings.queue_max_bits;
+        let peer = &mut self.peers[pi];
+        let mut cut = false;
+        for m in world {
+            if peer.queue_bits + m.len() > max {
+                cut = true;
+                break;
+            }
+            peer.queue_bits += m.len();
+            peer.queue.push_back(m);
+        }
+        let index = peer.index;
+        if cut {
+            self.log(&format!("jogador {index}: estado do mundo maior que o limite; cortado"));
+        }
+        self.log(&format!("jogador {index} entrou no mundo ({n} mensagens de estado)"));
         let c = self.counts();
-        self.log(&format!("jogadores: {}/{}", c.peers, self.settings.max_players));
+        self.log(&format!("jogadores: {}/{}", c.synced, self.settings.max_players));
+        self.pace(pi);
+    }
+
+    /// Sends the next PACE_BYTES of what waits in peer `pi`'s queue (fewer while many of our
+    /// packets to it are not acked yet).
+    fn pace(&mut self, pi: usize) {
+        let Some(peer) = self.peers.get_mut(pi) else { return };
+        if peer.queue.is_empty() || peer.in_flight.len() > IN_FLIGHT_MAX / 2 {
+            return;
+        }
+        let mut batch = Vec::new();
+        let mut bytes = 0;
+        while let Some(m) = peer.queue.front() {
+            let b = m.len().div_ceil(8);
+            if !batch.is_empty() && bytes + b > PACE_BYTES {
+                break;
+            }
+            bytes += b;
+            peer.queue_bits -= m.len();
+            if let Some(m) = peer.queue.pop_front() {
+                batch.push(m);
+            }
+        }
+        self.send(pi, batch, true);
     }
 
     // -----------------------------------------------------------------------------------------
     // Packets in
 
+    /// One packet. A packet whose handling panics is dropped (logged once per address); the
+    /// relay goes on.
     pub fn handle(&mut self, data: &[u8], addr: SocketAddr) {
+        if catch_unwind(AssertUnwindSafe(|| self.handle_packet(data, addr))).is_err() {
+            if self.panics_logged.len() < PANIC_LOGGED_MAX && !self.panics_logged.contains(&addr) {
+                self.panics_logged.push(addr);
+                self.log(&format!("pacote de {} descartado: erro ao tratar (registrado uma vez)", net::show(&addr)));
+            }
+        }
+        self.drop_doomed();
+    }
+
+    fn handle_packet(&mut self, data: &[u8], addr: SocketAddr) {
         let Some(hdr) = Header::parse(data) else { return };
+        let now = Instant::now();
         let body = Reader::at(data, nerd::HEADER_LEN * 8);
         let first = if hdr.count > 0 { body.peek(7).ok().map(|v| v as u8) } else { None };
         let mut pi = self.find(addr);
@@ -642,24 +1199,52 @@ impl Relay {
             self.drop_peer(i, "nova conexão");
             pi = None;
         }
+        let mut admitted_now = false;
         let pi = match pi {
             Some(i) => i,
             None => {
+                admitted_now = true;
                 // only an OpenConnection makes a peer
                 if first != Some(nerd::MSG_OPEN_CONNECTION) {
                     return;
                 }
                 let Ok(Msg::OpenConnection(oc)) = Msg::read(&mut body.clone()) else { return };
-                match self.admit(addr, &hdr, &oc) {
+                match self.admit(addr, &hdr, &oc, data.len(), now) {
                     Some(i) => i,
                     None => return,
                 }
             }
         };
-        let now = Instant::now();
+        // the rate
+        {
+            let s = &self.settings;
+            let peer = &mut self.peers[pi];
+            let ok = peer.bucket.get_or_insert_with(|| Bucket::new(s, now)).take(s, now, hdr.count as u32, data.len());
+            if !ok {
+                let since = match (peer.over_since, peer.over_last) {
+                    (Some(t), Some(l)) if now.duration_since(l) < Duration::from_millis(1500) => t,
+                    _ => now,
+                };
+                peer.over_since = Some(since);
+                peer.over_last = Some(now);
+                let (index, ip) = (peer.index, peer.ip());
+                if now.duration_since(since) >= Duration::from_secs(self.settings.abuse_secs as u64) {
+                    let ban = self.settings.abuse_ban;
+                    self.peers[pi].doom = Some("tráfego acima do limite".to_string());
+                    self.ban(BanKey::Ip(ip), ban);
+                    self.log(&format!("jogador {index}: tráfego acima do limite por {} s; desconectado", self.settings.abuse_secs));
+                } else {
+                    self.log_once(format!("peer {index}: traffic over the rate; packets dropped (logged once)"));
+                }
+                return;
+            }
+        }
         {
             let peer = &mut self.peers[pi];
             peer.last_seen = now;
+            if !peer.synced {
+                peer.rx_bytes = peer.rx_bytes.saturating_add(data.len());
+            }
             peer.acks.add(hdr.id);
             // our packets it acks
             peer.in_flight.retain(|f| !nerd::acks_packet(hdr.ack, hdr.ackbits, f.pid));
@@ -674,6 +1259,7 @@ impl Relay {
         let mut ghost: Vec<Bits> = Vec::new(); // the same, back to the sender (mirror)
         let mut cars: Vec<Bits> = Vec::new();
         let mut synced_now = false;
+        let synced = self.peers[pi].synced;
         for _ in 0..hdr.count {
             if r.left() < 7 {
                 break;
@@ -697,22 +1283,30 @@ impl Relay {
             };
             match msg {
                 Msg::OpenConnection(oc) => {
+                    let peer = &self.peers[pi];
+                    if oc.user != peer.xuid {
+                        self.log_once(format!("peer {index}: OpenConnection with another XUID ignored"));
+                        continue;
+                    }
+                    let (own, ip) = (peer.own_attempt, peer.ip());
+                    // the one that made the peer was counted in admit
+                    if !std::mem::take(&mut admitted_now) && !self.handshake_ok(ip, now) {
+                        continue;
+                    }
                     self.debug(&format!("peer {index} OpenConnection xuid {} attempt {}", oc.user, oc.attempt));
-                    self.peers[pi].xuid = oc.user;
                     out.push(
-                        Msg::OpenResponse(OpenResponse {
-                            flags: oc.flags,
-                            reason: nerd::REASON_OK,
-                            attempt: oc.attempt,
-                            own_attempt: OWN_ATTEMPT,
-                        })
-                        .write(),
+                        Msg::OpenResponse(OpenResponse { flags: oc.flags, reason: nerd::REASON_OK, attempt: oc.attempt, own_attempt: own })
+                            .write(),
                     );
                 }
                 Msg::OpenResponse(resp) => {
                     self.debug(&format!("peer {index} OpenConnectionResponse reason {}", resp.reason));
-                    if resp.reason == nerd::REASON_RESPONSE_ACK && !self.peers[pi].synced {
-                        synced_now = true;
+                    if resp.reason == nerd::REASON_RESPONSE_ACK && !synced {
+                        if resp.attempt == self.peers[pi].own_attempt {
+                            synced_now = true;
+                        } else {
+                            self.log_once(format!("peer {index}: ResponseAck with the wrong attempt ignored"));
+                        }
                     }
                 }
                 Msg::Close => {
@@ -727,6 +1321,8 @@ impl Relay {
                         self.peers[pi].rtt_ms = Some(now_ms - time);
                     }
                 }
+                // nothing else until the handshake is done
+                m if !synced => self.debug(&format!("peer {index}: {} before the handshake ignored", nerd::msg_name(m.id()))),
                 Msg::TimeSync { .. } | Msg::SyncDone(_) => self.debug(&format!("peer {index}: server-only message ignored")),
                 Msg::Object(o) => {
                     if let Some(m) = self.on_object(pi, o) {
@@ -741,6 +1337,10 @@ impl Relay {
                         self.log_once(format!("peer {index}: ObjectDelete with handle {:?} not relayed", d.handle));
                         continue;
                     };
+                    if !nerd::forwarded_router(d.router) {
+                        self.log_once(format!("peer {index}: ObjectDelete on router {} not relayed", d.router));
+                        continue;
+                    }
                     let peer = &mut self.peers[pi];
                     peer.objects.retain(|(k, _)| *k != (d.router, id));
                     peer.orphans.retain(|o| (o.router, o.handle.id()) != (d.router, id));
@@ -755,6 +1355,10 @@ impl Relay {
                         self.log_once(format!("peer {index}: car with handle {:?} not relayed", c.handle));
                         continue;
                     };
+                    if !nerd::car_ok(&c.body) {
+                        self.log_once(format!("peer {index}: car with an impossible position not relayed (logged once)"));
+                        continue;
+                    }
                     self.peers[pi].cars += 1;
                     if let Some(delay) = self.settings.mirror {
                         if self.mirror_queue.len() >= MIRROR_QUEUE_MAX {
@@ -771,6 +1375,10 @@ impl Relay {
                         self.log_once(format!("peer {index}: {} with handle {:?} not relayed", nerd::msg_name(e.id), e.handle));
                         continue;
                     };
+                    if !nerd::car_event_ok(e.id, &e.body) {
+                        self.log_once(format!("peer {index}: {} with impossible values not relayed (logged once)", nerd::msg_name(e.id)));
+                        continue;
+                    }
                     self.debug(&format!("peer {index} {} car {id}", nerd::msg_name(e.id)));
                     let relayed = |peer| Msg::CarEvent(CarEvent { handle: Handle::Relay(id, peer), ..e.clone() }).write();
                     if self.settings.mirror.is_some() {
@@ -784,15 +1392,27 @@ impl Relay {
                         cars.push(relayed(index));
                     }
                 }
+                Msg::SetGroupSatNav { handle, node } => {
+                    self.debug(&format!("peer {index} SetGroupSatNavEvent {handle:?} node {node}"));
+                    if !(0..=nerd::SAT_NAV_NODE_MAX).contains(&node) {
+                        self.log_once(format!("peer {index}: SetGroupSatNavEvent with node {node} out of range ignored"));
+                        continue;
+                    }
+                    self.set_group_sat_nav(index, node);
+                }
                 // Read only so the rest of the packet is: the traffic and the collidable objects
                 // were the Xbox server's own simulation, which this relay does not run; Tag's
                 // second car would need a handle per receiver (Playground games, not free roam);
                 // chat management and InactivePlayersPulled are for the server's matchmaking.
+                // The `Other` ones are all requests to the server (ownership, car meet, race,
+                // road trip, leadership, votes, bucket list) or weather replies it never asked
+                // for; none of them is meant for the other consoles.
                 Msg::TagCollision(_)
                 | Msg::Traffic { .. }
-                | Msg::CollObjRest { .. }
+                | Msg::CollObjDetachPart { .. }
                 | Msg::ChatManagement { .. }
-                | Msg::InactivePlayersPulled(_) => {
+                | Msg::InactivePlayersPulled(_)
+                | Msg::Other { .. } => {
                     self.debug(&format!("peer {index} {} (not relayed)", nerd::msg_name(msg.id())));
                 }
                 Msg::FinaliseSessionEntry => {
@@ -804,14 +1424,16 @@ impl Relay {
                 }
             }
         }
-        if synced_now {
-            self.on_synced(pi);
+        // its history within bounds
+        if self.peers[pi].history_bits() > self.settings.history_max_bits {
+            self.peers[pi].doom = Some("histórico grande demais".to_string());
+            return;
         }
         if !fwd.is_empty() {
             self.forward(pi, &fwd, true);
         }
         if !ghost.is_empty() {
-            self.send(pi, ghost, true);
+            self.send_seq(pi, ghost);
         }
         if !cars.is_empty() {
             self.forward(pi, &cars, false);
@@ -821,10 +1443,39 @@ impl Relay {
             out_seq.push(m);
         }
         if !out_seq.is_empty() {
-            self.send(pi, out_seq, true);
+            self.send_seq(pi, out_seq);
         }
         if !out.is_empty() || hdr.id != nerd::NO_SEQ {
             self.send_unsequenced(pi, out);
+        }
+        if synced_now {
+            self.complete_handshake(pi);
+        }
+    }
+
+    /// SetGroupSatNavEvent: the server's answer, GroupSatNavNode on its SessionHost, to every
+    /// synced console (the sender too: the var is what the consoles go by). Any console may set
+    /// it: the relay keeps no group leader.
+    fn set_group_sat_nav(&mut self, from_index: u8, node: i32) {
+        if node == self.group_sat_nav {
+            return;
+        }
+        self.group_sat_nav = node;
+        self.host_seq = nerd::seq_next(self.host_seq);
+        self.debug(&format!("jogador {from_index}: GPS do grupo -> nó {node}"));
+        let update = Msg::Object(ObjectMsg {
+            create: false,
+            router: nerd::ROUTER_LOBBY,
+            handle: Handle::Own(nerd::SESSION_HOST_ID),
+            ty: 0,
+            seq: self.host_seq,
+            payload: nerd::group_sat_nav_payload(node),
+        })
+        .write();
+        for j in 0..self.peers.len() {
+            if self.peers[j].synced {
+                self.send_seq(j, vec![update.clone()]);
+            }
         }
     }
 
@@ -832,7 +1483,7 @@ impl Relay {
     /// object is known. Server updates are taken strictly in order and the first one expected
     /// from us is seq 0 (1417B1E70).
     fn finalise(&mut self, pi: usize) -> Option<Bits> {
-        let peer = &mut self.peers[pi];
+        let peer = self.peers.get_mut(pi)?;
         if !peer.finalise_asked || peer.finalised {
             return None;
         }
@@ -845,8 +1496,8 @@ impl Relay {
         Some(nerd::console_bool_update(id, seq, nerd::CONSOLE_SESSION_ENTRY_FINALISED, true).write())
     }
 
-    /// An object message from peer `pi`: the history, and what to forward (None: a duplicate,
-    /// or not the sender's own object).
+    /// An object message from peer `pi`: checked and written again (nerd::sanitize_payload),
+    /// the history, and what to forward (None: a duplicate, refused, or not the sender's own).
     fn on_object(&mut self, pi: usize, o: ObjectMsg) -> Option<Relayed> {
         let index = self.peers[pi].index;
         let Handle::Own(id) = o.handle else {
@@ -858,6 +1509,25 @@ impl Relay {
             ));
             return None;
         };
+        if !nerd::forwarded_router(o.router) || o.ty != 0 {
+            self.log_once(format!("peer {index}: objects of router {} type {} are not relayed (logged once)", o.router, o.ty));
+            return None;
+        }
+        let raw_len = o.payload.len();
+        let payload = match nerd::sanitize_payload(o.router, &o.payload) {
+            Ok(p) => p,
+            Err(e) => {
+                self.log_once(format!("peer {index}: router {} payload refused: {e} (logged once)", o.router));
+                return None;
+            }
+        };
+        if let Some(seen) = self.payload_seen.get_mut(o.router as usize & 15)
+            && raw_len > *seen
+        {
+            *seen = raw_len;
+            self.debug(&format!("router {}: largest payload so far {raw_len} bits", o.router));
+        }
+        let o = ObjectMsg { payload, ..o };
         let key = (o.router, id);
         let verbose = self.settings.verbose;
         let peer = &mut self.peers[pi];
@@ -939,14 +1609,15 @@ impl Relay {
     // -----------------------------------------------------------------------------------------
     // Timers
 
-    /// Keepalive pings, quiet peers, resends and the mirror's cars.
+    /// Keepalive pings, quiet and half-connected peers, resends, paced queues and the mirror's
+    /// cars.
     pub fn tick(&mut self, now: Instant) {
         // the mirror's cars that are due
         while let Some((due, _, _)) = self.mirror_queue.front() {
             if *due > now {
                 break;
             }
-            let (_, addr, m) = self.mirror_queue.pop_front().unwrap();
+            let Some((_, addr, m)) = self.mirror_queue.pop_front() else { break };
             if let Some(pi) = self.find(addr) {
                 self.send(pi, vec![m], false);
             }
@@ -955,14 +1626,25 @@ impl Relay {
             self.last_resend_scan = now;
             self.resend(now);
         }
+        if now.duration_since(self.last_pace) >= PACE_EVERY {
+            self.last_pace = now;
+            for pi in 0..self.peers.len() {
+                self.pace(pi);
+            }
+        }
         if now.duration_since(self.last_keepalive) >= self.settings.keepalive {
             self.last_keepalive = now;
             let quiet = self.settings.quiet_drop;
+            let unsynced = self.settings.unsynced_timeout;
             let mut i = 0;
             while i < self.peers.len() {
                 if now.duration_since(self.peers[i].last_seen) > quiet {
                     let why = format!("calado por {} s", quiet.as_secs());
                     self.drop_peer(i, &why);
+                    continue;
+                }
+                if !self.peers[i].synced && now.duration_since(self.peers[i].joined) > unsynced {
+                    self.drop_peer(i, "não terminou a conexão a tempo");
                     continue;
                 }
                 if self.peers[i].synced {
@@ -972,9 +1654,11 @@ impl Relay {
                 i += 1;
             }
         }
+        self.drop_doomed();
     }
 
-    /// Sequenced packets not acked in time go again, in new packets.
+    /// Sequenced packets not acked in time go again, in new packets; a peer that never acks one
+    /// is dropped.
     fn resend(&mut self, now: Instant) {
         for pi in 0..self.peers.len() {
             let peer = &mut self.peers[pi];
@@ -992,14 +1676,60 @@ impl Relay {
                 }
                 false
             });
-            let index = peer.index;
+            if gave_up > 0 {
+                peer.doom = Some(format!("{gave_up} mensagem(ns) nunca confirmada(s)"));
+            }
             for (msgs, tries) in again {
                 self.send_tries(pi, msgs, true, tries);
             }
-            if gave_up > 0 {
-                self.log(&format!("peer {index}: {gave_up} message(s) never acked, given up"));
-            }
         }
+    }
+}
+
+/// Reads command lines from `input` into `tx` until its end (or until nobody listens). A line
+/// longer than COMMAND_LINE_MAX bytes is dropped whole; empty lines are skipped.
+pub fn read_commands(mut input: impl io::BufRead, tx: &Sender<String>) {
+    let mut line: Vec<u8> = Vec::new();
+    let mut too_long = false;
+    loop {
+        let (consumed, done) = match input.fill_buf() {
+            Ok([]) => return,
+            Ok(buf) => {
+                let (part, consumed, done) = match buf.iter().position(|&b| b == b'\n') {
+                    Some(i) => (&buf[..i], i + 1, true),
+                    None => (buf, buf.len(), false),
+                };
+                if !too_long {
+                    line.extend_from_slice(part);
+                    if line.len() > COMMAND_LINE_MAX {
+                        too_long = true;
+                        line.clear();
+                    }
+                }
+                (consumed, done)
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        };
+        input.consume(consumed);
+        if done {
+            if !too_long {
+                let text = String::from_utf8_lossy(&line).trim().to_string();
+                if !text.is_empty() && tx.send(text).is_err() {
+                    return;
+                }
+            }
+            line.clear();
+            too_long = false;
+        }
+    }
+}
+
+/// A XUID in a command: decimal, or hex with 0x.
+fn parse_xuid(s: &str) -> Option<u64> {
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(h) => u64::from_str_radix(h, 16).ok(),
+        None => s.parse().ok(),
     }
 }
 
@@ -1123,5 +1853,129 @@ mod tests {
         assert_eq!(p.take_pid(), 0xFFFD);
         assert_eq!(p.take_pid(), 0);
         assert_eq!(p.take_pid(), 1);
+    }
+
+    fn relay() -> Relay {
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        Relay::new(sock, Settings { quiet: true, ..Default::default() })
+    }
+
+    #[test]
+    fn allow_list_and_loopback() {
+        let mut r = relay();
+        let now = Instant::now();
+        let ip = |s: &str| norm_ip(s.parse::<IpAddr>().unwrap());
+        // off: everyone
+        assert!(r.allowed(ip("10.0.0.1"), now));
+        r.command("allowonly 1");
+        assert!(!r.allowed(ip("10.0.0.1"), now));
+        for lo in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
+            assert!(r.allowed(ip(lo), now), "{lo}");
+        }
+        r.command("allow 10.0.0.1");
+        r.command("allow ::ffff:10.0.0.2");
+        r.command("allow 2001:db8::7");
+        assert!(r.allowed(ip("10.0.0.1"), now));
+        assert!(r.allowed(ip("10.0.0.2"), now), "an IPv4-mapped address is the IPv4 one");
+        assert!(r.allowed(ip("::ffff:10.0.0.1"), now));
+        assert!(r.allowed(ip("2001:db8::7"), now));
+        assert!(!r.allowed(ip("10.0.0.3"), now));
+        // expiry
+        assert!(!r.allowed(ip("10.0.0.1"), now + ALLOW_TTL + Duration::from_secs(1)));
+        // bounded
+        for k in 0..(ALLOW_MAX as u32 + 10) {
+            r.command(&format!("allow 10.1.{}.{}", k / 256, k % 256));
+        }
+        assert_eq!(r.allow.len(), ALLOW_MAX);
+        // junk is ignored
+        r.command("allow notanip");
+        r.command("allowonly maybe");
+        r.command("rm -rf /");
+        assert_eq!(r.allow.len(), ALLOW_MAX);
+        r.command("allowonly 0");
+        assert!(r.allowed(ip("10.9.9.9"), now));
+    }
+
+    #[test]
+    fn bans_by_xuid_or_ip() {
+        let mut r = relay();
+        let now = Instant::now();
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        r.command("kick 2535412345678901 griefing");
+        assert!(r.banned(2535412345678901, ip, now));
+        assert!(!r.banned(2535412345678902, ip, now));
+        assert!(!r.banned(2535412345678901, ip, now + r.settings.kick_ban + Duration::from_secs(1)));
+        r.command("kick 0x10");
+        assert!(r.banned(16, ip, now));
+        // the shared XUID is never banned as a XUID (nobody connected: nothing at all)
+        r.command(&format!("kick {AZIMUTH_XUID}"));
+        assert!(!r.banned(AZIMUTH_XUID, ip, now));
+        r.ban(BanKey::Ip(ip), Duration::from_secs(5));
+        assert!(r.banned(AZIMUTH_XUID, ip, now));
+        // bounded
+        for x in 0..(BANS_MAX as u64 + 20) {
+            r.command(&format!("kick {}", 1000 + x));
+        }
+        assert_eq!(r.bans.len(), BANS_MAX);
+        r.command("kick");
+        r.command("kick abc");
+        r.command("kick -5");
+        assert_eq!(parse_xuid("18446744073709551615"), Some(u64::MAX));
+        assert_eq!(parse_xuid("18446744073709551616"), None);
+    }
+
+    #[test]
+    fn command_lines_are_bounded() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let long = "x".repeat(COMMAND_LINE_MAX + 1);
+        let input = format!("kick 1\n\n{long}\nallow 10.0.0.1\r\n{}\nallowonly 1", "y".repeat(COMMAND_LINE_MAX));
+        read_commands(std::io::Cursor::new(input.into_bytes()), &tx);
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0], "kick 1");
+        assert_eq!(got[1], "allow 10.0.0.1");
+        assert_eq!(got[2].len(), COMMAND_LINE_MAX, "exactly the limit is kept");
+        // the last line has no newline: at the end of input it is not a command
+        // and nobody listening ends the reader
+        drop(rx);
+        read_commands(std::io::Cursor::new(b"kick 1\nkick 2\n".to_vec()), &tx);
+        // a reader that ends (EOF) just returns
+        read_commands(std::io::Cursor::new(Vec::new()), &tx);
+    }
+
+    #[test]
+    fn log_lines_have_no_control_characters() {
+        let s = sanitize_line("jogador\x1b[31m vermelho\r\nfalso\x07 ok ção");
+        assert!(!s.chars().any(|c| c.is_control()));
+        assert!(s.ends_with("ok ção"));
+        assert_eq!(sanitize_line(&"a".repeat(5000)).chars().count(), LOG_LINE_MAX);
+    }
+
+    #[test]
+    fn attempts_are_random_and_never_the_old_constant() {
+        let a: SocketAddr = "127.0.0.1:5".parse().unwrap();
+        let v: Vec<u32> = (0..64).map(|_| random_attempt(a)).collect();
+        assert!(v.iter().all(|&x| x != 0 && x != OWN_ATTEMPT));
+        let mut d = v.clone();
+        d.sort();
+        d.dedup();
+        assert!(d.len() > 60, "practically all different");
+    }
+
+    #[test]
+    fn bucket_allows_cars_and_stops_floods() {
+        let s = Settings::default();
+        let t0 = Instant::now();
+        let mut b = Bucket::new(&s, t0);
+        // 30 car packets a second for 10 s, plus 10 other packets: all pass
+        for k in 0..300u64 {
+            let t = t0 + Duration::from_millis(k * 33);
+            assert!(b.take(&s, t, 2, 120), "{k}");
+        }
+        // a flood in one instant: stopped within two seconds' worth
+        let t = t0 + Duration::from_secs(10);
+        let passed = (0..10_000).filter(|_| b.take(&s, t, 1, 100)).count();
+        assert!(passed <= 2 * s.rate_packets as usize, "{passed}");
+        assert!(passed > 0);
     }
 }

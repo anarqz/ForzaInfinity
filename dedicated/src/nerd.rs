@@ -16,11 +16,13 @@
 //! cars, CarPredictionFull (15). Layouts at each type below.
 //!
 //! Also read, so that what follows them in a packet is not lost: the car events (20, 21, 35),
-//! MsgTagCollision (36), the traffic messages (16, 17, 71, 72, 73, 74), MsgCollObjRest (24),
-//! MsgChatManagement (33) and MsgInactivePlayersPulled (70). Still unknown, so they end the
-//! parse: PlayerInput (14, no sender found), the ownership messages (10-13), the weather replies
-//! (54, 56, 58, sent only when the server asks) and the race, road trip, car meet and bucket
-//! list messages.
+//! MsgTagCollision (36), the traffic messages (16, 17, 71, 72, 73, 74), MsgCollObjDetachPart
+//! (24), MsgChatManagement (33), MsgInactivePlayersPulled (70), SetGroupSatNavEvent (52), and
+//! every other message a console sends (`other_layout`: ownership, car meet, race, road trip,
+//! weather replies, leadership, bucket list). Still unknown, so they end the parse: the
+//! server-to-console messages (a console never sends them), ObjectGrantOwnership /
+//! ObjectTransferOwnership (11, 12; no console sender), and ObjectNeedsUpdates (13) for objects
+//! whose var index width is not known (every router but ConsoleSynced).
 
 use crate::bits::{BitError, BitResult, Bits, Reader};
 
@@ -45,11 +47,12 @@ pub const MSG_SERVER_TRAFFIC_FULL_SYNC: u8 = 16;
 pub const MSG_SERVER_TRAFFIC_ROUTE_PROGRESS: u8 = 17;
 pub const MSG_BREAK_GLASS: u8 = 20;
 pub const MSG_CAR_COLLISION: u8 = 21;
-pub const MSG_COLL_OBJ_REST: u8 = 24;
+pub const MSG_COLL_OBJ_DETACH_PART: u8 = 24;
 pub const MSG_CHAT_MANAGEMENT: u8 = 33;
 pub const MSG_FINALISE_SESSION_ENTRY: u8 = 34;
 pub const MSG_REPAIR_DAMAGE: u8 = 35;
 pub const MSG_TAG_COLLISION: u8 = 36;
+pub const MSG_SET_GROUP_SAT_NAV: u8 = 52;
 pub const MSG_INACTIVE_PLAYERS_PULLED: u8 = 70;
 pub const MSG_SERVER_TRAFFIC_MESSAGE: u8 = 71;
 pub const MSG_CLIENT_TRAFFIC_MESSAGE: u8 = 72;
@@ -252,6 +255,23 @@ pub const ROUTER_LOBBY: u8 = 6;
 /// The server's SessionHost: router 6, id 0, type 0.
 pub const SESSION_HOST_ID: u32 = 0;
 
+/// SessionHost's vars (SessionHostSynced, 14180FF70: room for 15, so a 4-bit var index; the
+/// order is the one 141810FE0 registers them in): 0 LobbyType, 1 PrivacyMode, 2 CountdownType,
+/// 3 CountdownEndTime, 4 RaceReady, 5 RaceParticipantsSelected, 6 InRace,
+/// 7 LastInactivePlayersPulledTime, 8 RoundGuid, 9 RaceStartTime, 10 NumLapsCompleted,
+/// 11 FurthestProgress, 12 GroupSatNavNode. Every one is the server's.
+pub const SESSION_HOST_VAR_INDEX_BITS: u32 = 4;
+/// GroupSatNavNode (var 12; type vtable 142C5C9D8, pack 140290E80 / unpack 140290F40: 32 bits,
+/// read signed): the group's GPS destination, set by the server from SetGroupSatNavEvent.
+pub const SESSION_HOST_GROUP_SAT_NAV_NODE: u8 = 12;
+
+/// The SessionHost payload entry setting GroupSatNavNode.
+pub fn group_sat_nav_payload(node: i32) -> Bits {
+    let mut p = Bits::new();
+    p.push(SESSION_HOST_GROUP_SAT_NAV_NODE as u64, SESSION_HOST_VAR_INDEX_BITS).push(node as u32 as u64, 32);
+    p
+}
+
 /// ConsoleSynced (router 3; NerdLib 1417DE550): 9 bool vars, a 4-bit var index. 0 RenderReady,
 /// 1 SessionEntryFinalised, 2 ParticipatingInRace, 3 RaceInProgress, 4 Ready,
 /// 5 HasLoadedCarsForAllParticipants, 6 HasGrid, 7 AvailableArbitration, 8 MatchTicketArbiter.
@@ -261,6 +281,254 @@ pub const CONSOLE_VAR_INDEX_BITS: u32 = 4;
 
 /// The u14 payload size, in bits.
 pub const MAX_PAYLOAD_BITS: usize = (1 << 14) - 1;
+
+// ---------------------------------------------------------------------------------------------
+// Payloads of the objects the relay forwards
+//
+// Only routers 1 (PlayerData), 2 (CarNetworked) and 3 (ConsoleSynced) are forwarded (the
+// player's own objects in free roam; 6 is the server's, the others are not mapped). A payload is
+// a list of (var index, var data) (1417B2510); the index width is the bit length of the class's
+// var room (141789BA0), the vars are numbered in the order the class registers them (the
+// 1417B5020 / 1417B50E0 calls), and each var's width is its type's pack function (vtable slot
+// 0x28). The relay reads every entry it can, checks it, and writes the payload again from what
+// it read (`sanitize_payload`); anything else drops the message.
+
+/// A var's data, as its type packs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VarKind {
+    /// n plain bits.
+    Bits(u32),
+    /// A f32 (140290EA0 / 1409A49A0): must be finite and within FLOAT_MAX.
+    F32,
+    /// NetworkName (142F4CE18; pack 1417D8050, read 1417F40E0): u5 count, then count UTF-16
+    /// units. The reader takes at most 16: with more it stops reading (the rest of the payload is
+    /// then misread) and keeps the count, while the buffer holds 18 units.
+    Name,
+}
+
+use VarKind::{Bits as VB, F32 as VF, Name as VN};
+
+/// The most UTF-16 units a NetworkName may have (1417F40E0: `count < 0x11`).
+pub const NETWORK_NAME_MAX: u32 = 16;
+
+/// The largest magnitude a forwarded float may have (damage, wear, fuel, collision values): no
+/// legitimate value comes near it, and NaN / infinity are refused outright.
+pub const FLOAT_MAX: f32 = 1.0e6;
+/// The largest coordinate of a car's position (the first vec3 of CarPredictionFull, 14181FFA0):
+/// the map is a few km across, so 100 km is far outside it.
+pub const POSITION_MAX: f32 = 1.0e5;
+
+fn float_ok(bits: u32, max: f32) -> bool {
+    let f = f32::from_bits(bits);
+    f.is_finite() && f.abs() <= max
+}
+
+/// ConsoleSynced vars that only the server sets (SyncedBool<0,1>, 142F48CA8): 1
+/// SessionEntryFinalised, 2 ParticipatingInRace, 4 Ready. A console's entries for them are
+/// stripped before forwarding, so no console can set them on its object as the others see it.
+pub const CONSOLE_SERVER_VARS: [u32; 3] = [1, 2, 4];
+
+/// ConsoleSynced (1417DE550: room 9, so 4-bit indices; registered by 1417DEC00): 0-6 bools
+/// (142F44980 / 142F48CA8: pack 1417DE9F0, 1 bit), 7 AvailableArbitration and
+/// 8 MatchTicketArbiter (142F48CF0 / 142F48D38: pack 141821F40, 2 bits).
+const CONSOLE_VARS: [VarKind; 9] = [VB(1), VB(1), VB(1), VB(1), VB(1), VB(1), VB(1), VB(2), VB(2)];
+
+/// CarNetworked (1417DBDD0: room 22 (0x16), 5-bit indices; registered by 1417DC590): 0-20 the
+/// car's damage, wear and fuel (struct 14181ED70, registered by 14181F2D0: CurRearDownforceDamage
+/// ... CurWheel3SuspensionDmg, all 142C5C798: a f32), 21 CarUniverseId (142F48458: pack
+/// 1417DC370, 5 bits).
+const CAR_VARS: [VarKind; 22] = [
+    VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF, VF,
+    VB(5),
+];
+pub const CAR_VAR_INDEX_BITS: u32 = 5;
+
+/// PlayerData (1417F3230: room 163 (0xA3), 8-bit indices; registered by 1417F4620). Its own
+/// vars come first: 0 BufChoices (8 u8, 1417F3FD0), 1 HasLivery, 2 IsNewLivery, 3 NetworkName,
+/// 4 XUID (64, 140290EB0), 5 IsLeader, 6 NumReceivedKickVotes (32), 7 HasFinalScore,
+/// 8 HeatsRacePoints, 9 HeatsTotalPoints, 10 SeriesRacePoints, 11 SeriesTotalPoints (32 each).
+/// Then the vars of three structs it points to (14180D2D0, 1417E97C0, 141823DA0: about 150, with
+/// nested arrays), which are not mapped: from the first entry with an index of 12 or more, the
+/// rest of the payload is kept as it is, if the whole payload is within PLAYER_DATA_MAX_BITS.
+const PLAYER_VARS: [VarKind; 12] = [VB(64), VB(1), VB(1), VN, VB(64), VB(1), VB(32), VB(1), VB(32), VB(32), VB(32), VB(32)];
+pub const PLAYER_VAR_INDEX_BITS: u32 = 8;
+const PLAYER_VAR_ROOM: u32 = 163;
+/// PlayerData's payload limit. Not observed (no capture with sizes yet): an estimate from its
+/// layout, 163 vars of an 8-bit index and at most ~40 bits each on average (the mapped ones are
+/// 1 to 64 bits, NetworkName at most 5 + 16 x 16), about 8000 bits, rounded up. The relay logs
+/// the largest payload it sees per router (verbose), so this can be set from real games.
+pub const PLAYER_DATA_MAX_BITS: usize = 8192;
+
+/// Why a payload is not forwarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadError {
+    /// Not a router the relay forwards.
+    Router(u8),
+    /// A var index past the class's vars.
+    Index(u32),
+    /// A var given twice (the game writes each dirty var once).
+    Duplicate(u32),
+    /// A f32 that is NaN, infinite or over FLOAT_MAX.
+    NotFinite(u32),
+    /// A NetworkName longer than the reader takes.
+    NameTooLong(u32),
+    /// The payload ends inside an entry.
+    Truncated,
+    /// Over the router's size limit.
+    TooBig(usize),
+}
+
+impl std::fmt::Display for PayloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PayloadError::Router(r) => write!(f, "router {r} is not forwarded"),
+            PayloadError::Index(i) => write!(f, "var index {i} out of range"),
+            PayloadError::Duplicate(i) => write!(f, "var {i} given twice"),
+            PayloadError::NotFinite(i) => write!(f, "var {i} is not a sane float"),
+            PayloadError::NameTooLong(n) => write!(f, "NetworkName of {n} units"),
+            PayloadError::Truncated => f.write_str("payload ends inside a var"),
+            PayloadError::TooBig(n) => write!(f, "payload of {n} bits over the limit"),
+        }
+    }
+}
+
+/// Whether the relay forwards objects of this router.
+pub fn forwarded_router(router: u8) -> bool {
+    matches!(router, 1..=3)
+}
+
+/// The most bits a payload of this router can have. Mapped classes: every var once with its
+/// largest data (ConsoleSynced 9 x 4 + 7 + 4 = 47; CarNetworked 22 x 5 + 21 x 32 + 5 = 787).
+pub fn payload_max_bits(router: u8) -> Option<usize> {
+    fn max_of(index_bits: u32, vars: &[VarKind]) -> usize {
+        vars.iter()
+            .map(|v| {
+                index_bits as usize
+                    + match v {
+                        VarKind::Bits(n) => *n as usize,
+                        VarKind::F32 => 32,
+                        VarKind::Name => 5 + 16 * NETWORK_NAME_MAX as usize,
+                    }
+            })
+            .sum()
+    }
+    match router {
+        1 => Some(PLAYER_DATA_MAX_BITS),
+        2 => Some(max_of(CAR_VAR_INDEX_BITS, &CAR_VARS)),
+        3 => Some(max_of(CONSOLE_VAR_INDEX_BITS, &CONSOLE_VARS)),
+        _ => None,
+    }
+}
+
+/// Reads a payload of a forwarded router entry by entry, checks every var, and writes it again
+/// from what was read (PlayerData's unmapped tail, see PLAYER_VARS, is copied within its limit).
+pub fn sanitize_payload(router: u8, payload: &Bits) -> Result<Bits, PayloadError> {
+    let (index_bits, vars, room): (u32, &[VarKind], u32) = match router {
+        1 => (PLAYER_VAR_INDEX_BITS, &PLAYER_VARS, PLAYER_VAR_ROOM),
+        2 => (CAR_VAR_INDEX_BITS, &CAR_VARS, CAR_VARS.len() as u32),
+        3 => (CONSOLE_VAR_INDEX_BITS, &CONSOLE_VARS, CONSOLE_VARS.len() as u32),
+        r => return Err(PayloadError::Router(r)),
+    };
+    let max = payload_max_bits(router).unwrap_or(0);
+    let len = payload.len();
+    if len > max {
+        return Err(PayloadError::TooBig(len));
+    }
+    let bytes = payload.as_bytes();
+    let mut r = Reader::new(bytes);
+    let mut out = Bits::new();
+    let mut seen = [false; 32];
+    // reads n bits of the payload (not of the padding after it)
+    fn get(r: &mut Reader, len: usize, n: u32) -> Result<u64, PayloadError> {
+        if r.pos() + n as usize > len {
+            return Err(PayloadError::Truncated);
+        }
+        r.bits(n).map_err(|_| PayloadError::Truncated)
+    }
+    while r.pos() < len {
+        let start = r.pos();
+        let index = get(&mut r, len, index_bits)? as u32;
+        let Some(kind) = vars.get(index as usize) else {
+            if index < room {
+                // PlayerData's unmapped vars: the rest as it is
+                let mut tail = Reader::at(bytes, start);
+                let rest = tail.take(len - start).map_err(|_| PayloadError::Truncated)?;
+                out.append(&rest);
+                return Ok(out);
+            }
+            return Err(PayloadError::Index(index));
+        };
+        if std::mem::replace(&mut seen[index as usize], true) {
+            return Err(PayloadError::Duplicate(index));
+        }
+        let keep = !(router == ROUTER_CONSOLE_SYNCED && CONSOLE_SERVER_VARS.contains(&index));
+        let mut entry = Bits::new();
+        entry.push(index as u64, index_bits);
+        match *kind {
+            VarKind::Bits(n) => {
+                let v = get(&mut r, len, n)?;
+                entry.push(v, n);
+            }
+            VarKind::F32 => {
+                let v = get(&mut r, len, 32)? as u32;
+                if !float_ok(v, FLOAT_MAX) {
+                    return Err(PayloadError::NotFinite(index));
+                }
+                entry.push(v as u64, 32);
+            }
+            VarKind::Name => {
+                let n = get(&mut r, len, 5)? as u32;
+                if n > NETWORK_NAME_MAX {
+                    return Err(PayloadError::NameTooLong(n));
+                }
+                entry.push(n as u64, 5);
+                for _ in 0..n {
+                    let c = get(&mut r, len, 16)?;
+                    entry.push(c, 16);
+                }
+            }
+        }
+        if keep {
+            out.append(&entry);
+        }
+    }
+    Ok(out)
+}
+
+/// The f32s of a car event's body (after the handle) must be finite and within FLOAT_MAX:
+/// MsgBreakGlass (u32, 3 vec3, s32) and MsgCarCollision (vec3, 3 floats).
+pub fn car_event_ok(id: u8, body: &Bits) -> bool {
+    let (skip, n) = match id {
+        MSG_BREAK_GLASS => (32, 9),
+        MSG_CAR_COLLISION => (0, 6),
+        MSG_REPAIR_DAMAGE => (0, 0),
+        _ => return false,
+    };
+    if car_event_bits(id) != Some(body.len()) {
+        return false;
+    }
+    let mut r = Reader::new(body.as_bytes());
+    if r.take(skip).is_err() {
+        return false;
+    }
+    (0..n).all(|_| r.bits(32).is_ok_and(|v| float_ok(v as u32, FLOAT_MAX)))
+}
+
+/// A CarPredictionFull body: its first field is the position, a vec3 (14181FFA0, from
+/// 141822100), whose coordinates must be finite and within POSITION_MAX. The rest are quantized
+/// fixed-width fields (u16s and u64s), any value of which is in range.
+pub fn car_ok(body: &Bits) -> bool {
+    if body.len() != CAR_BODY_BITS {
+        return false;
+    }
+    let mut r = Reader::new(body.as_bytes());
+    (0..3).all(|_| r.bits(32).is_ok_and(|v| float_ok(v as u32, POSITION_MAX)))
+}
+
+/// The SatNav nodes a console may set (SetGroupSatNavEvent): 0 (none) up to this. Nodes are
+/// road-graph node indices of the map; 2^24 is far over any map's node count, and a value outside
+/// is dropped rather than clamped (a clamped node would be another, wrong place).
+pub const SAT_NAV_NODE_MAX: i32 = 0x00FF_FFFF;
 
 /// Object handle (write 1417B0E40, read in 1417AB160): two flag bits a, b, the id (the router's
 /// width), and for the relay form an 8-bit peer index.
@@ -416,16 +684,149 @@ pub fn traffic_bits(id: u8) -> Option<usize> {
     }
 }
 
-/// MsgCollObjRest (24; send 1417DDAF0, read 1417DDBD0): u4, u11 count, count bytes. The
-/// console's reader copies the bytes into a 1024-byte stack buffer without a check, so this
-/// must never be sent on with more than 1024.
-pub const COLL_OBJ_REST_MAX: usize = 1024;
+/// MsgCollObjDetachPart (24; send 1417DDAF0, which logs "[MsgCollObjDetachPart] Send"; read
+/// 1417DDBD0): u4, u11 count, count bytes. The console's reader copies the bytes into a
+/// 1024-byte stack buffer without a check, so this must never be sent on with more than 1024.
+pub const COLL_OBJ_DETACH_PART_MAX: usize = 1024;
 /// MsgChatManagement (33; send 1417F5040, read 1417F5120): u64, u7 count, count bytes. The
 /// reader's buffer holds 64.
 pub const CHAT_MANAGEMENT_MAX: usize = 64;
 
 /// MsgInactivePlayersPulled (70; send 1417F7000): a lobby object handle (2-bit id).
 pub const INACTIVE_PLAYERS_ID_BITS: u32 = 2;
+
+/// SetGroupSatNavEvent (52; send 141815730, from 140A4DD00 (node 0: clear) and 140A52200 (the
+/// chosen event's node)): a lobby object handle (2-bit id: the SessionHost, [netmgr+0xD0]), then
+/// the node, s32. The lobby router (141809420) reads it with 1418092B0, which casts the object
+/// to Nerd::ILobbyEvents and calls slot 0x38 (1418157F0) with the node: on a console that slot
+/// is 140A41740 (`return false`) for both SessionHost and CGameOptions, so only the server acts
+/// on it; what consoles see is the SessionHost var GroupSatNavNode.
+pub const SAT_NAV_ID_BITS: u32 = 2;
+
+/// A field of the messages read only to get past them (`other_layout`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// n bits: the plain writers (14176B380, 14176B670, 14176AD40, 14176B230, 14176AEC0), a
+    /// bit (14176A8A0), a f32 (14176AB90, 32).
+    Bits(usize),
+    /// An object handle (1417B0E40) with an id of this many bits.
+    Handle(u32),
+    /// A compact length and that many bytes (14176A900), at most this many: a std::string
+    /// (14176B0C0, max 64) or a f64 (14176ABB0: always 8 bytes, so 8 + 64 bits).
+    Bytes(usize),
+}
+
+use Field::{Bits as B, Bytes as Y, Handle as H};
+
+/// A f64 (14176ABB0).
+const F64: Field = Y(8);
+/// Atmospheric data (141820C40): 3 f32, 3 s32, u32 (224 bits).
+const ATMOSPHERIC_BITS: usize = 3 * 32 + 3 * 32 + 32;
+/// Precipitation data (141821050): 3 x 32 bits (96).
+const PRECIPITATION_BITS: usize = 96;
+
+/// The layout of a message a console sends that the relay reads only to get past it (each from
+/// its sender, the caller of 141760C70 for the id, checked against the disassembly):
+///   - PlayerInput (14; no sender; read 1418200D0 / skipped by 1418201D0, router 1): handle
+///     (7-bit id), u16, s12, s12, 4 bits.
+///   - MsgCarMeetPlayerInviteRequest (26; 1417F75D0): u2, u32.
+///   - MsgCarMeetPlayerJoinOrCancelRequest (27; 1417F70F0): bit, u2, u32.
+///   - MsgCarMeetConfiguredGameOptionsForWagerRace (31; 1417F7270): u32.
+///   - MsgCarMeetGameModeSessionReady (32; 1417F7380): two strings (max 64).
+///   - MsgRequestRace (38; 1417F6F30): nothing.
+///   - MsgReadyRequest (41; 1417F7B20): lobby handle (2-bit id), bit.
+///   - MsgInProgressScoreUpdate (43; 1418040E0): handle (7-bit id), f32, bit.
+///   - MsgLapScore (44; 141804270): handle (7), 3 f64, u32, 2 bits.
+///   - MsgScoreKeyframe (45; 1418044E0): handle (7), 5 f64, u32, 3 u8, 3 bits.
+///   - MsgVoteToKick (46; 141815870): lobby handle (2), u64 (ILobbyEvents 0x28).
+///   - MsgVoteForTrack (47; 141811E60): lobby handle (2), s32 (ILobbyEvents 0x30).
+///   - SelectedNextRoadTripEvent (49; 1417F7720): bit.
+///   - ConfiguredGameOptionsForRoadTripEvent (51; 1417F7830): s32, u16.
+///   - FullWeather (54; 1417F6840): atmospheric, precipitation, s32, s32 (384 bits).
+///   - NewAtmosphericData (56; 1417F69E0): atmospheric (224).
+///   - NewPrecipitationData (58; 1417F6AF0): precipitation (96).
+///   - RequestLeaderChange (59; 1418159B0): handle (7-bit id); read 141815A50.
+///   - DropLeadership (60; 1417F7A50): nothing; read 1417F7AD0.
+///   - BucketListChallengeEnded (62; 141805070): bit.
+///   - RequestSynchronizeBucketListChallenge (63; 141805180): s32, s32.
+///   - RequestDesynchronizeBucketListChallenge (64; 1418052D0): nothing.
+pub fn other_layout(id: u8) -> Option<&'static [Field]> {
+    Some(match id {
+        14 => &[H(7), B(16 + 12 + 12 + 4)],
+        26 => &[B(2 + 32)],
+        27 => &[B(1 + 2 + 32)],
+        31 => &[B(32)],
+        32 => &[Y(64), Y(64)],
+        38 | 60 | 64 => &[],
+        41 => &[H(2), B(1)],
+        43 => &[H(7), B(32 + 1)],
+        44 => &[H(7), F64, F64, F64, B(32 + 2)],
+        45 => &[H(7), F64, F64, F64, F64, F64, B(32 + 3 * 8 + 3)],
+        46 => &[H(2), B(64)],
+        47 => &[H(2), B(32)],
+        49 | 62 => &[B(1)],
+        51 => &[B(32 + 16)],
+        54 => &[B(ATMOSPHERIC_BITS + PRECIPITATION_BITS + 64)],
+        56 => &[B(ATMOSPHERIC_BITS)],
+        58 => &[B(PRECIPITATION_BITS)],
+        59 => &[H(7)],
+        63 => &[B(32 + 32)],
+        _ => return None,
+    })
+}
+
+pub const MSG_OBJECT_REQUEST_OWNERSHIP: u8 = 10;
+pub const MSG_OBJECT_NEEDS_UPDATES: u8 = 13;
+
+/// Var index widths, where known: ConsoleSynced (router 3; one type).
+pub fn var_index_bits(router: u8) -> Option<u32> {
+    (router == ROUTER_CONSOLE_SYNCED).then_some(CONSOLE_VAR_INDEX_BITS)
+}
+
+/// Walks a message body after its id without keeping it: where it ends.
+///   - ObjectRequestOwnership (10; send 1417B18C0, from 1417B6960): router u4, the type id when
+///     the router has more than one type (1417B1840), the handle.
+///   - ObjectNeedsUpdates (13; send 1417B1550, from 1417B6C60): router u4, the handle, u16
+///     count, then per var asked for: two 0 bits and the var index (the object's index width).
+///   - the `other_layout` ones.
+fn skip_other(r: &mut Reader, id: u8) -> Result<(), ReadError> {
+    match id {
+        MSG_OBJECT_REQUEST_OWNERSHIP | MSG_OBJECT_NEEDS_UPDATES => {
+            let router = r.u8(4)?;
+            let (id_bits, type_bits) = router_widths(router).ok_or(ReadError::UnknownRouter(router))?;
+            if id == MSG_OBJECT_REQUEST_OWNERSHIP {
+                r.take(type_bits as usize)?;
+                Handle::read(r, id_bits)?;
+            } else {
+                let index_bits = var_index_bits(router).ok_or(ReadError::UnknownMsg(id))?;
+                Handle::read(r, id_bits)?;
+                let n = r.bits(16)? as usize;
+                r.take(n * (2 + index_bits as usize))?;
+            }
+        }
+        _ => {
+            for f in other_layout(id).ok_or(ReadError::UnknownMsg(id))? {
+                match *f {
+                    Field::Bits(n) => {
+                        r.take(n)?;
+                    }
+                    Field::Handle(bits) => {
+                        Handle::read(r, bits)?;
+                    }
+                    Field::Bytes(max) => {
+                        r.string(max)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `skip_other` knows the message.
+pub fn is_other(id: u8) -> bool {
+    matches!(id, MSG_OBJECT_REQUEST_OWNERSHIP | MSG_OBJECT_NEEDS_UPDATES) || other_layout(id).is_some()
+}
 
 fn read_bytes(r: &mut Reader, n: usize) -> BitResult<Vec<u8>> {
     if r.left() < n * 8 {
@@ -473,9 +874,13 @@ pub enum Msg {
     TagCollision(TagCollision),
     /// The ServerTraffic* messages and ClientTrafficMessage: the body after the id, raw.
     Traffic { id: u8, body: Bits },
-    CollObjRest { kind: u8, data: Vec<u8> },
+    CollObjDetachPart { kind: u8, data: Vec<u8> },
     ChatManagement { xuid: u64, data: Vec<u8> },
     InactivePlayersPulled(Handle),
+    /// SetGroupSatNavEvent (52): the lobby handle and the node (0: none).
+    SetGroupSatNav { handle: Handle, node: i32 },
+    /// A message read only to get past it (`skip_other`): the body after the id, raw.
+    Other { id: u8, body: Bits },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -521,9 +926,11 @@ impl Msg {
             Msg::CarEvent(e) => e.id,
             Msg::TagCollision(_) => MSG_TAG_COLLISION,
             Msg::Traffic { id, .. } => *id,
-            Msg::CollObjRest { .. } => MSG_COLL_OBJ_REST,
+            Msg::CollObjDetachPart { .. } => MSG_COLL_OBJ_DETACH_PART,
             Msg::ChatManagement { .. } => MSG_CHAT_MANAGEMENT,
             Msg::InactivePlayersPulled(_) => MSG_INACTIVE_PLAYERS_PULLED,
+            Msg::SetGroupSatNav { .. } => MSG_SET_GROUP_SAT_NAV,
+            Msg::Other { id, .. } => *id,
         }
     }
 
@@ -592,10 +999,10 @@ impl Msg {
                 let n = traffic_bits(id).unwrap_or(0);
                 Msg::Traffic { id, body: r.take(n)? }
             }
-            MSG_COLL_OBJ_REST => {
+            MSG_COLL_OBJ_DETACH_PART => {
                 let kind = r.u8(4)?;
                 let n = r.bits(11)? as usize;
-                Msg::CollObjRest { kind, data: read_bytes(r, n)? }
+                Msg::CollObjDetachPart { kind, data: read_bytes(r, n)? }
             }
             MSG_CHAT_MANAGEMENT => {
                 let xuid = r.bits(64)?;
@@ -603,6 +1010,16 @@ impl Msg {
                 Msg::ChatManagement { xuid, data: read_bytes(r, n)? }
             }
             MSG_INACTIVE_PLAYERS_PULLED => Msg::InactivePlayersPulled(Handle::read(r, INACTIVE_PLAYERS_ID_BITS)?),
+            MSG_SET_GROUP_SAT_NAV => Msg::SetGroupSatNav {
+                handle: Handle::read(r, SAT_NAV_ID_BITS)?,
+                node: r.u32(32)? as i32,
+            },
+            other if is_other(other) => {
+                let mut probe = r.clone();
+                skip_other(&mut probe, other)?;
+                let n = probe.pos() - r.pos();
+                Msg::Other { id: other, body: r.take(n)? }
+            }
             other => return Err(ReadError::UnknownMsg(other)),
         })
     }
@@ -669,7 +1086,7 @@ impl Msg {
                 debug_assert_eq!(Some(body.len()), traffic_bits(*id));
                 w.append(body);
             }
-            Msg::CollObjRest { kind, data } => {
+            Msg::CollObjDetachPart { kind, data } => {
                 debug_assert!(data.len() < 1 << 11);
                 w.push(*kind as u64, 4).push(data.len() as u64, 11);
                 for &b in data {
@@ -684,6 +1101,13 @@ impl Msg {
                 }
             }
             Msg::InactivePlayersPulled(h) => h.write(&mut w, INACTIVE_PLAYERS_ID_BITS),
+            Msg::SetGroupSatNav { handle, node } => {
+                handle.write(&mut w, SAT_NAV_ID_BITS);
+                w.push(*node as u32 as u64, 32);
+            }
+            Msg::Other { body, .. } => {
+                w.append(body);
+            }
         }
         w
     }
@@ -905,8 +1329,8 @@ mod tests {
         w.push(7, 7).push(10, 4).push(0, 30);
         assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::UnknownRouter(10)));
         let mut w = Bits::new();
-        w.push(14, 7).push(0, 30);
-        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::UnknownMsg(14)));
+        w.push(18, 7).push(0, 30);
+        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::UnknownMsg(18)));
         // truncated object
         let full = Msg::Object(ObjectMsg {
             create: false,
@@ -952,8 +1376,8 @@ mod tests {
         for id in [16, 17, 71, 72, 73, 74] {
             roundtrip(Msg::Traffic { id, body: payload(traffic_bits(id).unwrap(), id as u64) });
         }
-        roundtrip(Msg::CollObjRest { kind: 15, data: vec![] });
-        roundtrip(Msg::CollObjRest { kind: 3, data: (0..2047).map(|i| i as u8).collect() });
+        roundtrip(Msg::CollObjDetachPart { kind: 15, data: vec![] });
+        roundtrip(Msg::CollObjDetachPart { kind: 3, data: (0..2047).map(|i| i as u8).collect() });
         roundtrip(Msg::ChatManagement { xuid: u64::MAX - 5, data: (0..127).collect() });
         roundtrip(Msg::InactivePlayersPulled(Handle::Own(3)));
         roundtrip(Msg::InactivePlayersPulled(Handle::Relay(1, 200)));
@@ -975,7 +1399,7 @@ mod tests {
         assert_eq!(Msg::InactivePlayersPulled(Handle::Own(1)).write().len(), 7 + 2 + 2);
         // a byte count over what is there: truncated, not a huge allocation
         let mut w = Bits::new();
-        w.push(MSG_COLL_OBJ_REST as u64, 7).push(0, 4).push(2047, 11).push(0, 16);
+        w.push(MSG_COLL_OBJ_DETACH_PART as u64, 7).push(0, 4).push(2047, 11).push(0, 16);
         assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::Bits(BitError::Short)));
         assert_eq!(msg_name(76), "ClientTrafficStationary");
         assert_eq!(msg_name(35), "MsgRepairDamage");
@@ -997,6 +1421,306 @@ mod tests {
         for m in &msgs {
             assert_eq!(&Msg::read(&mut r).unwrap(), m);
         }
+    }
+
+    /// A body for `other_layout(id)`, with every handle form and string length used somewhere.
+    fn other_body(id: u8, seed: u64) -> Bits {
+        let mut w = Bits::new();
+        for (k, f) in other_layout(id).unwrap().iter().enumerate() {
+            match *f {
+                Field::Bits(n) => {
+                    w.append(&payload(n, seed + k as u64));
+                }
+                Field::Handle(bits) => {
+                    let h = match (seed as usize + k) % 4 {
+                        0 => Handle::Own(1),
+                        1 => Handle::Relay((1 << bits) - 1, 200),
+                        2 => Handle::Server(0),
+                        _ => Handle::Transfer(1),
+                    };
+                    h.write(&mut w, bits);
+                }
+                Field::Bytes(max) => {
+                    let n = if max == 8 { 8 } else { (seed as usize + k) % (max + 1) };
+                    w.string(&(0..n as u8).collect::<Vec<_>>());
+                }
+            }
+        }
+        w
+    }
+
+    fn raw(id: u8, body: &Bits) -> Bits {
+        let mut w = Bits::new();
+        w.push(id as u64, 7).append(body);
+        w
+    }
+
+    #[test]
+    fn set_group_sat_nav_roundtrip_and_layout() {
+        for h in [Handle::Own(0), Handle::Relay(3, 9), Handle::Server(1), Handle::Transfer(2)] {
+            for node in [0, 1, -1, i32::MAX, i32::MIN, 123456] {
+                roundtrip(Msg::SetGroupSatNav { handle: h, node });
+            }
+        }
+        // 7 id + 2 flags + 2-bit id + s32
+        let m = Msg::SetGroupSatNav { handle: Handle::Own(0), node: -2 };
+        let w = m.write();
+        assert_eq!(w.len(), 43);
+        let mut r = Reader::new(w.as_bytes());
+        assert_eq!(r.bits(7).unwrap(), 52);
+        assert_eq!(r.bits(4).unwrap(), 0);
+        assert_eq!(r.bits(32).unwrap(), 0xFFFF_FFFE);
+        assert_eq!(msg_name(MSG_SET_GROUP_SAT_NAV), "SetGroupSatNavEvent");
+        // the server's answer: var 12, 32 bits
+        let p = group_sat_nav_payload(-2);
+        assert_eq!(p.len(), 36);
+        let mut r = Reader::new(p.as_bytes());
+        assert_eq!(r.bits(4).unwrap(), 12);
+        assert_eq!(r.bits(32).unwrap() as u32 as i32, -2);
+    }
+
+    #[test]
+    fn other_messages_read_exactly() {
+        let ids = [14u8, 26, 27, 31, 32, 38, 41, 43, 44, 45, 46, 47, 49, 51, 54, 56, 58, 59, 60, 62, 63, 64];
+        for id in ids {
+            assert!(is_other(id), "{id}");
+            for seed in 0..4 {
+                let body = other_body(id, seed);
+                let m = Msg::Other { id, body: body.clone() };
+                assert_eq!(m.write(), raw(id, &body));
+                roundtrip(m);
+            }
+        }
+        // the fixed sizes, after the id (handles in their own form: 2 flag bits + the id)
+        let size = |id| other_body(id, 0).len();
+        assert_eq!(size(14), 2 + 7 + 44);
+        assert_eq!(size(26), 34);
+        assert_eq!(size(27), 35);
+        assert_eq!(size(31), 32);
+        assert_eq!(size(38), 0);
+        assert_eq!(size(43), 2 + 7 + 33);
+        assert_eq!(size(44), 2 + 7 + 3 * 72 + 34);
+        assert_eq!(size(45), 2 + 7 + 5 * 72 + 59);
+        assert_eq!(size(46), 2 + 2 + 64);
+        assert_eq!(size(47), 2 + 2 + 32);
+        assert_eq!(size(51), 48);
+        assert_eq!(size(54), 384);
+        assert_eq!(size(56), 224);
+        assert_eq!(size(58), 96);
+        assert_eq!(size(59), 2 + 7);
+        assert_eq!(size(63), 64);
+        // still unknown: server-to-console ones, and the ownership messages with no sender
+        for id in [11u8, 12, 18, 19, 22, 25, 37, 39, 40, 42, 48, 50, 53, 55, 57, 61, 65, 69, 75, 76] {
+            assert!(!is_other(id), "{id}");
+            let mut w = Bits::new();
+            w.push(id as u64, 7).push(0, 40);
+            assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::UnknownMsg(id)), "{id}");
+        }
+        // a string over its limit, a f64 that is not 8 bytes
+        let mut w = Bits::new();
+        w.push(32, 7).string(&[0; 65]).string(&[]);
+        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::Bits(BitError::TooLong)));
+        let mut w = Bits::new();
+        w.push(44, 7);
+        Handle::Own(1).write(&mut w, 7);
+        w.string(&[0; 9]).push(0, 64);
+        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::Bits(BitError::TooLong)));
+    }
+
+    #[test]
+    fn ownership_messages() {
+        // ObjectRequestOwnership: router 6 has a 2-bit type field, router 1 none
+        let mut b = Bits::new();
+        b.push(6, 4).push(1, 2);
+        Handle::Relay(3, 7).write(&mut b, 2);
+        roundtrip(Msg::Other { id: MSG_OBJECT_REQUEST_OWNERSHIP, body: b.clone() });
+        assert_eq!(b.len(), 4 + 2 + 2 + 2 + 8);
+        let mut b = Bits::new();
+        b.push(1, 4);
+        Handle::Own(127).write(&mut b, 7);
+        roundtrip(Msg::Other { id: MSG_OBJECT_REQUEST_OWNERSHIP, body: b });
+        // ObjectNeedsUpdates on a ConsoleSynced object: 2 vars
+        let mut b = Bits::new();
+        b.push(3, 4);
+        Handle::Relay(5, 2).write(&mut b, 7);
+        b.push(2, 16).push(0, 2).push(1, 4).push(0, 2).push(4, 4);
+        roundtrip(Msg::Other { id: MSG_OBJECT_NEEDS_UPDATES, body: b.clone() });
+        assert_eq!(b.len(), 4 + 17 + 16 + 12);
+        // ... and on a router whose var index width is not known: the parse ends
+        let mut w = Bits::new();
+        w.push(13, 7).push(1, 4);
+        Handle::Own(1).write(&mut w, 7);
+        w.push(1, 16).push(0, 16);
+        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::UnknownMsg(13)));
+        let mut w = Bits::new();
+        w.push(10, 7).push(10, 4).push(0, 30);
+        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::UnknownRouter(10)));
+        // a huge count is a truncation, not an allocation
+        let mut w = Bits::new();
+        w.push(13, 7).push(3, 4);
+        Handle::Own(1).write(&mut w, 7);
+        w.push(0xFFFF, 16).push(0, 16);
+        assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::Bits(BitError::Short)));
+    }
+
+    /// What the Deck sent in free roam: SetGroupSatNavEvent ahead of a car, and others.
+    #[test]
+    fn sat_nav_and_others_do_not_end_the_packet() {
+        let msgs = [
+            Msg::SetGroupSatNav { handle: Handle::Own(0), node: 77 },
+            Msg::Other { id: 59, body: other_body(59, 1) },
+            Msg::Other { id: 45, body: other_body(45, 2) },
+            Msg::Other { id: 32, body: other_body(32, 3) },
+            Msg::Car(Car { handle: Handle::Own(4), body: payload(CAR_BODY_BITS, 1) }),
+        ];
+        let bits: Vec<Bits> = msgs.iter().map(|m| m.write()).collect();
+        let data = packet(&bits, NO_SEQ, NO_ACK, 0);
+        let mut r = Reader::at(&data, HEADER_LEN * 8);
+        for m in &msgs {
+            assert_eq!(&Msg::read(&mut r).unwrap(), m);
+        }
+    }
+
+    fn entry(w: &mut Bits, index: u32, index_bits: u32, data: &[(u64, u32)]) {
+        w.push(index as u64, index_bits);
+        for &(v, n) in data {
+            w.push(v, n);
+        }
+    }
+
+    fn f(x: f32) -> (u64, u32) {
+        (x.to_bits() as u64, 32)
+    }
+
+    #[test]
+    fn console_payloads() {
+        // RenderReady, HasLoadedCars, AvailableArbitration (2 bits): kept as they are
+        let mut p = Bits::new();
+        entry(&mut p, 0, 4, &[(1, 1)]);
+        entry(&mut p, 5, 4, &[(1, 1)]);
+        entry(&mut p, 7, 4, &[(3, 2)]);
+        assert_eq!(sanitize_payload(3, &p), Ok(p.clone()));
+        // the server's vars (1, 2, 4) are stripped
+        let mut with = p.clone();
+        entry(&mut with, 1, 4, &[(1, 1)]);
+        entry(&mut with, 4, 4, &[(1, 1)]);
+        assert_eq!(sanitize_payload(3, &with), Ok(p.clone()));
+        // index 9 and up, a duplicate, a cut entry
+        let mut bad = Bits::new();
+        entry(&mut bad, 9, 4, &[(1, 1)]);
+        assert_eq!(sanitize_payload(3, &bad), Err(PayloadError::Index(9)));
+        let mut dup = p.clone();
+        entry(&mut dup, 0, 4, &[(0, 1)]);
+        assert_eq!(sanitize_payload(3, &dup), Err(PayloadError::Duplicate(0)));
+        let mut cut = Bits::new();
+        cut.push(7, 4).push(1, 1);
+        assert_eq!(sanitize_payload(3, &cut), Err(PayloadError::Truncated));
+        // the largest one possible, and one bit more
+        assert_eq!(payload_max_bits(3), Some(47));
+        let mut big = Bits::new();
+        big.push(0, 48);
+        assert_eq!(sanitize_payload(3, &big), Err(PayloadError::TooBig(48)));
+        assert_eq!(sanitize_payload(3, &Bits::new()), Ok(Bits::new()));
+    }
+
+    #[test]
+    fn car_payloads() {
+        let mut p = Bits::new();
+        entry(&mut p, 8, 5, &[f(0.75)]); // Fuel
+        entry(&mut p, 0, 5, &[f(0.0)]);
+        entry(&mut p, 21, 5, &[(17, 5)]); // CarUniverseId
+        assert_eq!(sanitize_payload(2, &p), Ok(p.clone()));
+        for bad in [f32::NAN, f32::INFINITY, -f32::INFINITY, 2.0e6, -1.0e7] {
+            let mut q = Bits::new();
+            entry(&mut q, 3, 5, &[f(bad)]);
+            assert_eq!(sanitize_payload(2, &q), Err(PayloadError::NotFinite(3)), "{bad}");
+        }
+        let mut q = Bits::new();
+        entry(&mut q, 22, 5, &[(0, 32)]);
+        assert_eq!(sanitize_payload(2, &q), Err(PayloadError::Index(22)));
+        assert_eq!(payload_max_bits(2), Some(787));
+    }
+
+    #[test]
+    fn player_payloads() {
+        let name: Vec<(u64, u32)> = "Alex".encode_utf16().map(|c| (c as u64, 16)).collect();
+        let mut p = Bits::new();
+        entry(&mut p, 0, 8, &[(0x0102_0304_0506_0708, 64)]);
+        let mut n = vec![(name.len() as u64, 5)];
+        n.extend(&name);
+        entry(&mut p, 3, 8, &n);
+        entry(&mut p, 4, 8, &[(2535412345678901, 64)]);
+        assert_eq!(sanitize_payload(1, &p), Ok(p.clone()));
+        // 16 units: the most the reader takes; 17: refused
+        for (len, ok) in [(16u64, true), (17, false), (31, false)] {
+            let mut q = Bits::new();
+            q.push(3, 8).push(len, 5);
+            for _ in 0..len {
+                q.push(0x41, 16);
+            }
+            assert_eq!(sanitize_payload(1, &q).is_ok(), ok, "{len}");
+        }
+        // the unmapped vars (12..163): the rest is kept as it is, within the cap
+        let mut t = p.clone();
+        t.push(40, 8).push(0xABCDEF, 24).push(3, 8).push(0, 5);
+        assert_eq!(sanitize_payload(1, &t), Ok(t.clone()));
+        let mut q = Bits::new();
+        q.push(163, 8).push(0, 8);
+        assert_eq!(sanitize_payload(1, &q), Err(PayloadError::Index(163)));
+        let mut huge = Bits::new();
+        huge.push(12, 8);
+        while huge.len() <= PLAYER_DATA_MAX_BITS {
+            huge.push(0, 64);
+        }
+        assert!(matches!(sanitize_payload(1, &huge), Err(PayloadError::TooBig(_))));
+        // the other routers are not forwarded at all
+        for r in [0u8, 4, 6, 9, 12, 15] {
+            assert_eq!(sanitize_payload(r, &Bits::new()), Err(PayloadError::Router(r)));
+            assert!(!forwarded_router(r));
+        }
+    }
+
+    pub(crate) fn car_body_at(x: f32, y: f32, z: f32, seed: u64) -> Bits {
+        let mut b = Bits::new();
+        b.push(x.to_bits() as u64, 32).push(y.to_bits() as u64, 32).push(z.to_bits() as u64, 32);
+        b.append(&payload(CAR_BODY_BITS - 96, seed));
+        b
+    }
+
+    #[test]
+    fn car_and_event_values() {
+        assert!(car_ok(&car_body_at(1234.5, -20.0, 3000.0, 1)));
+        for bad in [f32::NAN, f32::INFINITY, 1.5e5, -2.0e5] {
+            assert!(!car_ok(&car_body_at(0.0, bad, 0.0, 1)), "{bad}");
+        }
+        assert!(!car_ok(&payload(CAR_BODY_BITS - 1, 1)));
+        let mut glass = Bits::new();
+        glass.push(7, 32);
+        for k in 0..9 {
+            glass.push((k as f32 * 1.5).to_bits() as u64, 32);
+        }
+        glass.push(3, 32);
+        assert!(car_event_ok(MSG_BREAK_GLASS, &glass));
+        let mut bad = Bits::new();
+        bad.push(7, 32);
+        for k in 0..9 {
+            let v = if k == 4 { f32::NAN } else { 1.0 };
+            bad.push(v.to_bits() as u64, 32);
+        }
+        bad.push(3, 32);
+        assert!(!car_event_ok(MSG_BREAK_GLASS, &bad));
+        let mut coll = Bits::new();
+        for v in [1.0f32, 2.0, 3.0, 0.5, 1.0e5, -9.0] {
+            coll.push(v.to_bits() as u64, 32);
+        }
+        assert!(car_event_ok(MSG_CAR_COLLISION, &coll));
+        let mut coll2 = Bits::new();
+        for v in [1.0f32, 2.0, 3.0, 0.5, 1.0e9, -9.0] {
+            coll2.push(v.to_bits() as u64, 32);
+        }
+        assert!(!car_event_ok(MSG_CAR_COLLISION, &coll2));
+        assert!(car_event_ok(MSG_REPAIR_DAMAGE, &Bits::new()));
+        assert!(!car_event_ok(MSG_CAR, &Bits::new()));
     }
 
     #[test]
