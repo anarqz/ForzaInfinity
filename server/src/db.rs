@@ -23,6 +23,7 @@ pub mod accounts;
 pub mod clubs;
 pub mod integrity;
 pub mod notifications;
+pub mod save_bests;
 pub mod saves;
 pub mod stats;
 pub mod storefront;

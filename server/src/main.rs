@@ -289,6 +289,10 @@ fn main() {
         std::process::exit(1);
     });
     println!("  database:  {}", db_path.display());
+    let bests = store.import_all_save_bests();
+    if bests > 0 {
+        println!("  saves:     {bests} speed trap / zone best(s) taken from cloud saves");
+    }
 
     // Default: the game folder next to FH2Online (FH2\ForzaHorizon2).
     let gamedb_path = gamedb_path

@@ -334,6 +334,11 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
             match saves::check_bundle(&request.body) {
                 Ok(revision) if app.store.put_save(xuid, revision, commit, &request.body) => {
                     app.store.add_event(xuid, "save", &format!("Save na nuvem atualizado (revisão {revision})"), json!({ "bytes": request.body.len() }));
+                    // speed trap and zone bests the game will not submit again (db/save_bests.rs)
+                    let taken = app.store.import_save_bests(xuid, &request.body);
+                    if taken > 0 {
+                        app.store.add_event(xuid, "score", &format!("{taken} recorde(s) de radar e zona lidos do save"), json!({ "count": taken }));
+                    }
                     json_reply(200, &json!({ "revision": revision.to_string(), "commit": commit.to_ascii_lowercase() }))
                 }
                 Ok(_) => json_reply(500, &json!({ "error": "Could not store the save." })),
