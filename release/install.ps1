@@ -3,7 +3,10 @@
 #   Install.cmd                  double click (asks for the folder and the server)
 #   install.ps1 -Folder <dir> -Server host:port|https://host -Quiet
 #   irm https://github.com/anarqz/ForzaInfinity/releases/latest/download/install.ps1 | iex
-param([string]$Folder = '', [string]$Server = '', [switch]$Quiet)
+# It needs the Azimuth version the hook was made for ($SupportedAzimuth); -Force installs on
+# another one anyway (the game then plays offline).
+param([string]$Folder = '', [string]$Server = '', [switch]$Quiet, [switch]$Force)
+$SupportedAzimuth = '0.9.7'
 $ErrorActionPreference = 'Stop'
 $DefaultServer = '__DEFAULT_SERVER__'
 $Release = 'https://github.com/anarqz/ForzaInfinity/releases/latest/download'
@@ -43,6 +46,14 @@ if (-not $azimuth) { Fail 'Azimuth was not found. Run Install.cmd from the Azimu
 $bin = Get-Bin $azimuth
 
 if (Get-Process -Name 'azimuth' -ErrorAction SilentlyContinue) { Fail 'Close Forza Horizon 2 (Azimuth) first, then run the installer again.' }
+
+# the Azimuth version: the UTF-16 "0.x.y" string in azimuth.exe
+$text = [Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes((Join-Path $azimuth 'azimuth.exe')))
+$version = [regex]::Matches($text, '(?<![0-9.])0\.[0-9]+\.[0-9]+(?![0-9.])') | Group-Object Value | Sort-Object Count -Descending | Select-Object -First 1 -ExpandProperty Name
+if (-not $version) { Write-Host "Could not read the Azimuth version; ForzaInfinity needs Azimuth $SupportedAzimuth." }
+elseif ($version -ne $SupportedAzimuth -and -not $Force) {
+    Fail "This is Azimuth $version. ForzaInfinity needs Azimuth $SupportedAzimuth for now: on $version the game would play offline.`n`nInstall Azimuth $SupportedAzimuth (keep its folder) and run the installer again, or run install.ps1 -Force to install anyway."
+}
 
 # 2. the server
 if (-not $Server) {

@@ -3,6 +3,9 @@
 Forza Horizon 2's online services, back for the PC version running on **Azimuth 0.9.7**
 (Windows, or Linux and the Steam Deck through Proton).
 
+> **Requires Azimuth 0.9.7.** Azimuth 0.9.8 and 0.9.9 are not supported yet: on them the game
+> plays offline. Keep your 0.9.7 folder for now; the installers check the version.
+
 - **Friends**: add each other by `Name#12345` from the game, see who is online.
 - **Car Clubs**: create, invite, roles, notice board.
 - **Rivals and ghost races**: every friend's best time on each route is a time to beat, with

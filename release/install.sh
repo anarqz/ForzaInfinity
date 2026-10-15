@@ -5,7 +5,10 @@
 #   ./install.sh                         finds azimuth.exe and asks for the server
 #   ./install.sh <azimuth folder> <host:port | https://host>
 #   curl -fsSL https://github.com/anarqz/ForzaInfinity/releases/latest/download/install.sh | bash
+# It needs the Azimuth version the hook was made for (SUPPORTED_AZIMUTH); FORCE=1 installs on
+# another one anyway (the game then plays offline).
 set -euo pipefail
+SUPPORTED_AZIMUTH='0.9.7'
 DEFAULT_SERVER='__DEFAULT_SERVER__'
 RELEASE='https://github.com/anarqz/ForzaInfinity/releases/latest/download'
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || pwd)"
@@ -41,6 +44,22 @@ is_azimuth "$AZIMUTH" || fail "Azimuth was not found. Run: ./install.sh <folder 
 BIN="$AZIMUTH/data/bin"
 
 if ps -eo args | grep -qi '[a]zimuth\.exe'; then fail "Close Forza Horizon 2 (Azimuth) first, then run the installer again."; fi
+
+# the Azimuth version: the UTF-16 "0.x.y" string in azimuth.exe (grep -P, else python3)
+azimuth_version() {
+    local exe="$1/azimuth.exe" found
+    found="$(LC_ALL=C grep -aoP '(?<![0-9.]\x00)0\x00\.\x00[0-9]+\x00\.\x00[0-9]+\x00(?!\.)' "$exe" 2>/dev/null | tr -d '\0' | sort | uniq -c | sort -rn | awk 'NR == 1 { print $2 }')" || true
+    if [ -z "$found" ] && command -v python3 >/dev/null 2>&1; then
+        found="$(python3 -c 'import re, sys, collections; t = open(sys.argv[1], "rb").read().decode("utf-16-le", "ignore"); c = collections.Counter(re.findall(r"(?<![0-9.])0\.[0-9]+\.[0-9]+(?![0-9.])", t)); print(c.most_common(1)[0][0] if c else "")' "$exe" 2>/dev/null)" || true
+    fi
+    echo "$found"
+}
+VERSION="$(azimuth_version "$AZIMUTH")"
+if [ -z "$VERSION" ]; then
+    echo "ForzaInfinity: could not read the Azimuth version; it needs Azimuth $SUPPORTED_AZIMUTH." >&2
+elif [ "$VERSION" != "$SUPPORTED_AZIMUTH" ] && [ -z "${FORCE:-}" ]; then
+    fail "This is Azimuth $VERSION. ForzaInfinity needs Azimuth $SUPPORTED_AZIMUTH for now: on $VERSION the game would play offline. Install Azimuth $SUPPORTED_AZIMUTH (keep its folder) and run the installer again, or FORCE=1 to install anyway."
+fi
 
 # 2. the server
 SERVER="${2:-}"
