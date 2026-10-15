@@ -497,9 +497,9 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 ctx.event("club-report", "Sugeriu remover um membro do clube", json!({ "clubId": club.id }));
                 let note = json!({
                     "recommendingRemovalXuid": me,
-                    "recommendingRemovalGamertag": ctx.store.gamertag(me),
+                    "recommendingRemovalGamertag": ctx.store.game_tag(me),
                     "recommendedForRemovalXuid": who,
-                    "recommendedForRemovalGamertag": ctx.store.gamertag(who),
+                    "recommendedForRemovalGamertag": ctx.store.game_tag(who),
                     "clubId": club.id,
                 });
                 for (member, role, _) in ctx.store.club_members(club.id) {

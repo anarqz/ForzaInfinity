@@ -179,7 +179,7 @@ pub fn sync_rivals(ctx: &Ctx) {
         let track_name = ctx.track_name(track);
         let params = json!({
             "senderXuid": friend,
-            "senderGamertag": ctx.store.gamertag(friend),
+            "senderGamertag": ctx.store.game_tag(friend),
             "senderClubTag": club.as_ref().map(|c| c.0.clone()).unwrap_or_default(),
             "senderClubRole": club.as_ref().map(|c| c.1).unwrap_or(0),
             "senderFlags": 0,

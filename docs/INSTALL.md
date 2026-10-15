@@ -85,8 +85,9 @@ installs the latest release and keeps your server and settings.
 ## Your profile
 
 1. Start the game and open **Settings › INFINITY**.
-2. **Create profile** and type a name (1 to 9 letters or digits). It reads `Name#12345`, the
-   number being this PC's.
+2. **Create profile** and type a name (1 to 20 letters or digits). It reads `Name#12345`, the
+   number being this PC's. In the game, names longer than 15 characters with the number show
+   as the name alone (the game's gamertags hold 15 characters).
 3. The game restarts on your online profile, which goes on from your newest offline save.
 
 From the same screen: **Add friend** (`Name#12345`; you become friends once both added each

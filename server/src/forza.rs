@@ -377,7 +377,7 @@ pub fn live_service(ctx: &Ctx, req: &LiveRequest) -> Option<Value> {
 fn profile_user(ctx: &Ctx, xuid: u64, wanted: &[String]) -> Value {
     // The game looks up every grid driver here: offline AI drivatars are not players, so they
     // get a stable generated name; real players show their own.
-    let known = if ctx.can_see(xuid) { ctx.store.gamertag(xuid) } else { String::new() };
+    let known = if ctx.can_see(xuid) { ctx.store.game_tag(xuid) } else { String::new() };
     let tag = if known.is_empty() { generated_gamertag(xuid) } else { known };
     let settings: Vec<Value> = wanted
         .iter()
@@ -509,7 +509,7 @@ fn user_data(ctx: &Ctx, xuid: u64) -> Value {
     let club = ctx.store.membership(xuid).and_then(|(id, role)| ctx.store.club(id).map(|c| (id, c.tag, role)));
     json!({
         "qwXuid": xuid,
-        "wzGamerTag": ctx.store.gamertag(xuid),
+        "wzGamerTag": ctx.store.game_tag(xuid),
         "flags": 0,
         "clubId": club.as_ref().map(|c| c.0).unwrap_or(0),
         "clubTag": club.as_ref().map(|c| c.1.clone()).unwrap_or_default(),
@@ -898,7 +898,7 @@ fn racing_info(ctx: &Ctx, owner: u64, bucket: i64, car: Option<i64>) -> Option<V
         stored.unwrap_or(if (1..=255).contains(&colour) { BASE_LIVERY_IDS + car * 256 + colour } else { 0 })
     };
     Some(json!({
-        "GamerTag": ctx.store.gamertag(owner),
+        "GamerTag": ctx.store.game_tag(owner),
         "IsFriend": owner != ctx.xuid && ctx.friend_ids().contains(&owner),
         "Xuid": owner,
         "CarId": car,
@@ -974,7 +974,7 @@ fn drivatars_for_race(ctx: &Ctx, params: &Value) -> Value {
         .take(n)
         .collect();
     let player = racing_info(ctx, ctx.xuid, bucket, Some(0)).unwrap_or_else(|| {
-        json!({ "GamerTag": ctx.store.gamertag(ctx.xuid), "Xuid": ctx.xuid, "UserSkillLevel": params["skillSelection"] })
+        json!({ "GamerTag": ctx.store.game_tag(ctx.xuid), "Xuid": ctx.xuid, "UserSkillLevel": params["skillSelection"] })
     });
     if !others.is_empty() {
         let names: Vec<&str> = others.iter().filter_map(|o| o["GamerTag"].as_str()).collect();
