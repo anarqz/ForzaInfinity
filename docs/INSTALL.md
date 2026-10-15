@@ -62,7 +62,7 @@ In `<Azimuth>/data/bin`:
 | File | Change |
 |---|---|
 | `azimuth-tls.dll` | Replaced by ForzaInfinity's. The original is kept as `azimuth-tls.dll.stock` (only the first time). |
-| `FH2_ExtraOptions.ini` | Created from the template, or, if you have one, only `[Network]` changes: `Mode=Proxy` and `Server=<your server>`. Everything else stays. |
+| `FH2_ExtraOptions.ini` | Yours, kept as it is. If you have none, it is created from the template. If you have one, every option you set stays, and only the options of the template it lacks are added (with their comments). `[Network]` is ForzaInfinity's: `Mode=Proxy` and `Server=<your server>`. Before the first change, your file is kept as `FH2_ExtraOptions.ini.pre-infinity`. The game does the same at startup when the INI or its `[Network]` is missing (a DLL copied by hand). |
 | `forzainfinity-update.ps1` (Windows) | The updater that `ForzaInfinity-Update.cmd` runs. |
 | `forzainfinity-report.ps1` (Windows) | The report that `ForzaInfinity-Report.cmd` writes. |
 

@@ -89,22 +89,61 @@ if [ -f "$BIN/azimuth-tls.dll" ] && { [ ! -f "$BIN/azimuth-tls.dll.stock" ] || [
 fi
 cp "$DLL" "$BIN/azimuth-tls.dll.new" && mv "$BIN/azimuth-tls.dll.new" "$BIN/azimuth-tls.dll"
 
-# 4. the settings: [Network] Mode=Proxy and Server=..., keeping everything else (CRLF file)
+# 4. the settings. FH2_ExtraOptions.ini is the player's: what is in it stays as it is, and only the
+# options of our template it lacks are added (with their comments), at the end of their section.
+# [Network] is ForzaInfinity's: Mode=Proxy and Server=<the server chosen above>. Before the first
+# change, the file as it was is kept as FH2_ExtraOptions.ini.pre-infinity.
 INI="$BIN/FH2_ExtraOptions.ini"
+TEMPLATE="$HERE/FH2_ExtraOptions.template.ini"
+if [ ! -f "$TEMPLATE" ]; then TEMPLATE="$TMP/template.ini"; curl -fsSL "$RELEASE/FH2_ExtraOptions.template.ini" -o "$TEMPLATE"; fi
 if [ -f "$INI" ]; then
-    awk -v server="$SERVER" '
-        { sub(/\r$/, "") }
-        /^\[/ { if (net && !mode) print "Mode=Proxy"; if (net && !srv) print "Server=" server; net = ($0 == "[Network]"); seen = seen || net }
-        net && /^[ \t]*Mode[ \t]*=/ { print "Mode=Proxy"; mode = 1; next }
-        net && /^[ \t]*Server[ \t]*=/ { print "Server=" server; srv = 1; next }
-        { print }
+    LC_ALL=C awk -v server="$SERVER" '
+        function trim(t) { gsub(/^[ \t]+|[ \t]+$/, "", t); return t }
+        function strip(t) { sub(/[;#].*/, "", t); return trim(t) }
+        function sec(t) { t = tolower(trim(substr(t, 2, index(t, "]") - 2))); return t == "general" ? "global" : t }
+        function key(t) { return tolower(trim(substr(t, 1, index(t, "=") - 1))) }
+        function ours(t, k) { return k == "mode" ? "Mode=Proxy" : k == "server" ? "Server=" server : t }
+        # an option with its comments; blank line before: 1 always, 0 when it has comments, -1 never
+        function put(b, blank) { if (blank > 0 || (!blank && index(b, "\n"))) print ""; print b }
+        { sub(/\r$/, ""); if (FNR == 1) sub(/^\xef\xbb\xbf/, "") }
+        # the template: its sections in order, and each option with the comments right above it
+        FNR == NR {
+            line = strip($0)
+            if (line == "") { notes = ($0 ~ /^[ \t]*[;#]/) ? notes $0 "\n" : ""; next }
+            if (line ~ /^\[/) { s = sec(line); order[++sections] = s; header[s] = line; notes = ""; next }
+            k = key(line); keys[s] = keys[s] " " k; block[s, k] = notes ($0 ~ /^[ \t]*Server[ \t]*=/ ? "Server=" server : $0); notes = ""
+            next
+        }
+        # the player'"'"'s INI: what it has, and where each of its sections ends
+        FNR == 1 { s = "" }
+        {
+            lines[++count] = $0; line = strip($0)
+            if (line ~ /^\[/) { s = sec(line); seen[s] = 1; last[s] = count; next }
+            if (line == "") next
+            if (s != "" && index(line, "=")) { k = key(line); has[s, k] = 1; if (s == "network" && (k == "mode" || k == "server")) lines[count] = ours($0, k) }
+            if (s != "") last[s] = count
+        }
         END {
-            if (net && !mode) print "Mode=Proxy"; if (net && !srv) print "Server=" server
-            if (!seen) { print ""; print "[Network]"; print "Mode=Proxy"; print "Server=" server }
-        }' "$INI" | sed 's/$/\r/' > "$TMP/ini" && cp "$TMP/ini" "$INI"
+            for (i = 1; i <= count; i++) {
+                print lines[i]
+                for (j = 1; j <= sections; j++) {
+                    s = order[j]; if (!seen[s] || last[s] != i) continue
+                    n = split(keys[s], list, " "); first = 1
+                    for (m = 1; m <= n; m++) if (!has[s, list[m]]) { put(block[s, list[m]], first); first = 0 }
+                }
+            }
+            for (j = 1; j <= sections; j++) {
+                s = order[j]; if (seen[s]) continue
+                printf "\n%s\n", header[s]
+                n = split(keys[s], list, " ")
+                for (m = 1; m <= n; m++) put(block[s, list[m]], m == 1 ? -1 : 0)
+            }
+        }' "$TEMPLATE" "$INI" | sed 's/$/\r/' > "$TMP/ini"
+    if ! cmp -s "$TMP/ini" "$INI"; then
+        [ -f "$INI.pre-infinity" ] || cp "$INI" "$INI.pre-infinity"
+        cp "$TMP/ini" "$INI"
+    fi
 else
-    TEMPLATE="$HERE/FH2_ExtraOptions.ini"
-    if [ ! -f "$TEMPLATE" ]; then TEMPLATE="$TMP/template.ini"; curl -fsSL "$RELEASE/FH2_ExtraOptions.ini" -o "$TEMPLATE"; fi
     sed "s|__SERVER__|$SERVER|" "$TEMPLATE" > "$INI"
 fi
 

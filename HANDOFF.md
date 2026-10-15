@@ -2,6 +2,23 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-15 (hook fh2online.45, não lançado): o INI do jogador é preservado
+
+- **Problema:** jogadores com `FH2_ExtraOptions.ini` próprio perdiam as configurações. O zip trazia um `FH2_ExtraOptions.ini` completo, com `Server=__SERVER__`, e quem copiava o pacote para `data/bin` à mão sobrescrevia o INI (e ficava com `__SERVER__`, que o parser recusa). Sem INI, o hook ficava offline calado (`Mode` padrão `Off`).
+- **Modelo:** virou `release/FH2_ExtraOptions.template.ini` (no zip e nos arquivos soltos da release). Nada no pacote se chama mais `FH2_ExtraOptions.ini`. **Na release, o anexo é `FH2_ExtraOptions.template.ini`**: os instaladores novos baixam esse nome.
+- **Instaladores** (`install.sh`, awk; `install.ps1`, a mesma lógica, mesmo arquivo de saída):
+  - o que o jogador tem fica: valores, comentários, ordem, `[General]` (= `[Global]`);
+  - só entram as opções do modelo que faltam, com os comentários, no fim da seção delas; seções inteiras que faltam vão para o fim;
+  - `[Network]` é nosso: `Mode=Proxy` e `Server=<o escolhido>` (o `AutoUpdate` do jogador fica);
+  - antes da primeira mudança, o original vai para `FH2_ExtraOptions.ini.pre-infinity` (uma vez só); sem mudança, nada é escrito;
+  - teste: `tools/test_install_ini.sh` (bash) e `tools/test_install_ini.sh --ps` (pwsh em `~/tools/pwsh`, e confere que os dois geram o mesmo arquivo).
+- **Hook .45** (`adapters/azimuth_ini.c`, roda antes do `settings_read`):
+  - sem INI: grava o modelo embutido (`adapters/azimuth_ini_template.h`, gerado por `tools/embed_ini_template.py`; o `package_release.sh` regenera e avisa se mudou);
+  - INI sem `[Network]`, sem `Mode` ou sem `Server`, ou com `Server` vazio/`__SERVER__`: acrescenta só isso (`Mode=Proxy`, `Server=https://infinity.anarqz.dev`). `Mode=Off` do jogador é respeitado;
+  - mesmo `.pre-infinity`, escrita por `.infinity-new` + `MoveFileExW`; UTF-16 ou > 8192 bytes ficam como estão. O log diz "INI: …".
+  - teste: `hook/tests/ini_merge_test.py <zig>` com `FH2_RUN="'<SteamLinuxRuntime_4>/run' -- '<Proton 11.0>/files/bin/wine'"` (o wine do Proton 11 sozinho exige glibc 2.38; o Debian daqui não tem). 8 casos, cada um aberto duas vezes.
+- **Falta:** ver no jogo (PC e Deck) o log "INI:" com um INI sem `[Network]`, e publicar numa release.
+
 ## Estado em 2026-10-15, fim da noite (hook fh2online.43, v0.1.7 Latest): leia primeiro
 
 - **v0.1.7** (hook .43, SHA `544d09f0…`). A `.43` guarda o log da abertura anterior em `FH2_ExtraOptions.previous.log` (`logging.c`, uma vez por abertura).
