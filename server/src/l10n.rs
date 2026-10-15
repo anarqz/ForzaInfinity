@@ -27,6 +27,15 @@ const TEXTS: &[(&str, &str)] = &[
     ("The name must have 1 to 20 letters or digits and start with a letter.", "O nome precisa ter de 1 a 20 letras ou números e começar com uma letra."),
     ("This PC already has the account {} on this server.", "Este PC já tem a conta {} neste servidor."),
     ("{} already exists on this server.", "{} já existe neste servidor."),
+    // player-hosted worlds (worlds.rs)
+    ("There is no such world.", "Esse mundo não existe."),
+    ("This world is closed.", "Este mundo está fechado."),
+    ("You cannot join this world.", "Você não pode entrar neste mundo."),
+    ("Only the host's friends can join this world.", "Só os amigos do anfitrião podem entrar neste mundo."),
+    ("This world is full.", "Este mundo está cheio."),
+    ("Too many wrong passwords. Try again later.", "Senhas erradas demais. Tente de novo mais tarde."),
+    ("Too many worlds on this server right now. Try again later.", "Mundos demais neste servidor agora. Tente de novo mais tarde."),
+    ("Free roam is off on this server.", "O free roam online está desligado neste servidor."),
     // Message Center notices (in the receiver's language)
     (
         "You and {} are now friends and rivals. Compare times in ghost races!",

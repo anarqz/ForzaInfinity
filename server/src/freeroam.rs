@@ -22,8 +22,9 @@
 //! its Association answers with that socket address. With no world configured we send
 //! fh2srv.py's placeholder (base64 of "fh2net-game-server", line 94) and hostName 127.0.0.1.
 //!
-//! The world comes from `world_for(xuid)`: in F0 the server-wide `--freeroam-world HOST:PORT`;
-//! in F1 the world the account chose.
+//! The world comes from `world_for(caller)`: the player-hosted world the caller hosts, chose
+//! or is sent to (worlds.rs, F1), else the server-wide `--freeroam-world HOST:PORT` (F0).
+//! A SmartMatch ticket with no world at all is refused (503): the game shows its error.
 //!
 //! Only with `--freeroam` or `--freeroam-world` (main.rs). Without them, and for requests
 //! without an account, these hosts keep their static stubs (responses/hosts/<host>/).
@@ -41,6 +42,9 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::{Map, Value, json};
+
+pub use crate::worlds::Caller;
+use crate::worlds::{Choice, Worlds};
 
 pub const GAMESERVERDS: &str = "gameserverds.xboxlive.com";
 pub const GAMESERVERMS: &str = "gameserverms.xboxlive.com";
@@ -82,7 +86,7 @@ pub struct Reply {
 }
 
 impl Reply {
-    fn json(status: u16, body: Value) -> Self {
+    pub fn json(status: u16, body: Value) -> Self {
         Reply { status, body: Some(body) }
     }
 }
@@ -93,8 +97,10 @@ struct Session {
 }
 
 pub struct Freeroam {
-    /// The world every player is sent to (F0): --freeroam-world.
+    /// The world a player with no hosted world is sent to (F0): --freeroam-world.
     world: Option<WorldAddr>,
+    /// Player-hosted worlds (F1): announced by the hosts' hooks (/infinity/v1/worlds).
+    pub worlds: Worlds,
     /// MPSD sessions by path (lower-cased: session names are case-insensitive).
     sessions: Mutex<HashMap<String, Session>>,
     /// SmartMatch tickets by id: (ticket session key, its details, created).
@@ -143,20 +149,28 @@ fn device_token(xuid: u64) -> String {
 
 impl Freeroam {
     pub fn new(world: Option<WorldAddr>) -> Self {
-        Freeroam { world, sessions: Mutex::new(HashMap::new()), tickets: Mutex::new(HashMap::new()), ids: AtomicU64::new(0) }
+        Freeroam { world, worlds: Worlds::new(), sessions: Mutex::new(HashMap::new()), tickets: Mutex::new(HashMap::new()), ids: AtomicU64::new(0) }
     }
 
-    /// The world a player is sent to. F0: the configured one for everybody; F1 will pick the
-    /// account's chosen world here.
-    pub fn world_for(&self, _xuid: u64) -> Option<WorldAddr> {
-        self.world
+    /// The world a player is sent to: a hosted one (worlds.rs: the caller's own, the one they
+    /// chose, the one they are in, the best open one), else --freeroam-world.
+    pub fn world_for(&self, caller: &Caller, now: Instant) -> Option<WorldAddr> {
+        self.pick(caller, now).map(|(w, _)| w)
+    }
+
+    /// world_for, and how the hosted world was picked (None: the --freeroam-world fallback).
+    fn pick(&self, caller: &Caller, now: Instant) -> Option<(WorldAddr, Option<Choice>)> {
+        match self.worlds.choose(caller, now) {
+            Some(c) => Some((c.addr, Some(c))),
+            None => self.world.map(|w| (w, None)),
+        }
     }
 
     /// `properties.custom` of servers.gameServerPlatform (fh2srv.py 138-140, 209-211): the game
     /// (0x14183B360) reads status (Active / Queued / Error / Quarantined), datacenter,
     /// secureDeviceAddress (base64) and hostName.
-    fn server_entry(&self, xuid: u64, location: &str) -> Value {
-        let (address, host) = match self.world_for(xuid) {
+    fn server_entry(world: Option<WorldAddr>, location: &str) -> Value {
+        let (address, host) = match world {
             Some(w) => (secure_device_address(&w), w.ip().to_string()),
             None => (PLACEHOLDER_ADDRESS.to_owned(), PLACEHOLDER_HOST.to_owned()),
         };
@@ -169,39 +183,19 @@ impl Freeroam {
     }
 
     /// A request for one of the hosts above; None: not ours (the static stub answers).
-    /// `gamertag` is asked only when a session member is written.
-    pub fn handle(
-        &self,
-        method: &str,
-        host: &str,
-        path: &str,
-        body: &[u8],
-        xuid: u64,
-        gamertag: &dyn Fn(u64) -> String,
-    ) -> Option<Reply> {
-        self.handle_at(method, host, path, body, xuid, gamertag, Instant::now())
+    /// The caller's gamertag is asked only when a session member is written.
+    pub fn handle(&self, method: &str, host: &str, path: &str, body: &[u8], caller: &Caller) -> Option<Reply> {
+        self.handle_at(method, host, path, body, caller, Instant::now())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn handle_at(
-        &self,
-        method: &str,
-        host: &str,
-        path: &str,
-        body: &[u8],
-        xuid: u64,
-        gamertag: &dyn Fn(u64) -> String,
-        now: Instant,
-    ) -> Option<Reply> {
+    fn handle_at(&self, method: &str, host: &str, path: &str, body: &[u8], caller: &Caller, now: Instant) -> Option<Reply> {
         let path = path.split('?').next().unwrap_or(path);
         match host {
             GAMESERVERDS => gsds(path),
-            GAMESERVERMS => self.gsms(method, path, body, xuid, now),
-            SESSIONDIRECTORY if path.starts_with("/serviceconfigs/") => {
-                self.mpsd(method, path, body, xuid, gamertag, now)
-            }
+            GAMESERVERMS => self.gsms(method, path, body, caller, now),
+            SESSIONDIRECTORY if path.starts_with("/serviceconfigs/") => self.mpsd(method, path, body, caller, now),
             MOMATCH if path.to_ascii_lowercase().starts_with("/serviceconfigs/") => {
-                self.smartmatch(method, path, body, xuid, gamertag, now)
+                self.smartmatch(method, path, body, caller, now)
             }
             _ => None,
         }
@@ -209,10 +203,12 @@ impl Freeroam {
 
     /// fh2srv.py 143-158: XSAPI AllocateClusterAsync, POST /titles/<id>/clusters {sessionId}.
     /// The session named gets its server entry and the cluster is fulfilled at once.
-    fn gsms(&self, method: &str, path: &str, body: &[u8], xuid: u64, now: Instant) -> Option<Reply> {
+    fn gsms(&self, method: &str, path: &str, body: &[u8], caller: &Caller, now: Instant) -> Option<Reply> {
         if method != "POST" || !path.ends_with("/clusters") {
             return None;
         }
+        let xuid = caller.xuid;
+        let world = self.world_for(caller, now);
         let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let sid = request["sessionId"].as_str().unwrap_or("").to_ascii_lowercase();
         let last = sid.rsplit('/').next().unwrap_or("");
@@ -223,12 +219,12 @@ impl Freeroam {
                     .as_str()
                     .unwrap_or(LOCATION)
                     .to_owned();
-                session.doc["servers"]["gameServerPlatform"] = self.server_entry(xuid, &location);
+                session.doc["servers"]["gameServerPlatform"] = Self::server_entry(world, &location);
                 session.touched = now;
                 println!("freeroam: cluster for session {last} (xuid {xuid})");
             }
         }
-        let (address, host) = match self.world_for(xuid) {
+        let (address, host) = match world {
             Some(w) => (secure_device_address(&w), w.ip().to_string()),
             None => (PLACEHOLDER_ADDRESS.to_owned(), PLACEHOLDER_HOST.to_owned()),
         };
@@ -244,15 +240,8 @@ impl Freeroam {
     }
 
     /// fh2srv.py 165-216: the multiplayer session directory (contract 105), in memory.
-    fn mpsd(
-        &self,
-        method: &str,
-        path: &str,
-        body: &[u8],
-        xuid: u64,
-        gamertag: &dyn Fn(u64) -> String,
-        now: Instant,
-    ) -> Option<Reply> {
+    fn mpsd(&self, method: &str, path: &str, body: &[u8], caller: &Caller, now: Instant) -> Option<Reply> {
+        let xuid = caller.xuid;
         if method == "GET" && path.ends_with("/sessions") {
             // fh2srv.py 167-169: the sessions a user is in. Always none: listing an earlier
             // run's sessions made the game try to rejoin them at startup.
@@ -353,7 +342,7 @@ impl Freeroam {
                     doc["members"][&i] = json!({
                         "constants": { "system": { "xuid": who.to_string(), "index": next }, "custom": {} },
                         "properties": { "system": { "active": false, "ready": false }, "custom": {} },
-                        "gamertag": match gamertag(who) {
+                        "gamertag": match caller.gamertag(who) {
                             t if t.is_empty() => format!("Driver {}", who % 10000),
                             t => crate::db::game_tag(&t),
                         },
@@ -379,8 +368,9 @@ impl Freeroam {
         };
         if let Some(location) = location {
             if doc["servers"].get("gameServerPlatform").is_none() {
-                doc["servers"]["gameServerPlatform"] = self.server_entry(xuid, &location);
-                let to = self.world_for(xuid).map(|w| w.to_string()).unwrap_or_else(|| "placeholder".into());
+                let world = self.world_for(caller, now);
+                doc["servers"]["gameServerPlatform"] = Self::server_entry(world, &location);
+                let to = world.map(|w| w.to_string()).unwrap_or_else(|| "placeholder".into());
                 println!("freeroam: session {} -> world {to} (xuid {xuid})", short(&key));
             }
         }
@@ -433,15 +423,8 @@ impl Freeroam {
     ///   GET    /serviceconfigs/{scid}/hoppers/{hopper}/tickets/{id} -> ticket details
     ///   DELETE /serviceconfigs/{scid}/hoppers/{hopper}/tickets/{id} -> 204
     ///   GET    /serviceconfigs/{scid}/hoppers/{hopper}/stats        -> {name, waitTime, population}
-    fn smartmatch(
-        &self,
-        method: &str,
-        path: &str,
-        body: &[u8],
-        xuid: u64,
-        gamertag: &dyn Fn(u64) -> String,
-        now: Instant,
-    ) -> Option<Reply> {
+    fn smartmatch(&self, method: &str, path: &str, body: &[u8], caller: &Caller, now: Instant) -> Option<Reply> {
+        let xuid = caller.xuid;
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
         // serviceconfigs, scid, hoppers, hopper [, tickets, id | stats]
         if parts.len() < 4 || !parts[2].eq_ignore_ascii_case("hoppers") {
@@ -476,6 +459,12 @@ impl Freeroam {
             (ticket_ref["templateName"].as_str(), ticket_ref["name"].as_str())
         else {
             return Some(Reply::json(400, json!({ "error": "ticketSessionRef is missing" })));
+        };
+        // the world (F1: hosted by a player, else --freeroam-world); none: the game shows its
+        // "unable to connect" error, as before F0
+        let Some((world, choice)) = self.pick(caller, now) else {
+            println!("freeroam: no world for xuid {xuid} (nobody hosts one for them, no --freeroam-world): ticket for {hopper} refused");
+            return Some(Reply::json(503, json!({ "error": "no world" })));
         };
         let ticket_scid = ticket_ref["scid"].as_str().unwrap_or(scid);
         let ticket_key = format!("/serviceconfigs/{ticket_scid}/sessiontemplates/{ticket_template}/sessions/{ticket_name}")
@@ -517,7 +506,7 @@ impl Freeroam {
                 touched: now,
             });
         }
-        let server = |location: &str| self.server_entry(xuid, location);
+        let server = |location: &str| Self::server_entry(Some(world), location);
         let Some(target) = sessions.get_mut(&target_key) else {
             return Some(Reply::json(500, json!({})));
         };
@@ -540,7 +529,7 @@ impl Freeroam {
             target.doc["members"][next.to_string()] = json!({
                 "constants": { "system": { "xuid": xuid.to_string(), "index": next }, "custom": {} },
                 "properties": { "system": { "active": false, "ready": false }, "custom": {} },
-                "gamertag": match gamertag(xuid) {
+                "gamertag": match caller.gamertag(xuid) {
                     t if t.is_empty() => format!("Driver {}", xuid % 10000),
                     t => crate::db::game_tag(&t),
                 },
@@ -557,6 +546,12 @@ impl Freeroam {
             target.doc["membersInfo"]["accepted"] = json!(count);
         }
         drop(sessions);
+        // the player counts in that world now (and their join choice is used up)
+        self.worlds.assign(xuid, choice.as_ref(), now);
+        let via = match &choice {
+            Some(c) => format!("{:?}", c.via).to_ascii_lowercase(),
+            None => "--freeroam-world".into(),
+        };
 
         let ticket_id = self.uuid(&ticket_key);
         let details = json!({
@@ -575,7 +570,7 @@ impl Freeroam {
             }
         }
         tickets.insert(ticket_id.clone(), (ticket_key, details, now));
-        println!("freeroam: ticket {ticket_id} for {hopper} found -> {target_name} (xuid {xuid})");
+        println!("freeroam: ticket {ticket_id} for {hopper} found -> {target_name}, world {world} via {via} (xuid {xuid})");
         Some(Reply::json(200, json!({ "ticketId": ticket_id, "waitTime": 0 })))
     }
 
@@ -647,9 +642,17 @@ mod tests {
         format!("Player#{xuid}")
     }
 
+    fn no_friends(_: u64) -> Vec<u64> {
+        Vec::new()
+    }
+
+    fn me(xuid: u64) -> Caller<'static> {
+        Caller::new(xuid, "198.51.100.9".parse().unwrap(), &tag, &no_friends)
+    }
+
     fn call(f: &Freeroam, method: &str, host: &str, path: &str, body: Value, xuid: u64) -> Reply {
         let body = if body.is_null() { Vec::new() } else { serde_json::to_vec(&body).unwrap() };
-        f.handle(method, host, path, &body, xuid, &tag).expect("handled")
+        f.handle(method, host, path, &body, &me(xuid)).expect("handled")
     }
 
     fn all_strings(v: &Value) -> bool {
@@ -685,7 +688,7 @@ mod tests {
         assert!(all_strings(&b));
         assert_eq!(b["qosServers"][0]["targetLocation"], LOCATION);
         // anything else on the host is the stub's
-        assert!(f.handle("GET", GAMESERVERDS, "/other", b"", 1, &tag).is_none());
+        assert!(f.handle("GET", GAMESERVERDS, "/other", b"", &me(1)).is_none());
     }
 
     #[test]
@@ -693,11 +696,11 @@ mod tests {
         let f = Freeroam::new(None);
         call(&f, "PUT", SESSIONDIRECTORY, SESSION, json!({"members": {"me": {}}}), 7);
         let path = "/serviceconfigs/788f0100-a4bc-46c3-b19b-d1001a96545b/sessiontemplates/defaultTemplate_qos/sessions";
-        let r = f.handle("GET", SESSIONDIRECTORY, &format!("{path}?xuid=7&private=true&take=32"), b"", 7, &tag).unwrap();
+        let r = f.handle("GET", SESSIONDIRECTORY, &format!("{path}?xuid=7&private=true&take=32"), b"", &me(7)).unwrap();
         assert_eq!(r.status, 200);
         assert_eq!(r.body.unwrap(), json!({"results": []}));
         // not a session path: the stub answers
-        assert!(f.handle("POST", SESSIONDIRECTORY, "/handles", b"{}", 7, &tag).is_none());
+        assert!(f.handle("POST", SESSIONDIRECTORY, "/handles", b"{}", &me(7)).is_none());
     }
 
     #[test]
@@ -780,7 +783,7 @@ mod tests {
         let b = r.body.unwrap();
         assert_eq!(b["fulfillmentState"], "Fulfilled");
         assert_eq!(b["secureDeviceAddress"], c["secureDeviceAddress"]);
-        assert!(f.handle("GET", GAMESERVERMS, "/titles/1/clusters", b"", 7, &tag).is_none());
+        assert!(f.handle("GET", GAMESERVERMS, "/titles/1/clusters", b"", &me(7)).is_none());
     }
 
     #[test]
@@ -796,10 +799,10 @@ mod tests {
     fn sessions_expire_and_are_capped() {
         let f = Freeroam::new(None);
         let t0 = Instant::now();
-        let put = |path: &str, at: Instant| f.handle_at("PUT", SESSIONDIRECTORY, path, b"{}", 7, &tag, at).unwrap();
+        let put = |path: &str, at: Instant| f.handle_at("PUT", SESSIONDIRECTORY, path, b"{}", &me(7), at).unwrap();
         assert_eq!(put(SESSION, t0).status, 201);
         let later = t0 + SESSION_TTL + Duration::from_secs(1);
-        let r = f.handle_at("GET", SESSIONDIRECTORY, SESSION, b"", 7, &tag, later).unwrap();
+        let r = f.handle_at("GET", SESSIONDIRECTORY, SESSION, b"", &me(7), later).unwrap();
         assert_eq!(r.status, 404);
         assert_eq!(f.session_count(), 0);
         for i in 0..MAX_SESSIONS + 5 {
@@ -807,7 +810,7 @@ mod tests {
         }
         assert_eq!(f.session_count(), MAX_SESSIONS);
         // the oldest went first
-        let r = f.handle_at("GET", SESSIONDIRECTORY, &format!("{SESSION}0"), b"", 7, &tag, t0).unwrap();
+        let r = f.handle_at("GET", SESSIONDIRECTORY, &format!("{SESSION}0"), b"", &me(7), t0).unwrap();
         assert_eq!(r.status, 404);
     }
 
@@ -876,9 +879,68 @@ mod tests {
         assert_eq!(r.status, 404);
     }
 
+    /// Writes a ticket session for the caller and posts its FreeRoam_qos ticket.
+    fn ticket(f: &Freeroam, c: &Caller, name: &str) -> Reply {
+        let scid = "788f0100-a4bc-46c3-b19b-d1001a96545b";
+        let constants = json!({ "custom": { "gameServerPlatform": { "gameVariantId": GAME_VARIANT } } });
+        let session = json!({ "properties": { "system": { "matchmaking": { "targetSessionConstants": constants } } } });
+        let path = format!("/serviceconfigs/{scid}/sessionTemplates/defaultTemplate_qos/sessions/{name}");
+        f.handle("PUT", SESSIONDIRECTORY, &path, &serde_json::to_vec(&session).unwrap(), c).unwrap();
+        let body = json!({ "ticketSessionRef": { "name": name, "scid": scid, "templateName": "defaultTemplate_qos" } });
+        let hopper = format!("/serviceconfigs/{scid}/hoppers/FreeRoam_qos");
+        f.handle("POST", MOMATCH, &hopper, &serde_json::to_vec(&body).unwrap(), c).unwrap()
+    }
+
+    fn target_address(f: &Freeroam, c: &Caller) -> String {
+        let scid = "788f0100-a4bc-46c3-b19b-d1001a96545b";
+        let path = format!("/serviceconfigs/{scid}/sessiontemplates/defaultTemplate_qos/sessions/fh2inf-freeroam_qos-{}", c.xuid);
+        let doc = f.handle("GET", SESSIONDIRECTORY, &path, b"", c).unwrap().body.unwrap();
+        let b64 = doc["servers"]["gameServerPlatform"]["properties"]["custom"]["secureDeviceAddress"].as_str().unwrap().to_owned();
+        String::from_utf8(B64.decode(b64).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn smartmatch_without_world_is_refused() {
+        let f = Freeroam::new(None);
+        assert_eq!(ticket(&f, &me(7), "T1").status, 503);
+        // a session written by the game still gets the placeholder
+        let doc = call(&f, "PUT", SESSIONDIRECTORY, SESSION, json!({"constants": {"custom": {"gameServerPlatform": {}}}}), 7).body.unwrap();
+        assert_eq!(doc["servers"]["gameServerPlatform"]["properties"]["custom"]["secureDeviceAddress"], PLACEHOLDER_ADDRESS);
+    }
+
+    #[test]
+    fn smartmatch_uses_the_hosted_world() {
+        let fallback: WorldAddr = "10.9.9.9:5101".parse().unwrap();
+        let f = Freeroam::new(Some(fallback));
+        let host = Caller::new(50, "203.0.113.5".parse().unwrap(), &tag, &no_friends);
+        let lan_guest = Caller::new(51, "203.0.113.5".parse().unwrap(), &tag, &no_friends);
+        let guest = me(52);
+        let hosting = json!({
+            "name": "Mundo", "message": "", "visibility": "public", "password": "", "maxPlayers": 12,
+            "port": 5200, "lan": ["192.168.68.40"], "version": "x",
+        });
+        assert_eq!(f.worlds.api("POST", "worlds", &serde_json::to_vec(&hosting).unwrap(), &host).status, 200);
+        // the host: loopback; the same public address: the LAN one; anybody else: the public one
+        assert_eq!(ticket(&f, &host, "H").status, 200);
+        assert_eq!(target_address(&f, &host), "fh2inf:127.0.0.1:5200");
+        assert_eq!(ticket(&f, &lan_guest, "L").status, 200);
+        assert_eq!(target_address(&f, &lan_guest), "fh2inf:192.168.68.40:5200");
+        assert_eq!(ticket(&f, &guest, "G").status, 200);
+        assert_eq!(target_address(&f, &guest), "fh2inf:203.0.113.5:5200");
+        // they count as players there
+        let of = f.worlds.api("GET", "worlds/of/52", b"", &guest).body.unwrap();
+        assert_eq!(of["world"]["players"], json!(3));
+        // the cluster allocation names the same world
+        let b = f.handle("POST", GAMESERVERMS, "/titles/1368890819/clusters", br#"{"sessionId":"x/g"}"#, &guest).unwrap().body.unwrap();
+        assert_eq!(B64.decode(b["secureDeviceAddress"].as_str().unwrap()).unwrap(), b"fh2inf:203.0.113.5:5200");
+        // the world ends: back to --freeroam-world
+        assert_eq!(f.worlds.api("DELETE", "worlds", b"", &host).status, 204);
+        assert_eq!(f.world_for(&guest, Instant::now()), Some(fallback));
+    }
+
     #[test]
     fn bad_body() {
         let f = Freeroam::new(None);
-        assert_eq!(f.handle("PUT", SESSIONDIRECTORY, SESSION, b"[1]", 7, &tag).unwrap().status, 400);
+        assert_eq!(f.handle("PUT", SESSIONDIRECTORY, SESSION, b"[1]", &me(7)).unwrap().status, 400);
     }
 }

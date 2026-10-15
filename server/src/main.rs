@@ -19,7 +19,8 @@
 //!   e. built-in 404.
 //!
 //! With --freeroam / --freeroam-world, the game-server and session calls of online free roam
-//! (gameserverds, gameserverms, sessiondirectory) are answered by freeroam.rs before c.
+//! (gameserverds, gameserverms, sessiondirectory, momatch) are answered by freeroam.rs before c,
+//! and players can host worlds (/infinity/v1/worlds, worlds.rs).
 //!
 //! Forza RPC bodies are `bin/xtsw` (xtsw.rs). The request is decoded into the capture as JSON,
 //! and a spec can answer with `"xtsw": { <_Results as JSON> }` (merged over the built-in
@@ -48,6 +49,7 @@ mod l10n;
 mod guard;
 mod live;
 mod news_cli;
+mod worlds;
 mod xtsw;
 
 use std::{
@@ -364,8 +366,8 @@ fn main() {
     }
     match (&app.freeroam, freeroam_world) {
         (None, _) => {}
-        (Some(_), Some(world)) => println!("  freeroam:  on, world {world}"),
-        (Some(_), None) => println!("  freeroam:  on, no world (placeholder address)"),
+        (Some(_), Some(world)) => println!("  freeroam:  on, player-hosted worlds, else world {world}"),
+        (Some(_), None) => println!("  freeroam:  on, player-hosted worlds only"),
     }
     for stream in listener.incoming() {
         match stream {
@@ -549,7 +551,10 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
     // Online free roam (freeroam.rs): only for an account, and not over a routes.json rule.
     let mut freeroam_reply = match &app.freeroam {
         Some(f) if !specific && ctx.xuid != 0 && target.forza_class.is_none() => {
-            f.handle(&request.method, &target.host, &target.path, &request.body, ctx.xuid, &|x| app.store.gamertag(x))
+            let gamertag = |x| app.store.gamertag(x);
+            let friends = |x| mutual_friends(&app.store, x);
+            let caller = freeroam::Caller::new(ctx.xuid, request.client_ip(), &gamertag, &friends);
+            f.handle(&request.method, &target.host, &target.path, &request.body, &caller)
         }
         _ => None,
     };
@@ -1033,6 +1038,11 @@ fn gamerpic_source(from: &gamerpic::Source) -> &'static str {
 
 fn unix_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// The players `xuid` is friends with (both added each other).
+fn mutual_friends(store: &db::Store, xuid: u64) -> Vec<u64> {
+    store.friends(xuid).into_iter().filter(|f| f.2).map(|f| f.0).collect()
 }
 
 /// Who is playing: the account of X-Fh2-Token (sent by the hook once the player has an
