@@ -2,6 +2,22 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-15, noite (hook fh2online.42, v0.1.6 Latest): leia primeiro
+
+- **v0.1.6** (hook .42, SHA `042bd365…`), instalado nos três aparelhos. O servidor anuncia a versão.
+- **AÇÕES DO JOGADOR** (`azimuth_online_menu.c`, seção "player actions"):
+  - o montador é `FUN_140e13be0`. Os desvios são em `FUN_140dfec20` (acrescenta uma ação; ela é filtrada pela máscara em `página + 0x4e0`) e em `FUN_140e080a0` (ação escolhida; lê o item em `página + 0x4a0`, com o ID em `item + 0x68`);
+  - o jogador é `(*(página + 0x4d0)) + 0x78`, e a vtable `+0x38` dá o XUID;
+  - o item nosso tem o ID `0x40000000` e entra logo depois de EXIBIR CARTÃO (ID 1).
+  - No servidor: `friends/status`, `friends` com `{xuid}` e `friends/remove`.
+- **Idioma:**
+  - `azimuth_lang.c` traduz, pelo texto em inglês, quando o `MessageCenter.str` carregado é o do `br.zip` (16604 bytes, conferido como LSB2);
+  - o hook manda `X-Fh2-Lang: pt-BR`. O `server/src/l10n.rs` traduz `error`/`message` (modelos com `{}`), e o `account_lang` guarda o idioma de cada conta para os avisos do Message Center;
+  - texto novo no hook → nova entrada no `azimuth_lang.c`. No servidor, a entrada vai em `TEXTS`.
+- **Limites:** as rotas de conta contam por token, ou seja, por aparelho (60 de folga, 2/s). `info`/`queue`/`stats` contam como tráfego do jogo. Antes, três aparelhos atrás do mesmo IP batiam no 429.
+- **Clubes:** a privacidade é numerada como no jogo (1 Aberto … 4 Particular).
+- Captura de tela do Deck sem mexer em nada: `XDG_RUNTIME_DIR=/run/user/1000 gamescopectl screenshot /tmp/x.png` pelo SSH.
+
 ## Estado em 2026-10-15, fim da tarde (hook fh2online.39, v0.1.5 Latest): leia primeiro
 
 - **v0.1.5** (hook .39, SHA `ec75be37…`). Instalado à mão no Windows e no Deck; o PC se atualizou sozinho.

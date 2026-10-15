@@ -7,7 +7,8 @@ Forza Horizon 2's online services, back for the PC version running on **Azimuth 
 > offline. The installers check the version. Updating Azimuth puts its own `azimuth-tls.dll`
 > back, so run the installer again after each update.
 
-- **Friends**: add each other by `Name#12345` from the game, see who is online.
+- **Friends**: add each other by `Name#12345` from the game, or with ADD FRIEND in any player's
+  PLAYER ACTIONS (leaderboards, club members); see who is online.
 - **Car Clubs**: create, invite, roles, notice board.
 - **Rivals and ghost races**: every friend's best time on each route is a time to beat, with
   their ghost; with no friend there, the closest time on the server. Every ghost on the
@@ -20,6 +21,7 @@ Forza Horizon 2's online services, back for the PC version running on **Azimuth 
   strikes from different players take a file down.
 - **Cloud save**: your profile starts from your offline progress and follows you to another
   PC or the Deck.
+- **In Portuguese** when the game runs in Portuguese (Brazil); English otherwise.
 - **Updates itself**: a new release installs on its own (from this repository's GitHub
   releases, checked against their SHA-256) and the game asks you to restart.
 
