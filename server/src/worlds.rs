@@ -347,8 +347,9 @@ impl Worlds {
         if !body.is_object() {
             return bad("the body is not a JSON object".into());
         }
+        // server.cfg's Name= is empty by default: the world is named after its host
         let name = match text(body, "name", 40, true) {
-            Ok(n) if n.is_empty() => return bad("name: required".into()),
+            Ok(n) if n.is_empty() => caller.game_tag(caller.xuid),
             Ok(n) => n,
             Err(e) => return bad(e),
         };
@@ -634,12 +635,21 @@ mod tests {
     }
 
     #[test]
+    fn empty_name_is_the_host() {
+        // server.cfg's default (Name= empty), as the hook sends it
+        let w = Worlds::new();
+        let t0 = Instant::now();
+        host_world(&w, HOST, HOME, json!({"name": ""}), t0);
+        let r = call(&w, "GET", "worlds", Value::Null, &who(5, AWAY), t0);
+        assert_eq!(r.body.unwrap()["worlds"][0]["name"], json!("Player#100"));
+    }
+
+    #[test]
     fn bad_input() {
         let w = Worlds::new();
         let c = who(HOST, HOME);
         let t = Instant::now();
         for extra in [
-            json!({"name": ""}),
             json!({"name": "x".repeat(41)}),
             json!({"message": "x".repeat(121)}),
             json!({"visibility": "secret"}),
