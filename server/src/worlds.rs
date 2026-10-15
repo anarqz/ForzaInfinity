@@ -199,11 +199,13 @@ impl State {
     }
 
     /// The host itself: loopback (the relay runs on its PC). The same public address: the
-    /// host's first LAN address. Anybody else: the host's public address.
+    /// host's first LAN address. A host seen on loopback (a server on the host's own PC,
+    /// reached at 127.0.0.1) is only reachable from the others by its LAN address too.
+    /// Anybody else: the host's public address.
     fn address(host: u64, w: &World, caller: &Caller) -> SocketAddr {
         let ip = if caller.xuid == host {
             IpAddr::V4(Ipv4Addr::LOCALHOST)
-        } else if caller.ip == w.host_ip {
+        } else if caller.ip == w.host_ip || w.host_ip.is_loopback() {
             w.lan.first().copied().unwrap_or(w.host_ip)
         } else {
             w.host_ip
@@ -680,6 +682,17 @@ mod tests {
         let c = w.choose(&who(HOST, HOME), t).unwrap();
         assert_eq!(c.via, Via::Hosting);
         assert_eq!(c.addr, "127.0.0.1:5101".parse().unwrap());
+    }
+
+    #[test]
+    fn host_on_the_servers_pc_is_reached_by_lan() {
+        // the server runs on the host's PC: the host announces from 127.0.0.1, a Deck on the
+        // LAN must get the host's LAN address, not loopback (seen 2026-10-15)
+        let w = Worlds::new();
+        let t = Instant::now();
+        host_world(&w, HOST, "127.0.0.1", json!({}), t);
+        let c = w.choose(&who(7, "192.168.68.93"), t).unwrap();
+        assert_eq!(c.addr, "192.168.68.40:5101".parse().unwrap());
     }
 
     #[test]
