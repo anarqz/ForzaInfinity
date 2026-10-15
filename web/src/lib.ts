@@ -177,7 +177,7 @@ export interface Club {
   tag: string;
   name: string;
   description: string;
-  /** 0 open, 1 open to friends, 2 invite only, 3 private */
+  /** 1 open, 2 open to friends, 3 invite only, 4 private */
   privacy: number;
   region: number;
   attitude: number;
@@ -198,6 +198,7 @@ export interface Keyword {
 }
 
 export const ROLES: Record<number, string> = { 1: "Líder", 2: "Vice-líder", 3: "Membro" };
+/** Club privacy as the game numbers it: PRIVACY[privacy - 1] (1 open ... 4 private). */
 export const PRIVACY = ["Aberto", "Aberto para amigos", "Só por convite", "Privado"];
 
 /** The text Xbox shows for a rich presence id (same as forza::rich_presence_text). */

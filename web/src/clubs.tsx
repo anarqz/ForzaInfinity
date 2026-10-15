@@ -25,7 +25,7 @@ function CreateClub(props: { users: UserSummary[]; clubs: Club[]; keywords: Keyw
   const [tag, setTag] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [privacy, setPrivacy] = useState(0);
+  const [privacy, setPrivacy] = useState(1);
   const [kw, setKw] = useState({ region: 0, attitude: 0, interest: 0 });
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -52,7 +52,7 @@ function CreateClub(props: { users: UserSummary[]; clubs: Club[]; keywords: Keyw
       <input value={description} maxLength={200} placeholder="Descrição" className="wide" onChange={(e) => setDescription(e.target.value)} />
       <select value={privacy} onChange={(e) => setPrivacy(Number(e.target.value))}>
         {PRIVACY.map((p, i) => (
-          <option key={p} value={i}>
+          <option key={p} value={i + 1}>
             {p}
           </option>
         ))}
@@ -97,7 +97,7 @@ function ClubCard(props: { club: Club; users: UserSummary[]; keywords: Keyword[]
           onChange={(e) => run(sendJson("PUT", base, { privacy: Number(e.target.value) }))}
         >
           {PRIVACY.map((p, i) => (
-            <option key={p} value={i}>
+            <option key={p} value={i + 1}>
               {p}
             </option>
           ))}
