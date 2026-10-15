@@ -2,6 +2,16 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-15, fim da tarde (hook fh2online.39, v0.1.5 Latest): leia primeiro
+
+- **v0.1.5** (hook .39, SHA `ec75be37…`). Instalado à mão no Windows e no Deck; o PC se atualizou sozinho.
+- **Crash da .38 (corrigido):** 24 arquivos dos zips de carros (`.modelbin`, `.gr2`, shaders) têm o mesmo tamanho de algum `MessageCenter.str`. A .38 lia esses fluxos para testar e voltava ao início, e uma entrada comprimida voltava vazia. Resultado: crash no Windows em `game+0x13e7124`, com "Name"/"Model" nos registradores, quando drivatars traziam esses carros. Agora a tabela é conferida numa segunda abertura da entrada, e o fluxo do jogo só é trocado quando é ela.
+- **Crash na viagem rápida no PC** (`game+0x1fd18f`, `Release()` → destrutor → `this` nulo): sumiu com `GetInCarFromPauseMenu=0`. Esse patch do upstream mexe no `pause.xml` e tira as esperas de streaming e de LOD0. Pode também ter sido o mesmo crash da .38 (carros dos drivatars na chegada). O modelo de INI e os três aparelhos estão com 0, e o INI marca a opção como instável.
+- **Tela esmaecida ao abrir sem conta no servidor público (PC):** o jogo parou de desenhar uns 10 s depois de abrir, com a GPU ociosa e as threads dormindo. Causa não achada. O `winedbg` com `timeout` matou o processo (no Windows o processo depurado morre junto com o depurador); da próxima vez, usar minidump.
+- **Busca de clube por tag que não existe:** agora responde erro. Antes, um `clubDetails` vazio virava uma linha em branco (clube 0) e travava ao abrir.
+- O PC agora joga no **servidor público**; o servidor local é só para desenvolvimento.
+- Para copiar do Windows: usar `sftp`, porque o `scp` corta em 200 KB.
+
 ## Estado em 2026-10-15, tarde (hook fh2online.38, v0.1.4 Latest): leia primeiro
 
 - **v0.1.4 é a Latest** (hook .38, SHA `f222edbc…`). Os servidores público e local anunciam essa versão; hooks .37 ou mais novos se atualizam sozinhos.
