@@ -152,6 +152,12 @@ impl Store {
         .flatten()
     }
 
+    /// The name the game shows: its gamertag fields hold 15 characters (like Xbox's), so a
+    /// "Name#12345" longer than that shows as the name alone (cut at 15).
+    pub fn game_tag(&self, xuid: u64) -> String {
+        game_tag(&self.gamertag(xuid))
+    }
+
     pub fn gamertag(&self, xuid: u64) -> String {
         self.with(|db| {
             db.query_row("SELECT gamertag FROM users WHERE xuid = ?1", [xuid as i64], |r| r.get(0)).optional()
@@ -1118,3 +1124,14 @@ fn new_guid(xuid: u64, now: i64) -> String {
     let h = format!("{a:016x}{b:016x}");
     format!("{}-{}-4{}-a{}-{}", &h[0..8], &h[8..12], &h[13..16], &h[17..20], &h[20..32])
 }
+
+/// See Store::game_tag.
+pub fn game_tag(gamertag: &str) -> String {
+    if gamertag.chars().count() <= GAME_TAG_CHARS {
+        return gamertag.to_owned();
+    }
+    gamertag.split('#').next().unwrap_or("").chars().take(GAME_TAG_CHARS).collect()
+}
+
+/// Characters a gamertag field of the game holds (UserData.wzGamerTag and the others).
+pub const GAME_TAG_CHARS: usize = 15;

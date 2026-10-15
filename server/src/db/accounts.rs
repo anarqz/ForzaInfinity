@@ -4,7 +4,7 @@
 //! says who is playing.
 //!
 //! Tables:
-//! - accounts: name (1-9 letters/digits, first a letter) + discriminator (5 digits, the start
+//! - accounts: name (1-20 letters/digits, first a letter) + discriminator (5 digits, the start
 //!   of the device fingerprint), unique together; gamertag is "name#discriminator".
 //!   One account per PC: `device` is the SHA-1 of the device id the hook sends (its full
 //!   fingerprint hashed with this server's host, so servers cannot match players up);
@@ -62,10 +62,13 @@ impl Account {
     }
 }
 
-/// 1 to 9 ASCII letters or digits starting with a letter: with "#12345" the gamertag stays
-/// within the game's 15 characters.
+/// Longest name. The game shows 15 characters of a gamertag: a longer "Name#12345" shows as the
+/// name alone there (Store::game_tag).
+pub const MAX_NAME: usize = 20;
+
+/// 1 to MAX_NAME ASCII letters or digits starting with a letter.
 pub fn valid_name(name: &str) -> bool {
-    (1..=9).contains(&name.len())
+    (1..=MAX_NAME).contains(&name.len())
         && name.bytes().next().is_some_and(|b| b.is_ascii_alphabetic())
         && name.bytes().all(|b| b.is_ascii_alphanumeric())
 }
@@ -111,7 +114,7 @@ impl Store {
     /// Creates the account and its first device token. Err: a message for the player.
     pub fn register_account(&self, name: &str, discriminator: &str, device: &str) -> Result<(Account, String), String> {
         if !valid_name(name) {
-            return Err("The name must have 1 to 9 letters or digits and start with a letter.".into());
+            return Err("The name must have 1 to 20 letters or digits and start with a letter.".into());
         }
         if !valid_discriminator(discriminator) {
             return Err("Invalid fingerprint (5 digits expected).".into());
@@ -331,7 +334,9 @@ mod tests {
     fn names() {
         assert!(valid_name("Alex"));
         assert!(valid_name("A23456789"));
-        assert!(!valid_name("A234567890"));
+        assert!(valid_name("DominicToretto"));
+        assert!(valid_name("A2345678901234567890"));
+        assert!(!valid_name("A23456789012345678901"));
         assert!(!valid_name("1Alex"));
         assert!(!valid_name("Al ex"));
         assert!(!valid_name(""));

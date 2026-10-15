@@ -399,7 +399,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 Some((owner, t)) => json!({ "versionedTuneData": {
                     "CarId": t["carId"],
                     "BinaryVersion": t["binaryVersion"].as_i64().unwrap_or(0),
-                    "CreatorName": t["creatorName"].as_str().map(str::to_owned).unwrap_or_else(|| ctx.store.gamertag(owner)),
+                    "CreatorName": t["creatorName"].as_str().map(str::to_owned).unwrap_or_else(|| ctx.store.game_tag(owner)),
                     "CreatorXuid": owner,
                     "InstalledParts": t["installedParts"],
                     "Tuning": t["tuning"],
