@@ -153,7 +153,7 @@ impl Store {
     }
 
     /// The name the game shows: its gamertag fields hold 15 characters (like Xbox's), so a
-    /// "Name#12345" longer than that shows as the name alone (cut at 15).
+    /// "Name#12345" longer than that keeps its number and the name is cut ("Gameloadi#32189").
     pub fn game_tag(&self, xuid: u64) -> String {
         game_tag(&self.gamertag(xuid))
     }
@@ -731,13 +731,28 @@ impl Store {
         )
     }
 
+    /// The player with this gamertag, or with the short form the game shows of it (game_tag:
+    /// "Gameloadi#32189" for "Gameloading1889#32189"), when only one fits.
     pub fn xuid_by_gamertag(&self, gamertag: &str) -> Option<u64> {
-        self.with(|db| {
-            db.query_row("SELECT xuid FROM users WHERE gamertag = ?1 COLLATE NOCASE", [gamertag.trim()], |r| r.get::<_, i64>(0))
-                .optional()
-        })
-        .flatten()
-        .map(|x| x as u64)
+        let gamertag = gamertag.trim();
+        let exact = self
+            .with(|db| {
+                db.query_row("SELECT xuid FROM users WHERE gamertag = ?1 COLLATE NOCASE", [gamertag], |r| r.get::<_, i64>(0))
+                    .optional()
+            })
+            .flatten();
+        if let Some(x) = exact {
+            return Some(x as u64);
+        }
+        let (_, number) = gamertag.rsplit_once('#')?;
+        let shown: Vec<i64> = self
+            .with(|db| {
+                let mut st = db.prepare("SELECT xuid, gamertag FROM users WHERE gamertag LIKE ?1")?;
+                let rows = st.query_map([format!("%#{number}")], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+                Ok(rows.flatten().filter(|(_, t)| game_tag(t).eq_ignore_ascii_case(gamertag)).map(|(x, _)| x).collect())
+            })
+            .unwrap_or_default();
+        (shown.len() == 1).then(|| shown[0] as u64)
     }
 
     pub fn user_exists(&self, xuid: u64) -> bool {
@@ -1131,7 +1146,25 @@ pub fn game_tag(gamertag: &str) -> String {
     if gamertag.chars().count() <= GAME_TAG_CHARS {
         return gamertag.to_owned();
     }
-    gamertag.split('#').next().unwrap_or("").chars().take(GAME_TAG_CHARS).collect()
+    match gamertag.rsplit_once('#') {
+        Some((name, number)) if number.chars().count() < GAME_TAG_CHARS => {
+            let room = GAME_TAG_CHARS - 1 - number.chars().count();
+            format!("{}#{number}", name.chars().take(room).collect::<String>())
+        }
+        _ => gamertag.chars().take(GAME_TAG_CHARS).collect(),
+    }
+}
+
+#[cfg(test)]
+mod game_tag_tests {
+    #[test]
+    fn keeps_the_number() {
+        assert_eq!(super::game_tag("Anarqz#08723"), "Anarqz#08723");
+        assert_eq!(super::game_tag("Gameloading1#32189"), "Gameloadi#32189");
+        assert_eq!(super::game_tag("Gameloading1889#32189"), "Gameloadi#32189");
+        assert_eq!(super::game_tag("Gameloadi#32189"), "Gameloadi#32189");
+        assert_eq!(super::game_tag("NoNumberButVeryLong"), "NoNumberButVery");
+    }
 }
 
 /// Characters a gamertag field of the game holds (UserData.wzGamerTag and the others).
