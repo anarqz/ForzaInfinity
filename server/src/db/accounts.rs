@@ -193,6 +193,12 @@ impl Store {
         .flatten()
     }
 
+    /// When the account was made (ms), for the gates' arrival window.
+    pub fn account_created(&self, xuid: u64) -> Option<i64> {
+        self.with(|db| db.query_row("SELECT created FROM accounts WHERE xuid = ?1", [xuid as i64], |r| r.get(0)).optional())
+            .flatten()
+    }
+
     /// The account behind a device token (banned accounts included: the caller decides).
     pub fn account_by_token(&self, token: &str) -> Option<Account> {
         let token = token.trim();

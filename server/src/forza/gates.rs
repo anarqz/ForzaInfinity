@@ -25,6 +25,13 @@ pub const XP_REPORTED_PER_HOUR: f64 = 400_000.0;
 pub const SPEED_MARGIN: f64 = 1.3;
 pub const CARS_BASE: i64 = 10;
 pub const CARS_PER_HOUR: i64 = 20;
+/// Hours after an account is made in which its offline progress arrives as it is: the profile
+/// and the whole garage (DLC cars included, sent in parts) of the save the player brings. The
+/// hard limits still hold; growth is measured from what was taken by then.
+pub const ARRIVAL_HOURS: i64 = 3;
+/// Highest car id the game uses (base cars go to 2501; car packs add their own in between and
+/// above, which the base database the server reads does not list).
+const MAX_CAR_ID: i64 = 4095;
 /// Hard limits whatever the history.
 const MAX_CREDITS: i64 = 999_999_999;
 const MAX_XP: i64 = 200_000_000;
@@ -68,13 +75,22 @@ pub fn progress(params: &Value) -> Result<Progress, String> {
     Ok(p)
 }
 
+/// Whether an account made at `created` is still arriving (ARRIVAL_HOURS).
+pub fn arriving(created: Option<i64>, now: i64) -> bool {
+    created.is_some_and(|c| now - c < ARRIVAL_HOURS * 3_600_000)
+}
+
 fn hours_since(then: i64, now: i64) -> f64 {
     ((now - then).max(0) as f64 / 3_600_000.0).min(24.0 * 30.0)
 }
 
-/// Growth since the last accepted sync, within the allowances. A first sync (no baseline) is
-/// checked against a new profile's start: the starter save's credits.
-pub fn check_growth(previous: Option<&Baseline>, new: &Progress, now: i64) -> Result<(), String> {
+/// Growth since the last accepted sync, within the allowances. While the account is arriving
+/// anything within the limits is taken; a first sync after that (no baseline) is checked
+/// against a new profile's start: the starter save's credits.
+pub fn check_growth(previous: Option<&Baseline>, new: &Progress, now: i64, arriving: bool) -> Result<(), String> {
+    if arriving {
+        return Ok(());
+    }
     let start = Baseline { credits: 50_000, xp: new.xp.min(XP_BASE * 20), level: new.level.min(30), winnings: 0, synced: now };
     let b = previous.unwrap_or(&start);
     let hours = hours_since(b.synced, now);
@@ -121,13 +137,19 @@ pub fn check_race_time(catalog: &Catalog, car: i64, track: i64, seconds: f64) ->
     Ok(())
 }
 
-/// garageCars of an UpdateAllTables: real cars, and not too many new ones at once.
-pub fn check_garage(catalog: &Catalog, params: &Value, stored: usize, previous: Option<(i64, i64)>, now: i64) -> Result<(), String> {
+/// garageCars of an UpdateAllTables: car ids the game can have (the base database's, or a car
+/// pack's), and not too many new ones at once (unless the account is arriving).
+pub fn check_garage(
+    catalog: &Catalog, params: &Value, stored: usize, previous: Option<(i64, i64)>, now: i64, arriving: bool,
+) -> Result<(), String> {
     let rows = params["garageCars"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-    if !catalog.cars.is_empty() {
-        if let Some(bad) = rows.iter().filter_map(|r| r["carId"].as_i64()).find(|c| catalog.car(*c).is_none()) {
-            return Err(format!("unknown car {bad}"));
-        }
+    if let Some(bad) =
+        rows.iter().filter_map(|r| r["carId"].as_i64()).find(|c| catalog.car(*c).is_none() && !(1..=MAX_CAR_ID).contains(c))
+    {
+        return Err(format!("unknown car {bad}"));
+    }
+    if arriving {
+        return Ok(());
     }
     let (before, then) = previous.unwrap_or((stored as i64, now));
     let added = rows.len() as i64 - params["deleteGarageCars"].as_array().map(Vec::len).unwrap_or(0) as i64;
@@ -162,20 +184,35 @@ mod tests {
         let now = 10 * 3_600_000;
         let base = Baseline { credits: 10_000, xp: 100_000, level: 6, winnings: 0, synced: now - 1_800_000 };
         // 10k -> 1M in half an hour: refused
-        assert!(check_growth(Some(&base), &p(1_000_000, 100_000, 6), now).is_err());
+        assert!(check_growth(Some(&base), &p(1_000_000, 100_000, 6), now, false).is_err());
         // a good race in half an hour: fine
-        assert!(check_growth(Some(&base), &p(80_000, 130_000, 7), now).is_ok());
+        assert!(check_growth(Some(&base), &p(80_000, 130_000, 7), now, false).is_ok());
         // spending is never a problem
-        assert!(check_growth(Some(&base), &p(0, 100_000, 6), now).is_ok());
+        assert!(check_growth(Some(&base), &p(0, 100_000, 6), now, false).is_ok());
         // XP and levels
-        assert!(check_growth(Some(&base), &p(10_000, 2_000_000, 6), now).is_err());
-        assert!(check_growth(Some(&base), &p(10_000, 120_000, 40), now).is_err());
+        assert!(check_growth(Some(&base), &p(10_000, 2_000_000, 6), now, false).is_err());
+        assert!(check_growth(Some(&base), &p(10_000, 120_000, 40), now, false).is_err());
         // a day later much more is fine
         let later = Baseline { synced: now - 24 * 3_600_000, ..base };
-        assert!(check_growth(Some(&later), &p(5_000_000, 3_000_000, 30), now).is_ok());
+        assert!(check_growth(Some(&later), &p(5_000_000, 3_000_000, 30), now, false).is_ok());
         // first sync of a new profile: near the starter save
-        assert!(check_growth(None, &p(60_000, 100_717, 6), now).is_ok());
-        assert!(check_growth(None, &p(5_000_000, 100_717, 6), now).is_err());
+        assert!(check_growth(None, &p(60_000, 100_717, 6), now, false).is_ok());
+        assert!(check_growth(None, &p(5_000_000, 100_717, 6), now, false).is_err());
+        // an account bringing its offline save
+        assert!(check_growth(None, &p(5_000_000, 4_000_000, 40), now, true).is_ok());
+        assert!(arriving(Some(now - 3_600_000), now) && !arriving(Some(now - 4 * 3_600_000), now) && !arriving(None, now));
+    }
+
+    #[test]
+    fn garage() {
+        let catalog = Catalog::default();
+        let cars = |ids: &[i64]| serde_json::json!({ "garageCars": ids.iter().map(|c| serde_json::json!({ "carId": c })).collect::<Vec<_>>() });
+        let many: Vec<i64> = (1..=60).collect();
+        // a car pack's car, a whole garage while arriving
+        assert!(check_garage(&catalog, &cars(&[2284, 2546]), 0, None, 0, false).is_ok());
+        assert!(check_garage(&catalog, &cars(&many), 0, None, 0, true).is_ok());
+        assert!(check_garage(&catalog, &cars(&many), 0, None, 0, false).is_err());
+        assert!(check_garage(&catalog, &cars(&[99_999]), 0, None, 0, true).is_err());
     }
 
     #[test]

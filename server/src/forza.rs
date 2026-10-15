@@ -549,7 +549,8 @@ fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
     // integrity: credits / XP / level growth and top speed within reason (gates.rs)
     let now = crate::unix_ms();
     let checked = gates::progress(params).and_then(|p| {
-        gates::check_growth(ctx.store.baseline(ctx.xuid).as_ref(), &p, now)?;
+        let arriving = gates::arriving(ctx.store.account_created(ctx.xuid), now);
+        gates::check_growth(ctx.store.baseline(ctx.xuid).as_ref(), &p, now, arriving)?;
         // a new top speed record must fit the cars (an old record may come from a car since sold)
         let record = ctx.store.profile_data(ctx.xuid)["playerRaceHistory"][0]["topSpeed"].as_f64().unwrap_or(0.0);
         if p.top_speed > record + 0.5 {
@@ -593,7 +594,9 @@ fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
 fn profile_update_tables(ctx: &Ctx, params: &Value) -> Value {
     // integrity: only real cars, and not a garage full of them at once
     let stored = garage_cars(ctx).len();
-    if let Err(reason) = gates::check_garage(ctx.catalog, params, stored, ctx.store.garage_baseline(ctx.xuid), crate::unix_ms()) {
+    let now = crate::unix_ms();
+    let arriving = gates::arriving(ctx.store.account_created(ctx.xuid), now);
+    if let Err(reason) = gates::check_garage(ctx.catalog, params, stored, ctx.store.garage_baseline(ctx.xuid), now, arriving) {
         gates::refuse(ctx, "Garage sync", &reason);
         return json!({});
     }
