@@ -22,6 +22,7 @@ pub const SCHEMA: &str = "
         xuid INTEGER PRIMARY KEY, name TEXT NOT NULL, discriminator TEXT NOT NULL,
         device TEXT NOT NULL UNIQUE, created INTEGER NOT NULL, banned INTEGER NOT NULL DEFAULT 0,
         UNIQUE (name COLLATE NOCASE, discriminator));
+    CREATE TABLE IF NOT EXISTS account_lang (xuid INTEGER PRIMARY KEY, lang TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS devices (
         token_hash TEXT PRIMARY KEY, xuid INTEGER NOT NULL, created INTEGER NOT NULL,
         last_seen INTEGER NOT NULL);
@@ -349,6 +350,23 @@ impl Store {
             )
         })
         .unwrap_or(0)
+    }
+
+    /// The game language the account's hook last reported (X-Fh2-Lang), "" when none.
+    pub fn lang(&self, xuid: u64) -> String {
+        self.with(|db| db.query_row("SELECT lang FROM account_lang WHERE xuid = ?1", [xuid as i64], |r| r.get(0)).optional())
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    pub fn set_lang(&self, xuid: u64, lang: &str) {
+        let lang: String = lang.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(16).collect();
+        self.with(|db| {
+            db.execute(
+                "INSERT INTO account_lang (xuid, lang) VALUES (?1, ?2) ON CONFLICT (xuid) DO UPDATE SET lang = ?2",
+                params![xuid as i64, lang],
+            )
+        });
     }
 
     /// A player everyone sees (leaderboards, ghosts, drivatars, shared files): an account that

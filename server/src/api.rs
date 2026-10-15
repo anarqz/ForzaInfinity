@@ -111,6 +111,20 @@ fn account_route(path: &str) -> Option<&str> {
 /// device; `device` = SHA-256 hex of the full fingerprint + this server's host);
 /// GET me (X-Fh2-Token) -> {xuid, gamertag}; GET info -> what the server is.
 fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
+    let lang = request.header("x-fh2-lang").unwrap_or("").to_owned();
+    REPLY_PORTUGUESE.with(|p| p.set(crate::l10n::is_portuguese(&lang)));
+    // remembered per account, for Message Center notices it is sent
+    if !lang.is_empty() {
+        if let Some(a) = request.header("x-fh2-token").and_then(|t| app.store.account_by_token(t)) {
+            app.store.set_lang(a.xuid, &lang);
+        }
+    }
+    let reply = account_api_inner(app, request, path);
+    REPLY_PORTUGUESE.with(|p| p.set(false));
+    reply
+}
+
+fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
     let route = account_route(path).unwrap_or("");
     if request.body.len() > MAX_ACCOUNT_BODY && route != "save" {
         return json_reply(413, &json!({ "error": "too large" }));
@@ -288,16 +302,18 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
                         let theirs = t.gamertag();
                         if app.store.request_friend(me.xuid, t.xuid) {
                             for (to, other) in [(t.xuid, &mine), (me.xuid, &theirs)] {
+                                let pt = crate::l10n::is_portuguese(&app.store.lang(to));
                                 app.store.notify(to, crate::db::notifications::MESSAGE, json!({
-                                    "Message": format!("You and {other} are now friends and rivals. Compare times in ghost races!"),
+                                    "Message": crate::l10n::tr(pt, &format!("You and {other} are now friends and rivals. Compare times in ghost races!")),
                                     "SRAUri": "",
                                 }));
                             }
                             app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
                             json_reply(200, &json!({ "message": format!("You and {theirs} are now friends and rivals!"), "friends": true }))
                         } else {
+                            let pt = crate::l10n::is_portuguese(&app.store.lang(t.xuid));
                             app.store.notify(t.xuid, crate::db::notifications::MESSAGE, json!({
-                                "Message": format!("{mine} wants to be your friend. Add {mine} in Settings > Infinity to become rivals."),
+                                "Message": crate::l10n::tr(pt, &format!("{mine} wants to be your friend. Add {mine} in Settings > Infinity to become rivals.")),
                                 "SRAUri": "",
                             }));
                             json_reply(200, &json!({
@@ -703,8 +719,22 @@ fn response(status: u16, content_type: &str, extra: &str, body: &[u8]) -> Vec<u8
     out
 }
 
+thread_local! {
+    /// The account endpoint being answered asked for Portuguese (X-Fh2-Lang): json_reply
+    /// translates its "error" and "message" (l10n.rs).
+    static REPLY_PORTUGUESE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn json_reply(status: u16, value: &Value) -> Vec<u8> {
-    response(status, "application/json; charset=utf-8", "", &serde_json::to_vec(value).unwrap_or_default())
+    let mut value = value.clone();
+    if REPLY_PORTUGUESE.with(|p| p.get()) {
+        for key in ["error", "message"] {
+            if let Some(text) = value[key].as_str() {
+                value[key] = Value::from(crate::l10n::tr(true, text));
+            }
+        }
+    }
+    response(status, "application/json; charset=utf-8", "", &serde_json::to_vec(&value).unwrap_or_default())
 }
 
 fn redirect(to: &str) -> Vec<u8> {
