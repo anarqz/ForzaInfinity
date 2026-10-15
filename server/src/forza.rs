@@ -762,18 +762,27 @@ const VIEW_FRIENDS_AND_CLUB: i64 = 4;
 fn club_xp_rows(ctx: &Ctx, params: &Value) -> Value {
     use crate::db::clubs::ROLE_LEADER;
     let mine = ctx.store.membership(ctx.xuid).map(|m| m.0);
-    // (xuid shown, score, the caller's own row)
-    let ranked: Vec<(u64, f64, bool)> = if params["view"].as_i64() == Some(VIEW_CLUB) {
-        mine.map(|c| ctx.store.club_ladder(c).into_iter().map(|(x, xp)| (x, xp, x == ctx.xuid)).collect()).unwrap_or_default()
+    // the row's club (ClubShortData: what the board's MEMBERS and CLUB columns show)
+    let club_data = |id: i64| match ctx.store.club(id) {
+        Some(c) => json!({
+            "clubId": c.id, "clubTag": c.tag, "clubName": c.name,
+            "memberCount": ctx.store.club_members(c.id).len(), "clubPrivacy": c.privacy,
+        }),
+        None => json!({}),
+    };
+    // (xuid shown, score, the caller's own row, its club)
+    let ranked: Vec<(u64, f64, bool, i64)> = if params["view"].as_i64() == Some(VIEW_CLUB) {
+        mine.map(|c| ctx.store.club_ladder(c).into_iter().map(|(x, xp)| (x, xp, x == ctx.xuid, c)).collect())
+            .unwrap_or_default()
     } else {
-        let mut clubs: Vec<(u64, f64, bool)> = ctx
+        let mut clubs: Vec<(u64, f64, bool, i64)> = ctx
             .store
             .clubs()
             .iter()
             .filter(|c| c.privacy != crate::db::clubs::PRIVACY_PRIVATE || Some(c.id) == mine)
             .filter_map(|c| {
                 let leader = ctx.store.club_members(c.id).into_iter().find(|m| m.1 == ROLE_LEADER).map(|m| m.0)?;
-                Some((leader, ctx.store.club_xp(c.id) as f64, Some(c.id) == mine))
+                Some((leader, ctx.store.club_xp(c.id) as f64, Some(c.id) == mine, c.id))
             })
             .collect();
         clubs.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -781,17 +790,17 @@ fn club_xp_rows(ctx: &Ctx, params: &Value) -> Value {
     };
     let start = params["startAt"].as_i64().unwrap_or(1).max(1) as usize;
     let max = params["maxResults"].as_i64().unwrap_or(50).clamp(0, 500) as usize;
-    let row = |position: usize, xuid: u64, score: f64| {
+    let row = |position: usize, r: &(u64, f64, bool, i64)| {
         json!({
-            "position": position, "rank": position, "user": user_data(ctx, xuid), "score": score,
-            "submittedTime": iso_utc(crate::unix_ms()), "isClean": true,
+            "position": position, "rank": position, "user": user_data(ctx, r.0), "score": r.1,
+            "submittedTime": iso_utc(crate::unix_ms()), "isClean": true, "clubData": club_data(r.3),
         })
     };
-    let page: Vec<Value> = ranked.iter().enumerate().skip(start - 1).take(max).map(|(i, r)| row(i + 1, r.0, r.1)).collect();
+    let page: Vec<Value> = ranked.iter().enumerate().skip(start - 1).take(max).map(|(i, r)| row(i + 1, r)).collect();
     let user_row = ranked
         .iter()
         .position(|r| r.2)
-        .map(|i| row(i + 1, ranked[i].0, ranked[i].1))
+        .map(|i| row(i + 1, &ranked[i]))
         .unwrap_or_else(|| json!({ "user": user_data(ctx, ctx.xuid) }));
     json!({ "rows": page, "userRow": user_row, "available": ranked.len() })
 }
@@ -1328,6 +1337,8 @@ mod tests {
         assert_eq!(global["rows"][0]["user"]["qwXuid"], a);
         assert_eq!(global["rows"][0]["score"], 400.0);
         assert_eq!(global["userRow"]["position"], 1);
+        assert_eq!(global["rows"][0]["clubData"]["clubTag"], "ONE");
+        assert_eq!(global["rows"][0]["clubData"]["memberCount"], 2);
         let club = board(3);
         assert_eq!(club["rows"][0]["user"]["qwXuid"], b);
         assert_eq!(club["userRow"]["score"], 300.0);
