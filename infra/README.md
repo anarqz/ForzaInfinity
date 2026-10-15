@@ -49,3 +49,21 @@ sudo systemctl start fh2-server
 ```
 
 Reading the bucket needs your own account (the VM's cannot).
+
+## Admin news
+
+`./news.sh` puts a message from ForzaInfinity in every player's in-game Message Center (the
+same Message notification the server sends when players become friends):
+
+```sh
+./news.sh send "Leaderboards are now open to every player!"   # shows text and player count, asks first
+./news.sh send -f news.txt --to Name#12345                      # one player; text from a file
+./news.sh list                                                   # past sends
+./news.sh delete 3                                               # takes send #3 back
+```
+
+There is no HTTP route for it, so nobody can send news through the server. The script runs
+`fh2-server news` on the VM over IAP SSH, as the `infinity` user, against the live database;
+what lets you in is your own gcloud login with access to the project, and nothing secret is
+in this repository. Players see a news on their next Message Center poll (within 5 minutes).
+At most 512 characters; line breaks are real ones or `\n`.
