@@ -40,11 +40,11 @@ fi
 cp "$DLL" "$STAGE/azimuth-tls.dll"
 VERSION="$(grep -o 'MOD_VERSION "[^"]*"' "$ROOT/hook/extra_options.h" | cut -d'"' -f2)"
 
-for f in Install.cmd Uninstall.cmd Update.cmd install.ps1 uninstall.ps1 update.ps1 install.sh uninstall.sh update.sh \
+for f in Install.cmd Uninstall.cmd Update.cmd Report.cmd install.ps1 uninstall.ps1 update.ps1 report.ps1 install.sh uninstall.sh update.sh report.sh \
     FH2_ExtraOptions.ini; do
     cp "$ROOT/release/$f" "$STAGE/$f"
 done
-chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/update.sh"
+chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh" "$STAGE/update.sh" "$STAGE/report.sh"
 if [ -n "$SERVER" ]; then
     sed -i "s|__DEFAULT_SERVER__|$SERVER|" "$STAGE/install.sh" "$STAGE/install.ps1"
 fi
@@ -54,6 +54,8 @@ fi
     printf 'Steam Deck / Linux: run ./install.sh (./uninstall.sh puts the original file back).\r\n\r\n'
     printf 'Updates install by themselves (the game asks to restart). By hand: close the game and run\r\n'
     printf 'ForzaInfinity-Update in the Azimuth folder (Update.cmd / update.sh here do the same).\r\n\r\n'
+    printf 'Something wrong? ForzaInfinity-Report in the Azimuth folder (Report.cmd / report.sh here) writes\r\n'
+    printf 'ForzaInfinity-Report.txt, the last launch, to send to whoever helps you.\r\n\r\n'
     printf 'Then start the game and open Settings > INFINITY > Create profile.\r\n'
     printf 'Full guide: https://github.com/anarqz/ForzaInfinity/blob/main/docs/INSTALL.md\r\n'
 } > "$STAGE/README.txt"

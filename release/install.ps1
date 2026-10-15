@@ -120,4 +120,14 @@ try {
     [IO.File]::WriteAllText((Join-Path $azimuth 'ForzaInfinity-Update.cmd'), $cmd, (New-Object System.Text.ASCIIEncoding))
 } catch { Write-Host "The updater could not be set up: $_" }
 
+# 6. the report, left there too: ForzaInfinity-Report.cmd writes the last launch to one file
+$reporter = Join-Path $bin 'forzainfinity-report.ps1'
+try {
+    $source = Join-Path $here 'report.ps1'
+    if (Test-Path $source) { Copy-Item $source $reporter -Force }
+    else { Invoke-WebRequest -UseBasicParsing -Uri "$Release/report.ps1" -OutFile $reporter }
+    $cmd = "@echo off`r`nrem ForzaInfinity: writes ForzaInfinity-Report.txt (the last launch) on the Desktop, to send to whoever helps you.`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0data\bin\forzainfinity-report.ps1`" -Folder `"%~dp0.`"`r`npause`r`n"
+    [IO.File]::WriteAllText((Join-Path $azimuth 'ForzaInfinity-Report.cmd'), $cmd, (New-Object System.Text.ASCIIEncoding))
+} catch { Write-Host "The report could not be set up: $_" }
+
 Say "ForzaInfinity is installed in $azimuth.`n`nServer: $Server`n`nStart the game, then open Settings > INFINITY to create your profile."

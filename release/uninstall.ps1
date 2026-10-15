@@ -20,5 +20,5 @@ $stock = if ($azimuth) { Join-Path (Get-Bin $azimuth) 'azimuth-tls.dll.stock' } 
 if (-not $stock -or -not (Test-Path $stock)) { Say 'No backup (azimuth-tls.dll.stock) found in that folder.' 'Error'; exit 1 }
 if (Get-Process -Name 'azimuth' -ErrorAction SilentlyContinue) { Say 'Close Forza Horizon 2 (Azimuth) first.' 'Error'; exit 1 }
 Copy-Item $stock (Join-Path (Get-Bin $azimuth) 'azimuth-tls.dll') -Force
-Remove-Item (Join-Path $azimuth 'ForzaInfinity-Update.cmd'), (Join-Path (Get-Bin $azimuth) 'forzainfinity-update.ps1') -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $azimuth 'ForzaInfinity-Update.cmd'), (Join-Path (Get-Bin $azimuth) 'forzainfinity-update.ps1'), (Join-Path $azimuth 'ForzaInfinity-Report.cmd'), (Join-Path (Get-Bin $azimuth) 'forzainfinity-report.ps1') -ErrorAction SilentlyContinue
 Say "Azimuth's original azimuth-tls.dll is back. Your saves and FH2_ExtraOptions.ini were left as they are."
