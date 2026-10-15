@@ -2,7 +2,8 @@
 //!
 //! Values the game uses (from its string tables, FUN_140c197d0 / FUN_140bbbfd0):
 //! - roleInClub: 1 = Leader, 2 = CoLeader, 3 = Member (0 = not in a club);
-//! - privacy: 0 = Open, 1 = OpenToFriends, 2 = InviteOnly, 3 = Private.
+//! - privacy, as the game numbers it: 1 = Open, 2 = OpenToFriends, 3 = InviteOnly, 4 = Private
+//!   (its search sends 0 for any).
 //!
 //! A player is in at most one club. When the leader leaves, the oldest co-leader (or member)
 //! takes over; a club with no members is deleted.
@@ -18,9 +19,10 @@ pub const ROLE_LEADER: i64 = 1;
 pub const ROLE_COLEADER: i64 = 2;
 pub const ROLE_MEMBER: i64 = 3;
 
-pub const PRIVACY_OPEN: i64 = 0;
-pub const PRIVACY_FRIENDS: i64 = 1;
-pub const PRIVACY_INVITE_ONLY: i64 = 2;
+pub const PRIVACY_OPEN: i64 = 1;
+pub const PRIVACY_FRIENDS: i64 = 2;
+pub const PRIVACY_INVITE_ONLY: i64 = 3;
+pub const PRIVACY_PRIVATE: i64 = 4;
 
 /// ClubHistoryEntryData.action (our own numbering; the game only shows it).
 pub const ACTION_JOINED: i64 = 0;
@@ -108,8 +110,8 @@ pub fn validate(fields: &ClubFields) -> Result<(), String> {
     if fields.description.chars().count() > 200 {
         return Err("description: up to 200 characters".into());
     }
-    if !(0..=3).contains(&fields.privacy) {
-        return Err("privacy: 0 to 3".into());
+    if !(PRIVACY_OPEN..=PRIVACY_PRIVATE).contains(&fields.privacy) {
+        return Err("privacy: 1 to 4".into());
     }
     Ok(())
 }

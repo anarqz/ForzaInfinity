@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use super::{Ctx, iso_utc, user_data};
 use crate::db::{ClubFields, ROLE_COLEADER, ROLE_LEADER, ROLE_MEMBER};
-use crate::db::clubs::{Club, PRIVACY_FRIENDS, PRIVACY_INVITE_ONLY, PRIVACY_OPEN};
+use crate::db::clubs::{Club, PRIVACY_FRIENDS, PRIVACY_INVITE_ONLY, PRIVACY_OPEN, PRIVACY_PRIVATE};
 
 /// Club ladder reward tiers: (XP to reach, credits).
 pub const LADDER_TIERS: &[(f32, i32)] = &[(5_000.0, 5_000), (20_000.0, 10_000), (50_000.0, 25_000), (100_000.0, 50_000), (250_000.0, 100_000)];
@@ -81,10 +81,10 @@ pub fn club_data(ctx: &Ctx, club: &Club, viewer: u64) -> Value {
     })
 }
 
-/// Every club is visible to everyone, except hidden ones (privacy 3): those only to their
+/// Every club is visible to everyone, except private ones: those only to their
 /// members and the members' friends.
 fn visible(ctx: &Ctx, club: &Club) -> bool {
-    if club.privacy != 3 {
+    if club.privacy != PRIVACY_PRIVATE {
         return true;
     }
     let friends = ctx.friend_ids();
@@ -153,7 +153,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 .store
                 .clubs()
                 .iter()
-                .filter(|c| Some(c.id) != mine && c.privacy != 3 && visible(ctx, c))
+                .filter(|c| Some(c.id) != mine && c.privacy != PRIVACY_PRIVATE && visible(ctx, c))
                 .take(max_results(params, "maxResults"))
                 .map(|c| club_data(ctx, c, me))
                 .collect();
@@ -209,7 +209,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 .store
                 .clubs()
                 .iter()
-                .filter(|c| c.privacy != 3 && visible(ctx, c))
+                .filter(|c| c.privacy != PRIVACY_PRIVATE && visible(ctx, c))
                 .filter(|c| c.name.to_lowercase().contains(&wanted) || c.tag.to_lowercase() == wanted)
                 .take(max_results(params, "maxResults"))
                 .map(|c| club_data(ctx, c, me))
@@ -226,9 +226,9 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                 .store
                 .clubs()
                 .iter()
-                .filter(|c| c.privacy != 3 && visible(ctx, c))
-                // "WithNone" enums: anything outside the four privacy values means "any"
-                .filter(|c| !(0..=3).contains(&privacy) || c.privacy == privacy)
+                .filter(|c| c.privacy != PRIVACY_PRIVATE && visible(ctx, c))
+                // "WithNone" enums: anything outside the four privacy values (0) means "any"
+                .filter(|c| !(PRIVACY_OPEN..=PRIVACY_PRIVATE).contains(&privacy) || c.privacy == privacy)
                 .filter(|c| region == 0 || c.region == region)
                 .filter(|c| attitude == 0 || c.attitude == attitude)
                 .filter(|c| interest == 0 || c.interest == interest)
@@ -438,7 +438,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
             let Some(club) = club.filter(|c| visible(ctx, c) || has_invite(ctx, c.id)) else {
                 return Some(error(1, "unknown club"));
             };
-            if club.privacy == 3 || (club.privacy == PRIVACY_INVITE_ONLY && !has_invite(ctx, club.id)) {
+            if club.privacy == PRIVACY_PRIVATE || (club.privacy == PRIVACY_INVITE_ONLY && !has_invite(ctx, club.id)) {
                 ctx.store.request_to_join(club.id, me);
                 return Some(json!({ "requestApproved": false }));
             }

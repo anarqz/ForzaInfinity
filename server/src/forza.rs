@@ -1228,6 +1228,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The game numbers club privacy from 1: an open club (1) takes anyone, a club open to
+    /// friends (2) only friends of a member (others ask).
+    #[test]
+    fn club_privacy() {
+        use crate::db::clubs::{ClubFields, PRIVACY_FRIENDS, PRIVACY_OPEN};
+        let dir = std::env::temp_dir().join(format!("fh2-privacy-{}", crate::db::accounts::new_token()));
+        let store = Store::open(&dir.join("t.sqlite")).unwrap();
+        let catalog = Catalog::default();
+        let pc = |n: u8| format!("{n:02x}").repeat(32);
+        let [a, b, c, d] = [1u8, 2, 3, 4].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n)).unwrap().0.xuid);
+        let fields = |tag: &str, privacy| ClubFields {
+            tag: tag.into(), name: format!("Club {tag}"), description: String::new(), privacy, region: 0, attitude: 0, interest: 0,
+        };
+        let open = store.create_club(a, &fields("OPN", PRIVACY_OPEN)).unwrap();
+        let friends = store.create_club(b, &fields("FRN", PRIVACY_FRIENDS)).unwrap();
+        let ctx = |xuid| Ctx { store: &store, catalog: &catalog, xuid, events: RefCell::new(Vec::new()) };
+        let join = |xuid, club: i64| clubs::handle(&ctx(xuid), true, "Club", "RequestJoiningClub", &json!({ "clubId": club })).unwrap();
+        assert_eq!(join(c, open)["requestApproved"], true);
+        assert_eq!(join(d, friends)["requestApproved"], false);
+        store.add_friend(d, b);
+        store.delete_club_request(friends, d);
+        assert_eq!(join(d, friends)["requestApproved"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn text() {
         assert_eq!(clean_text("  oi\u{0}\r\n  tudo\u{202E}bem  ", 200), "oi tudobem");
