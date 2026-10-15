@@ -84,10 +84,15 @@ Só depois da V1. Levantamento de 2026-10-14 (ONLINE ROAD TRIP mostra "UNABLE TO
   4. Sessão do Xbox Live: `Microsoft.Xbox.Services.Multiplayer.MultiplayerSession` (sessiondirectory / MPSD).
   5. Conexão criptografada até o servidor: `Windows.Xbox.Networking.SecureDeviceAssociation` (`SecureDeviceAssociationTemplate`, `SecureDeviceAddress`). Também `Windows.Xbox.Multiplayer` (party). O Azimuth stuba tudo isso como offline.
 - O servidor dedicado do Forza nunca foi distribuído: o protocolo de jogo ao vivo tem de ser reescrito a partir do que o jogo envia e espera. Corridas do servidor reportam por `Forza.WebServices.Hopper.SubmitServerRaceResults`.
-- Plano:
-  - **A:** responder os passos 1 a 4 (variants, QoS, alocação apontando para o nosso servidor, sessões); no hook, fazer `SecureDeviceAssociation` e QoS funcionarem até ele; capturar os primeiros pacotes do jogo.
-  - **B:** engenharia reversa do protocolo (handshake, entrada na sessão, estado dos carros).
-  - **C:** servidor ao vivo que retransmite os estados entre jogadores (Road Trip, depois free roam online).
+- **2026-10-15:** o `fh2-mods` (`conner-mcvay/fh2-mods`, `tools/online`, MIT) já fez os passos 1 a 5 e o protocolo NerdCore até entrar no free roam com um console. O "servidor" do FH2 só **retransmite** os objetos e os carros de cada console (não simula), então um jogador pode rodar esse papel.
+- **Plano:** `PLANO_FREEROAM.md`.
+  - **Decidido (Alex, 15/10/2026):** os jogadores hospedam os mundos (`Host_My_Server.exe` + `server.cfg`). O servidor ForzaInfinity só anuncia os mundos, preenche a sessão MPSD e troca os endereços.
+  - **Decidido (Alex, 15/10/2026):** só conexão direta (hole punching com STUN público). Nenhum relay nosso, nem como reserva. Diagnóstico de NAT no jogo e no host, mais um guia.
+  - ⬜ **F0:** dois jogadores reais no mesmo mundo, na rede local (stubs da fh2net no hook, relay em Rust, MPSD no servidor).
+  - ⬜ **F1:** host, `server.cfg`, anúncios e join automático pela menor latência no FREE ROAM ONLINE.
+  - ⬜ **F2:** JOIN WORLD nas ações do jogador, senha, só amigos.
+  - ⬜ **F3:** conexão direta pela internet (STUN, punching, UPnP), diagnóstico e guia.
+  - ⬜ **F4:** corridas entre jogadores e clima compartilhado (engenharia reversa nova).
 
 ---
 
