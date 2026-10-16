@@ -129,6 +129,10 @@ const en = {
         a: "No. Your online profile starts from your newest offline save, and the offline save stays untouched on your PC.",
       },
       {
+        q: "Where is my save?",
+        a: "In data/titles/1A96545B/saves/player-1 on Azimuth 0.9.9 (data/saves/player-1 on 0.9.7). User_9000000000000 is your offline profile; the other User_ folder, named after your profile's number in hexadecimal and not your name, is your online one. Leaving Infinity or uninstalling never deletes them.",
+      },
+      {
         q: "Can I run my own server?",
         a: "Yes: it is one Rust program with SQLite. Build it with cargo, start run.sh (or run.bat) and open TCP port 8081 to your players.",
       },
@@ -279,6 +283,10 @@ const pt: Texts = {
       {
         q: "Vou perder meu progresso?",
         a: "Não. Seu perfil online começa do seu save offline mais recente, e o save offline continua intacto no seu PC.",
+      },
+      {
+        q: "Onde fica meu save?",
+        a: "Em data/titles/1A96545B/saves/player-1 no Azimuth 0.9.9 (data/saves/player-1 no 0.9.7). User_9000000000000 é o seu perfil offline; a outra pasta User_, com o número do seu perfil em hexadecimal e não o seu nome, é a do perfil online. Sair do Infinity ou desinstalar nunca apaga essas pastas.",
       },
       {
         q: "Posso rodar meu próprio servidor?",

@@ -99,11 +99,39 @@ other), **Site key** (to sign in on another PC with *Switch profile*), **Test co
 cloud save, stats, scores, ghosts, designs and shared files, club membership and all your
 friends. Your offline save on the PC is not touched.
 
+## Where your save is
+
+Azimuth keeps the saves in a folder under `<Azimuth>/data`, which depends on its version:
+
+| Azimuth | Saves folder |
+|---|---|
+| 0.9.9 | `data/titles/1A96545B/saves/player-1` |
+| 0.9.7 | `data/saves/player-1` |
+
+On 0.9.9, `data/saves` and `data/saves-backup-…` are the copies left from before 0.9.9 moved
+the saves; the game no longer reads them.
+
+In that folder each profile has its own folder:
+
+- `User_9000000000000` is your **offline** profile (Azimuth's own player).
+- `User_<number>` is your **online** profile. The number is the profile's XUID in hexadecimal
+  (not your name), so look for the `User_` folder that is not `User_9000000000000`. It appears
+  the first time the game starts on the online profile.
+
+Next to them, `fh2online-backup` holds a local save the server's replaced (when you played the
+same profile on two PCs without syncing in between).
+
+The online profile is an ordinary Azimuth save that the hook also keeps on the server.
+**Leave Infinity**, **Delete profile** and uninstalling never remove anything from these folders.
+Without ForzaInfinity the game plays `User_9000000000000`, the offline save as it was when you
+created the profile; the online progress stays in its `User_<number>` folder. Turning it into
+your offline save is not supported yet.
+
 ## Uninstall
 
 Double click **Uninstall.cmd** (Windows) or run `./uninstall.sh` (Linux / Steam Deck). It puts
 `azimuth-tls.dll.stock` back and removes the updater. Saves and `FH2_ExtraOptions.ini` are left
-as they are.
+as they are (see [Where your save is](#where-your-save-is)).
 
 ## Troubleshooting
 
