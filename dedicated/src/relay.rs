@@ -141,6 +141,28 @@ const ALLOW_TTL: Duration = Duration::from_secs(600);
 const REFUSAL_LOG_EVERY: Duration = Duration::from_secs(60);
 /// The longest stdin command line (main.rs cuts there) and log line.
 pub const COMMAND_LINE_MAX: usize = 256;
+/// The race starts this long after the last participant's race route is loaded.
+const RACE_START_DELAY_MS: u32 = 5000;
+
+/// A race the relay runs (the event owner's): who takes part and how far it got.
+#[derive(Debug)]
+struct Race {
+    owner: u8,
+    participants: Vec<u8>,
+    stage: RaceStage,
+    start_time: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RaceStage {
+    /// RaceReady sent; the participants pick their cars and load them.
+    Gathering,
+    /// MsgStartingGrid sent; the race route loads.
+    Grid,
+    /// MsgStartRace sent; InRace.
+    Started,
+}
+
 /// A request again inside this is the console resending the same one (our answer not acked yet).
 const OWNERSHIP_RESEND: Duration = Duration::from_secs(2);
 /// carstate.rs: a player's state goes to the others when it changes and again this often (a lost
@@ -414,6 +436,8 @@ struct Peer {
     /// to it (an object's first one from the server is seq 0), and when (a resent request inside
     /// OWNERSHIP_RESEND is the same one).
     lobby_seq: Vec<(u32, u8, Instant)>,
+    /// Its ConsoleSynced vars as it last sent them (the race steps wait on them).
+    console_vals: [u64; 9],
     /// What it owns: (router, id) -> history.
     objects: Vec<((u8, u32), Obj)>,
     objects_full: bool,
@@ -462,6 +486,7 @@ impl Peer {
             finalise_asked: false,
             finalised: false,
             lobby_seq: Vec::new(),
+            console_vals: [0; 9],
             objects: Vec::new(),
             objects_full: false,
             orphans: VecDeque::new(),
@@ -577,6 +602,10 @@ pub struct Relay {
     /// The peer that has the event (its GameOptions granted), if any: the host's relay is the
     /// arbiter, first come.
     event_owner: Option<u8>,
+    /// The race the relay runs as its server (relay::Race), and the SessionHost's race vars as
+    /// they are now (sent in the Create to a late joiner): (var, value, bits).
+    race: Option<Race>,
+    host_vars: Vec<(u8, u64, u32)>,
     /// Stdin commands (main.rs).
     commands: Option<Receiver<String>>,
     bans: Vec<(BanKey, Instant)>,
@@ -611,6 +640,8 @@ impl Relay {
             host_seq: 0,
             group_sat_nav: 0,
             event_owner: None,
+            race: None,
+            host_vars: Vec::new(),
             commands: None,
             bans: Vec::new(),
             allow: Vec::new(),
@@ -1027,6 +1058,12 @@ impl Relay {
             self.event_owner = None;
             self.log(&format!("jogador {} saiu: o evento dele está livre", peer.index));
         }
+        if let Some(race) = &mut self.race {
+            race.participants.retain(|p| *p != peer.index);
+            if race.participants.is_empty() {
+                self.end_race("sem participantes");
+            }
+        }
         if !peer.synced {
             self.debug(&format!("conexão {} ({}) desfeita: {why}", peer.index, net::show(&peer.addr)));
             return;
@@ -1150,7 +1187,10 @@ impl Relay {
         let own = peer.own_attempt;
         self.send(pi, vec![ts, Msg::SyncDone(own).write()], false);
         // the SessionHost as it is now: the seq of its last update, and the group's destination
-        let payload = if self.group_sat_nav != 0 { nerd::group_sat_nav_payload(self.group_sat_nav) } else { Bits::new() };
+        let mut payload = nerd::session_host_payload(&self.host_vars);
+        if self.group_sat_nav != 0 {
+            payload.append(&nerd::group_sat_nav_payload(self.group_sat_nav));
+        }
         let mut world = vec![
             Msg::Object(ObjectMsg {
                 create: true,
@@ -1508,6 +1548,12 @@ impl Relay {
                     }
                     self.set_group_sat_nav(index, node);
                 }
+                Msg::Other { id: nerd::MSG_REQUEST_RACE, .. } if self.settings.races => self.on_request_race(pi),
+                Msg::Other { id: nerd::MSG_READY_REQUEST, ref body } if self.settings.races => {
+                    if let Some(ready) = nerd::ready_request(body) {
+                        self.on_ready_request(pi, ready);
+                    }
+                }
                 Msg::Other { id: nerd::MSG_OBJECT_REQUEST_OWNERSHIP, ref body } if self.settings.races => {
                     if let Some(m) = self.on_ownership_request(pi, body) {
                         out_seq.push(m);
@@ -1558,6 +1604,9 @@ impl Relay {
         if !out_seq.is_empty() {
             self.send_seq(pi, out_seq);
         }
+        if self.race.is_some() {
+            self.race_step();
+        }
         if !out.is_empty() || hdr.id != nerd::NO_SEQ {
             self.send_unsequenced(pi, out);
         }
@@ -1589,6 +1638,145 @@ impl Relay {
             if self.peers[j].synced {
                 self.send_seq(j, vec![update.clone()]);
             }
+        }
+    }
+
+    /// SessionHost vars: kept for late joiners and sent to every synced console.
+    fn set_host_vars(&mut self, vars: &[(u8, u64, u32)]) {
+        for &(var, value, bits) in vars {
+            match self.host_vars.iter_mut().find(|(v, ..)| *v == var) {
+                Some(e) => *e = (var, value, bits),
+                None => self.host_vars.push((var, value, bits)),
+            }
+        }
+        self.host_seq = nerd::seq_next(self.host_seq);
+        let update = Msg::Object(ObjectMsg {
+            create: false,
+            router: nerd::ROUTER_LOBBY,
+            handle: Handle::Own(nerd::SESSION_HOST_ID),
+            ty: 0,
+            seq: self.host_seq,
+            payload: nerd::session_host_payload(vars),
+        })
+        .write();
+        for j in 0..self.peers.len() {
+            if self.peers[j].synced {
+                self.send_seq(j, vec![update.clone()]);
+            }
+        }
+    }
+
+    /// A server update of one console's bool vars (its ConsoleSynced object, our seq).
+    fn set_console_vars(&mut self, index: u8, vars: &[(u8, bool)]) {
+        let Some(pi) = self.peers.iter().position(|p| p.index == index) else { return };
+        let peer = &mut self.peers[pi];
+        let Some(id) = peer.console_id else {
+            self.log(&format!("jogador {index}: sem ConsoleSynced ainda; {vars:?} não enviado"));
+            return;
+        };
+        let seq = peer.console_seq.map_or(0, nerd::seq_next);
+        peer.console_seq = Some(seq);
+        self.debug(&format!("jogador {index} <- ConsoleSynced {vars:?} (seq {seq})"));
+        self.send_seq(pi, vec![nerd::console_update(id, seq, vars).write()]);
+    }
+
+    /// MsgRequestRace (38): the console that has the event starts it. The relay is the race's
+    /// server: RaceReady and RaceParticipantsSelected on the SessionHost, the console taking part
+    /// (ParticipatingInRace). Its game then shows the car select and loads the cars.
+    fn on_request_race(&mut self, pi: usize) {
+        let index = self.peers[pi].index;
+        if self.event_owner != Some(index) {
+            self.log_once(format!("jogador {index}: MsgRequestRace sem ter o evento, ignorado"));
+            return;
+        }
+        if self.race.is_some() {
+            return;
+        }
+        self.log(&format!("jogador {index} começou o evento: corrida pronta (RaceReady)"));
+        self.race = Some(Race { owner: index, participants: vec![index], stage: RaceStage::Gathering, start_time: 0 });
+        self.set_host_vars(&[
+            (nerd::SESSION_HOST_RACE_READY, 1, 1),
+            (nerd::SESSION_HOST_RACE_PARTICIPANTS_SELECTED, 1, 1),
+            (nerd::SESSION_HOST_IN_RACE, 0, 1),
+        ]);
+        self.set_console_vars(index, &[(nerd::CONSOLE_PARTICIPATING_IN_RACE, true)]);
+    }
+
+    /// MsgReadyRequest (41): its Ready var (a server var) as it asks.
+    fn on_ready_request(&mut self, pi: usize, ready: bool) {
+        let index = self.peers[pi].index;
+        let peer = &self.peers[pi];
+        if peer.console_vals[nerd::CONSOLE_READY as usize] == ready as u64 && peer.console_seq.is_some() {
+            return;
+        }
+        self.peers[pi].console_vals[nerd::CONSOLE_READY as usize] = ready as u64;
+        self.debug(&format!("jogador {index}: MsgReadyRequest {ready}"));
+        self.set_console_vars(index, &[(nerd::CONSOLE_READY, ready)]);
+    }
+
+    /// The race's next step once every participant is there: the grid when their cars are
+    /// loaded (HasLoadedCarsForAllParticipants), the start when the race route is
+    /// (RenderReady).
+    fn race_step(&mut self) {
+        let Some(race) = &self.race else { return };
+        let all = |var: u8| {
+            race.participants.iter().all(|p| {
+                self.peers.iter().find(|q| q.index == *p).is_some_and(|q| q.console_vals[var as usize] != 0)
+            })
+        };
+        match race.stage {
+            RaceStage::Gathering if all(nerd::CONSOLE_HAS_LOADED_CARS) => {
+                let participants = race.participants.clone();
+                self.log(&format!("corrida: carros carregados, grid para {participants:?}"));
+                for &r in &participants {
+                    let grid: Vec<Handle> = participants
+                        .iter()
+                        .filter_map(|p| {
+                            let id = self.peers.iter().find(|q| q.index == *p)?.console_id?;
+                            Some(if *p == r { Handle::Own(id) } else { Handle::Relay(id, *p) })
+                        })
+                        .collect();
+                    if let Some(pi) = self.peers.iter().position(|q| q.index == r) {
+                        self.send_seq(pi, vec![nerd::starting_grid(&grid)]);
+                    }
+                }
+                if let Some(race) = &mut self.race {
+                    race.stage = RaceStage::Grid;
+                }
+            }
+            RaceStage::Grid if all(nerd::CONSOLE_RENDER_READY) => {
+                let start = self.now_ms().wrapping_add(RACE_START_DELAY_MS);
+                let participants = race.participants.clone();
+                self.log(&format!("corrida: pista carregada, largada em {RACE_START_DELAY_MS} ms ({participants:?})"));
+                if let Some(race) = &mut self.race {
+                    race.stage = RaceStage::Started;
+                    race.start_time = start;
+                }
+                for &r in &participants {
+                    if let Some(pi) = self.peers.iter().position(|q| q.index == r) {
+                        self.send_seq(pi, vec![nerd::start_race(start)]);
+                    }
+                }
+                self.set_host_vars(&[(nerd::SESSION_HOST_IN_RACE, 1, 1), (nerd::SESSION_HOST_RACE_START_TIME, start as u64, 32)]);
+            }
+            _ => {}
+        }
+    }
+
+    /// The race is over (or abandoned): the SessionHost back to free roam, the event free.
+    fn end_race(&mut self, why: &str) {
+        let Some(race) = self.race.take() else { return };
+        self.log(&format!("corrida encerrada: {why}"));
+        if self.event_owner == Some(race.owner) {
+            self.event_owner = None;
+        }
+        self.set_host_vars(&[
+            (nerd::SESSION_HOST_RACE_READY, 0, 1),
+            (nerd::SESSION_HOST_RACE_PARTICIPANTS_SELECTED, 0, 1),
+            (nerd::SESSION_HOST_IN_RACE, 0, 1),
+        ]);
+        for p in race.participants {
+            self.set_console_vars(p, &[(nerd::CONSOLE_PARTICIPATING_IN_RACE, false), (nerd::CONSOLE_READY, false)]);
         }
     }
 
@@ -1756,6 +1944,14 @@ impl Relay {
         }
         if fresh == Fresh::Duplicate {
             return None;
+        }
+        let peer = &mut self.peers[pi];
+        if o.router == nerd::ROUTER_CONSOLE_SYNCED && peer.console_id == Some(id) {
+            for (var, value) in nerd::console_vars(&o.payload).unwrap_or_default() {
+                if let Some(v) = peer.console_vals.get_mut(var as usize) {
+                    *v = value;
+                }
+            }
         }
         let relayed = |peer_index| Msg::Object(ObjectMsg { handle: Handle::Relay(id, peer_index), ..o.clone() });
         Some(Relayed { fwd: relayed(index), ghost: relayed(MIRROR_INDEX) })

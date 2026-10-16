@@ -664,6 +664,42 @@ fn events_go_to_the_first_console_that_enters_one() {
     assert_eq!(g.write(), nerd::grant_ownership(6, Handle::Transfer(0), 1, &Bits::new()));
 }
 
+/// A race with one console, the relay as its server: MsgRequestRace from the console that has
+/// the event -> RaceReady on the SessionHost and ParticipatingInRace on its console; its cars
+/// loaded (HasLoadedCarsForAllParticipants) -> MsgStartingGrid; its race route loaded
+/// (RenderReady) -> MsgStartRace and InRace.
+#[test]
+fn a_race_with_one_console_starts() {
+    let server = Server::start(Settings { races: true, ..settings() });
+    let mut a = Client::new(&server, 1);
+    a.join();
+    a.send(&[object(true, 3, 5, 0, &console(&[(0, 0)]))]);
+    let mut req = Bits::new();
+    req.push(6, 4).push(nerd::GAME_OPTIONS_TYPE as u64, 2);
+    Handle::Transfer(0).write(&mut req, 2);
+    a.send(&[Msg::Other { id: nerd::MSG_OBJECT_REQUEST_OWNERSHIP, body: req }]);
+    a.wait_for("the grant", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_OBJECT_GRANT_OWNERSHIP));
+    a.send(&[Msg::Other { id: nerd::MSG_REQUEST_RACE, body: Bits::new() }]);
+    let ready = nerd::session_host_payload(&[(4, 1, 1), (5, 1, 1), (6, 0, 1)]);
+    let p = a.wait_for("RaceReady", |m| is_obj(m, false, 6, Handle::Own(0), 1).is_some());
+    assert_eq!(is_obj(&p, false, 6, Handle::Own(0), 1), Some(ready));
+    let p = a.wait_for("ParticipatingInRace", |m| is_obj(m, false, 3, Handle::Server(5), 0).is_some());
+    assert_eq!(is_obj(&p, false, 3, Handle::Server(5), 0), Some(console(&[(2, 1)])));
+    // ready, then its cars loaded: the grid, with its own console first
+    let mut ready_req = Bits::new();
+    Handle::Own(0).write(&mut ready_req, 2);
+    ready_req.bool(true);
+    a.send(&[Msg::Other { id: nerd::MSG_READY_REQUEST, body: ready_req }]);
+    a.wait_for("Ready", |m| is_obj(m, false, 3, Handle::Server(5), 1).is_some());
+    a.send(&[object(false, 3, 5, 1, &console(&[(5, 1)]))]);
+    let g = a.wait_for("the grid", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_STARTING_GRID));
+    assert_eq!(g.write(), nerd::starting_grid(&[Handle::Own(5)]));
+    // its route loaded: the start
+    a.send(&[object(false, 3, 5, 2, &console(&[(0, 1)]))]);
+    a.wait_for("the start", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_START_RACE));
+    a.wait_for("InRace", |m| is_obj(m, false, 6, Handle::Own(0), 2).is_some());
+}
+
 /// `kick <xuid>` on stdin: the player goes at once (the others delete its objects) and may
 /// come back right away. Unknown and over-long lines do nothing.
 #[test]

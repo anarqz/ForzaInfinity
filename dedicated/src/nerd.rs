@@ -265,6 +265,22 @@ pub const SESSION_HOST_VAR_INDEX_BITS: u32 = 4;
 /// read signed): the group's GPS destination, set by the server from SetGroupSatNavEvent.
 pub const SESSION_HOST_GROUP_SAT_NAV_NODE: u8 = 12;
 
+/// SessionHost race vars (widths from the var types' pack functions: SyncedBool 1417DE9F0, 1 bit;
+/// the times 1417D8030, 32 bits).
+pub const SESSION_HOST_RACE_READY: u8 = 4;
+pub const SESSION_HOST_RACE_PARTICIPANTS_SELECTED: u8 = 5;
+pub const SESSION_HOST_IN_RACE: u8 = 6;
+pub const SESSION_HOST_RACE_START_TIME: u8 = 9;
+
+/// SessionHost payload entries: (var, value, bits).
+pub fn session_host_payload(entries: &[(u8, u64, u32)]) -> Bits {
+    let mut p = Bits::new();
+    for &(var, value, bits) in entries {
+        p.push(var as u64, SESSION_HOST_VAR_INDEX_BITS).push(value, bits);
+    }
+    p
+}
+
 /// The SessionHost payload entry setting GroupSatNavNode.
 pub fn group_sat_nav_payload(node: i32) -> Bits {
     let mut p = Bits::new();
@@ -276,7 +292,12 @@ pub fn group_sat_nav_payload(node: i32) -> Bits {
 /// 1 SessionEntryFinalised, 2 ParticipatingInRace, 3 RaceInProgress, 4 Ready,
 /// 5 HasLoadedCarsForAllParticipants, 6 HasGrid, 7 AvailableArbitration, 8 MatchTicketArbiter.
 /// 1, 2 and 4 are the server's (SyncedBool<0,1>).
+pub const CONSOLE_RENDER_READY: u8 = 0;
 pub const CONSOLE_SESSION_ENTRY_FINALISED: u8 = 1;
+pub const CONSOLE_PARTICIPATING_IN_RACE: u8 = 2;
+pub const CONSOLE_READY: u8 = 4;
+pub const CONSOLE_HAS_LOADED_CARS: u8 = 5;
+pub const CONSOLE_HAS_GRID: u8 = 6;
 pub const CONSOLE_VAR_INDEX_BITS: u32 = 4;
 
 /// The u14 payload size, in bits.
@@ -771,6 +792,7 @@ pub fn other_layout(id: u8) -> Option<&'static [Field]> {
         31 => &[B(32)],
         32 => &[Y(64), Y(64)],
         38 | 60 | 64 => &[],
+        40 => &[H(2), B(32)],
         41 => &[H(2), B(1)],
         43 => &[H(7), B(32 + 1)],
         44 => &[H(7), F64, F64, F64, B(32 + 2)],
@@ -859,6 +881,13 @@ pub fn var_index_bits(router: u8) -> Option<u32> {
 ///   - the `other_layout` ones.
 fn skip_other(r: &mut Reader, id: u8) -> Result<(), ReadError> {
     match id {
+        MSG_STARTING_GRID => {
+            Handle::read(r, 2)?;
+            let n = r.bits(4)? as u32;
+            for _ in 0..n {
+                Handle::read(r, 7)?;
+            }
+        }
         MSG_OBJECT_GRANT_OWNERSHIP | MSG_OBJECT_TRANSFER_OWNERSHIP => {
             let router = r.u8(4)?;
             let (id_bits, _) = router_widths(router).ok_or(ReadError::UnknownRouter(router))?;
@@ -901,11 +930,67 @@ fn skip_other(r: &mut Reader, id: u8) -> Result<(), ReadError> {
     Ok(())
 }
 
+/// A ConsoleSynced payload (as sanitize_payload wrote it) as (var, value) pairs; None if it
+/// does not read.
+pub fn console_vars(payload: &Bits) -> Option<Vec<(u8, u64)>> {
+    let len = payload.len();
+    let mut r = Reader::new(payload.as_bytes());
+    let mut out = Vec::new();
+    while r.pos() < len {
+        let index = r.u8(CONSOLE_VAR_INDEX_BITS).ok()?;
+        let VarKind::Bits(n) = *CONSOLE_VARS.get(index as usize)? else { return None };
+        out.push((index, r.bits(n).ok()?));
+    }
+    (r.pos() == len).then_some(out)
+}
+
+/// MsgReadyRequest (41)'s bit: the console is ready (or not) for the race.
+pub fn ready_request(body: &Bits) -> Option<bool> {
+    let mut r = Reader::new(body.as_bytes());
+    Handle::read(&mut r, 2).ok()?;
+    r.bool().ok()
+}
+
+pub const MSG_REQUEST_RACE: u8 = 38;
+pub const MSG_STARTING_GRID: u8 = 39;
+pub const MSG_START_RACE: u8 = 40;
+pub const MSG_READY_REQUEST: u8 = 41;
+
+/// MsgStartingGrid (39; the lobby router 141809420 reads the SessionHost handle with 1418092B0,
+/// then 141824040): u4 count and the participants' handles (7-bit ids) in grid order. The
+/// console's SessionHost (ILobbyEvents slot 1, 140A2E130) places each car by its handle
+/// (140A31140; one not in the list gets a slot from the back) and, if it takes part, fires
+/// NetworkSwitchRoute: the race route loads.
+pub fn starting_grid(grid: &[Handle]) -> Bits {
+    let mut w = Bits::new();
+    w.push(MSG_STARTING_GRID as u64, 7);
+    Handle::Own(SESSION_HOST_ID).write(&mut w, 2);
+    w.push(grid.len().min(12) as u64, 4);
+    for h in grid.iter().take(12) {
+        h.write(&mut w, 7);
+    }
+    w
+}
+
+/// MsgStartRace (40; 1418241E0): the SessionHost handle, u32 the start time (server ms, as
+/// TimeSync). The SessionHost (slot 2, 140A2E020) fires its start event with it.
+pub fn start_race(time: u32) -> Bits {
+    let mut w = Bits::new();
+    w.push(MSG_START_RACE as u64, 7);
+    Handle::Own(SESSION_HOST_ID).write(&mut w, 2);
+    w.push(time as u64, 32);
+    w
+}
+
 /// Whether `skip_other` knows the message.
 pub fn is_other(id: u8) -> bool {
     matches!(
         id,
-        MSG_OBJECT_REQUEST_OWNERSHIP | MSG_OBJECT_GRANT_OWNERSHIP | MSG_OBJECT_TRANSFER_OWNERSHIP | MSG_OBJECT_NEEDS_UPDATES
+        MSG_OBJECT_REQUEST_OWNERSHIP
+            | MSG_OBJECT_GRANT_OWNERSHIP
+            | MSG_OBJECT_TRANSFER_OWNERSHIP
+            | MSG_OBJECT_NEEDS_UPDATES
+            | MSG_STARTING_GRID
     ) || other_layout(id).is_some()
 }
 
@@ -1196,8 +1281,15 @@ impl Msg {
 
 /// A server update setting one of the server's bools on a console's own ConsoleSynced object.
 pub fn console_bool_update(console_id: u32, seq: u8, index: u8, value: bool) -> Msg {
+    console_update(console_id, seq, &[(index, value)])
+}
+
+/// A server update of several of a console's bool vars.
+pub fn console_update(console_id: u32, seq: u8, vars: &[(u8, bool)]) -> Msg {
     let mut payload = Bits::new();
-    payload.push(index as u64, CONSOLE_VAR_INDEX_BITS).bool(value);
+    for &(index, value) in vars {
+        payload.push(index as u64, CONSOLE_VAR_INDEX_BITS).bool(value);
+    }
     Msg::Object(ObjectMsg {
         create: false,
         router: ROUTER_CONSOLE_SYNCED,
@@ -1591,7 +1683,7 @@ mod tests {
         assert_eq!(size(59), 2 + 7);
         assert_eq!(size(63), 64);
         // still unknown: server-to-console ones, and the ownership messages with no sender
-        for id in [18u8, 19, 22, 25, 37, 39, 40, 42, 48, 50, 53, 55, 57, 61, 65, 69, 75, 76] {
+        for id in [18u8, 19, 22, 25, 37, 42, 48, 50, 53, 55, 57, 61, 65, 69, 75, 76] {
             assert!(!is_other(id), "{id}");
             let mut w = Bits::new();
             w.push(id as u64, 7).push(0, 40);
