@@ -97,6 +97,7 @@ use std::{
 
 use crate::{
     bits::{Bits, Reader},
+    nat::Nat,
     nerd::{self, Car, CarEvent, Handle, Header, Msg, ObjectDelete, ObjectMsg, OpenResponse, ReadError},
     net,
 };
@@ -551,6 +552,8 @@ pub struct Relay {
     panics_logged: Vec<SocketAddr>,
     /// The largest payload seen per router (verbose log when it grows).
     payload_seen: [usize; 16],
+    /// STUN, UPnP and punches (nat.rs); None: not used (the tests).
+    nat: Option<Nat>,
 }
 
 impl Relay {
@@ -578,12 +581,18 @@ impl Relay {
             refusals_logged: Vec::new(),
             panics_logged: Vec::new(),
             payload_seen: [0; 16],
+            nat: None,
         }
     }
 
     /// Where commands come from (stdin lines, main.rs).
     pub fn set_commands(&mut self, rx: Receiver<String>) {
         self.commands = Some(rx);
+    }
+
+    /// STUN, the router's port mapping and punches (F3, nat.rs).
+    pub fn set_nat(&mut self, nat: Nat) {
+        self.nat = Some(nat);
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -677,8 +686,8 @@ impl Relay {
         }
     }
 
-    /// One command line: `kick <xuid> [reason]`, `allow <ip>`, `allowonly 1|0`. Anything else
-    /// is ignored.
+    /// One command line: `kick <xuid> [reason]`, `allow <ip>`, `allowonly 1|0`, `punch <ip:port>`.
+    /// Anything else is ignored.
     pub fn command(&mut self, line: &str) {
         let line: String = line.chars().take(COMMAND_LINE_MAX).collect();
         let mut words = line.split_whitespace();
@@ -709,6 +718,16 @@ impl Relay {
                     self.log("qualquer IP pode entrar");
                 }
                 _ => self.log("comando allowonly: use 1 ou 0"),
+            },
+            Some("punch") => match words.next().and_then(|w| w.parse::<SocketAddr>().ok()) {
+                Some(to) => match &mut self.nat {
+                    Some(nat) => {
+                        nat.punch(to, Instant::now());
+                        self.debug(&format!("punch para {}", net::show(&to)));
+                    }
+                    None => self.debug("comando punch: sem NAT"),
+                },
+                None => self.log("comando punch: endereço inválido (ip:porta)"),
             },
             _ => self.debug("comando desconhecido ignorado"),
         }
@@ -1159,6 +1178,12 @@ impl Relay {
     /// One packet. A packet whose handling panics is dropped (logged once per address); the
     /// relay goes on.
     pub fn handle(&mut self, data: &[u8], addr: SocketAddr) {
+        // STUN (answers to our requests, players' punches) never reaches the NerdCore parser
+        if let Some(nat) = &mut self.nat
+            && nat.on_packet(&self.sock, data, addr, Instant::now())
+        {
+            return;
+        }
         if catch_unwind(AssertUnwindSafe(|| self.handle_packet(data, addr))).is_err() {
             if self.panics_logged.len() < PANIC_LOGGED_MAX && !self.panics_logged.contains(&addr) {
                 self.panics_logged.push(addr);
@@ -1596,6 +1621,12 @@ impl Relay {
     /// Keepalive pings, quiet and half-connected peers, resends, paced queues and the mirror's
     /// cars.
     pub fn tick(&mut self, now: Instant) {
+        if let Some(nat) = &mut self.nat {
+            nat.tick(&self.sock, now);
+            for line in nat.take_logs() {
+                self.log(&line);
+            }
+        }
         // the mirror's cars that are due
         while let Some((due, _, _)) = self.mirror_queue.front() {
             if *due > now {

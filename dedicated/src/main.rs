@@ -1,8 +1,8 @@
 //! dedicated_server: the free roam world a player hosts. Reads server.cfg (next to the exe, or
 //! --config PATH), binds UDP `[::]:<Port>` (IPv4 too) and runs the NerdCore relay (relay.rs).
 //!
-//! F0 uses Port and MaxPlayers; the rest of server.cfg is read and shown, and used by later
-//! phases (the world list, access lists, UPnP).
+//! F0 uses Port and MaxPlayers; F3 adds STUN, UPnP and punches (nat.rs), whose result goes to
+//! dedicated_server.net next to the exe for the hook. The world's announcement is the hook's.
 
 use std::{
     path::PathBuf,
@@ -12,7 +12,11 @@ use std::{
     time::Duration,
 };
 
-use dedicated_server::{config::Config, net, relay};
+use dedicated_server::{
+    config::Config,
+    nat::{Nat, NatSettings},
+    net, relay,
+};
 
 fn usage() -> ! {
     println!("dedicated_server [--config server.cfg] [--port 5101] [--verbose] [--mirror SEGUNDOS]");
@@ -77,10 +81,8 @@ fn main() {
         }
     }
 
-    let config_path = config_path.unwrap_or_else(|| {
-        let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_default();
-        dir.join("server.cfg")
-    });
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_default();
+    let config_path = config_path.unwrap_or_else(|| exe_dir.join("server.cfg"));
     let mut cfg = match Config::load(&config_path) {
         Ok(Some((cfg, warnings))) => {
             println!("Configuração: {}", config_path.display());
@@ -121,7 +123,7 @@ fn main() {
         println!("  mensagem:  {}", cfg.message);
     }
     println!(
-        "  lista:     {}{} (anúncio ainda não implementado: {})",
+        "  lista:     {}{} (o jogo anuncia o mundo em {})",
         cfg.visibility.as_str(),
         if cfg.password.is_empty() { "" } else { ", com senha" },
         cfg.announce
@@ -129,18 +131,20 @@ fn main() {
     if !cfg.allow.is_empty() || !cfg.ban.is_empty() {
         println!("  acesso:    {} liberado(s), {} banido(s) (ainda não aplicado)", cfg.allow.len(), cfg.ban.len());
     }
-    if cfg.upnp {
-        println!("  UPnP:      ligado (ainda não implementado: abra a porta UDP {} no roteador)", cfg.port);
-    }
+    println!(
+        "  rede:      STUN público{}; resultado em dedicated_server.net",
+        if cfg.upnp { ", UPnP (o roteador abre a porta sozinho)" } else { ", UPnP desligado no server.cfg" }
+    );
     if let Some(m) = mirror {
         println!("  espelho:   ligado, carro {:.1} s atrasado (jogador {})", m.as_secs_f64(), relay::MIRROR_INDEX);
     }
-    println!("Comandos (uma linha cada): kick <xuid> [motivo], allow <ip>, allowonly 1|0");
+    println!("Comandos (uma linha cada): kick <xuid> [motivo], allow <ip>, allowonly 1|0, punch <ip:porta>");
     println!("Pronto. Ctrl+C para fechar.");
 
     let settings = relay::Settings { max_players: cfg.max_players, mirror, verbose, ..Default::default() };
     let mut r = relay::Relay::new(sock, settings);
     r.set_commands(stdin_commands());
+    r.set_nat(Nat::new(NatSettings::new(cfg.port, cfg.upnp, Some(exe_dir.join("dedicated_server.net"))), dual));
     let stop = AtomicBool::new(false);
     if let Err(e) = r.run(&stop) {
         eprintln!("erro no socket: {e}");

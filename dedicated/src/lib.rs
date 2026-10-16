@@ -5,5 +5,8 @@
 pub mod bits;
 pub mod config;
 pub mod nerd;
+pub mod nat;
 pub mod net;
 pub mod relay;
+pub mod stun;
+pub mod upnp;
