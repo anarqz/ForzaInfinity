@@ -513,6 +513,7 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                     crate::db::reset::PENDING_MODERATION => Some("Moderation reset this profile's progress. Restart the game to get it; your liveries were kept."),
                     crate::db::reset::PENDING_REFUSED => Some("Your save had progress this server could not accept, so the server's save was restored. Restart the game to get it."),
                     crate::db::reset::PENDING_SEASON => Some("A new season started: XP, level, credits, records and the garage (all but your first car) start again; your career, liveries and creations stay. Restart the game to get it."),
+                    crate::db::reset::PENDING_CAREER => Some("Your Infinity career starts again: every championship, event, road, barn find and treasure is there to win again, with the XP and credits they give. Restart the game to get it; your first car, liveries and creations stay."),
                     _ => None,
                 };
                 if let Some(text) = notice {
@@ -575,8 +576,8 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
                 eprintln!("integrity: {xuid} save refused ({why}), strike {strikes}");
                 return json_reply(400, &json!({ "error": "That is not a save of the game.", "why": "save" }));
             }
-            // a new profile's first save (its offline progress) starts the season like everyone's:
-            // its career stays, XP, credits, records and all cars but the first start again
+            // a new profile's first save (its offline save) is not kept: the profile starts a new
+            // career with the starter car it shows (db/reset.rs), every event there to win again
             let fresh = saves::check_bundle(&request.body)
                 .ok()
                 .and_then(|revision| app.store.new_profile_save(xuid, &request.body, revision).map(|(b, c)| (revision, b, c)));
@@ -585,7 +586,7 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
                     return json_reply(500, &json!({ "error": "Could not store the save." }));
                 }
                 app.store.set_reset_pending(xuid, crate::db::reset::PENDING_NEW);
-                app.store.add_event(xuid, "save", "Perfil novo: save na nuvem a partir da carreira offline, temporada do zero", json!({}));
+                app.store.add_event(xuid, "save", "Perfil novo: carreira nova a partir do save inicial do carro escolhido", json!({}));
                 return json_reply(200, &json!({ "revision": revision.to_string(), "commit": reset_commit }));
             }
             // the save gates (db/reset.rs check_upload): the progress since the server's save, at most

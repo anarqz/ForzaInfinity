@@ -21,8 +21,10 @@ and keeps the original as a backup; the game is never modified on disk.
 - A ForzaInfinity server. The installer suggests the public one, `https://infinity.anarqz.dev`
   (150 players at a time, then a waiting line). For another server, use the address its owner
   gives you (`https://host` or `host:port`); to run one yourself, see [SERVER.md](SERVER.md).
-- An **offline save**: play until the game has saved at least once. Your online profile is
-  created from it, so your cars, credits and level come with you.
+- An **offline save**: play until the game has saved at least once (past the opening drive, with
+  your first car chosen). Your online profile starts a new career with that first car: every
+  championship, event, road, barn find and treasure is there to win again, with the XP and credits
+  they give. Your offline save is not touched.
 - The game closed while you install.
 
 ## Windows
@@ -90,7 +92,7 @@ installs the latest release and keeps your server and settings.
 2. **Create profile** and type a name (1 to 20 letters or digits). It reads `Name#12345`, the
    number being this PC's. In the game, names longer than 15 characters with the number show
    as the name alone (the game's gamertags hold 15 characters).
-3. The game restarts on your online profile, which goes on from your newest offline save.
+3. The game restarts on your online profile: a new career with the first car of your offline save.
 
 From the same screen: **Add friend** (`Name#12345`; you become friends once both added each
 other), **Site key** (to sign in on another PC with *Switch profile*), **Test connection** and

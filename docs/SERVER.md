@@ -153,8 +153,15 @@ in INFINITY. Everything is in `moderation_log`.
 
 - `fh2-server moderation season-reset [--yes] [--only XUID] [why]` resets every account like that
   (no drivatar deleted); without `--yes` it only counts; with it, the database is first copied to
-  `<db>.before-season-<ms>` (`VACUUM INTO`). A new profile's first save (its offline progress) is
-  kept season-reset too: it keeps its offline career and starts with its first car.
+  `<db>.before-season-<ms>` (`VACUUM INTO`).
+- **A new profile starts a new career.** Its first save (the hook sends the offline one) is not
+  kept: the server stores the starting save of the starter car it shows (`server/fixtures/
+  starter-<car>.bundle`, built into the binary: the game just past its first championship) with
+  XP, level and credits at 0, so every championship, event, road, barn find and treasure is there
+  to win, with the XP and credits they give. `fh2-server moderation career-reset [--yes] [--only
+  XUID] [why]` does the same to existing accounts (their starter car kept; records and server
+  progress as in a season reset; liveries and creations stay; backup `<db>.before-career-<ms>`);
+  the player is told in the Message Center and in INFINITY.
 - **The server's save is the online profile.** At the start, a local save newer than the last one
   synced (`SaveCommit`), with the server still on that one, is the last session's own progress
   (revisions after the hook's last one-minute look, or written as the game closed): the hook

@@ -1,9 +1,17 @@
-//! Progress resets: a season reset (every account, `fh2-server moderation season-reset`; and every
-//! new profile's first save), and a moderation reset (`fh2-server moderation reset`, a cheater).
-//! Nobody is banned.
+//! Progress resets: a season reset (every account, `fh2-server moderation season-reset`), a
+//! moderation reset (`fh2-server moderation reset`, a cheater), and a career reset (every account,
+//! `fh2-server moderation career-reset`; and every new profile's first save). Nobody is banned.
 //!
-//! The player's own cloud save is edited, so its career stays: the story, championships, events,
-//! unlocks, tutorials and introductions, roads, barn finds, bucket list. What starts again:
+//! A new profile does not bring its offline career: its first save is the starting save of the
+//! starter car it chose (fixtures/starter-<car>.bundle, built into the server: the game just past
+//! its first championship, the tutorial every profile plays), so every championship, event, road,
+//! barn find, treasure, bonus board and bucket list challenge is there to win again, and with them
+//! the XP and credits a profile starts without. A career reset puts that save in place of an
+//! account's (its starter car kept), for the profiles made while the offline career was kept.
+//!
+//! A season or moderation reset edits the player's own cloud save, so its career stays: the story,
+//! championships, events, unlocks, tutorials and introductions, roads, barn finds, bucket list.
+//! What starts again (also in a career reset, on top of the starting save):
 //! - XP and level (ProfileData XP, the XP the game syncs and shows the level from, its copy in
 //!   WristbandLevel, and Level), level rewards, skill points and perks (PerkUnlock), credits;
 //! - the garage: only the first starter car the player got (by garage Id: 289 Camaro, 461 Supra,
@@ -44,11 +52,24 @@ pub const PENDING_NEW: i64 = 3;
 /// An upload refused by the save gates (check_upload): the server's save wins again.
 pub const PENDING_REFUSED: i64 = 4;
 
+/// A career reset (the starting save of the account's starter car) not downloaded yet.
+pub const PENDING_CAREER: i64 = 5;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResetKind {
     Moderation,
     Season,
+    Career,
 }
+
+/// The starting save of each starter car: a profile just past the first championship (see above).
+const STARTER_SAVES: [(i64, &[u8]); 3] = [
+    (289, include_bytes!("../../fixtures/starter-289.bundle")),
+    (461, include_bytes!("../../fixtures/starter-461.bundle")),
+    (1218, include_bytes!("../../fixtures/starter-1218.bundle")),
+];
+/// The starter car of a save that shows none.
+const DEFAULT_STARTER: i64 = 461;
 
 // ------------------------------------------------------------------ the hook's LZ (method 2)
 
@@ -337,6 +358,31 @@ pub fn reset_save(bundle: &[u8], revision: u64) -> Result<(Vec<u8>, String, Kept
     Ok((packed, crate::sha256::hex(&commit), kept))
 }
 
+/// The starter car a save's player chose: the first of the game's three in its garage (by garage
+/// Id), else DEFAULT_STARTER.
+pub fn starter_of(bundle: &[u8]) -> i64 {
+    let car = (|| {
+        let db = bundle_file(bundle, "data/PlayerDatabase")?;
+        let sqlite = container_sqlite(&db)?;
+        let path = temp_path("starter");
+        std::fs::write(&path, sqlite).ok()?;
+        let cars: Option<Vec<i64>> = Connection::open(&path).ok().and_then(|c| {
+            c.prepare("SELECT CarId FROM Career_Garage ORDER BY Id").ok()?.query_map([], |r| r.get(0)).ok()?.collect::<rusqlite::Result<_>>().ok()
+        });
+        let _ = std::fs::remove_file(&path);
+        cars?.into_iter().find(|c| STARTERS.contains(c))
+    })();
+    car.unwrap_or(DEFAULT_STARTER)
+}
+
+/// A new career (see above) for `starter` as revision `revision`: the starting save with the
+/// season reset applied (XP, level and credits at 0, the starter car alone), (bundle, commit
+/// SHA-256, what was kept).
+pub fn fresh_career_save(starter: i64, revision: u64) -> Result<(Vec<u8>, String, Kept), String> {
+    let template = STARTER_SAVES.iter().find(|(c, _)| *c == starter).or(STARTER_SAVES.iter().find(|(c, _)| *c == DEFAULT_STARTER));
+    reset_save(template.ok_or("no starting save")?.1, revision)
+}
+
 /// What the save gates look at: ProfileData's credits, XP and level, and the cars in
 /// Career_Garage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,9 +434,11 @@ impl Store {
     pub fn reset_account(&self, xuid: u64, kind: ResetKind, note: &str) -> Result<Value, String> {
         let current = self.save_data(xuid);
         let revision = self.save_info(xuid).map(|s| s.revision + 1).unwrap_or(1);
-        let save = match &current {
-            Some(b) => Some(reset_save(b, revision)?),
-            None => None,
+        let save = match (&current, kind) {
+            // a career reset: the starting save of the car the player started with
+            (Some(b), ResetKind::Career) => Some(fresh_career_save(starter_of(b), revision)?),
+            (Some(b), _) => Some(reset_save(b, revision)?),
+            (None, _) => None,
         };
         let now = unix_ms();
         let x = xuid as i64;
@@ -422,7 +470,14 @@ impl Store {
             .map_err(|e| e.to_string())?;
             tx.execute(
                 "UPDATE accounts SET reset_pending = ?2 WHERE xuid = ?1",
-                params![x, if kind == ResetKind::Moderation { PENDING_MODERATION } else { PENDING_SEASON }],
+                params![
+                    x,
+                    match kind {
+                        ResetKind::Moderation => PENDING_MODERATION,
+                        ResetKind::Season => PENDING_SEASON,
+                        ResetKind::Career => PENDING_CAREER,
+                    }
+                ],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -446,15 +501,32 @@ impl Store {
         };
         tx.execute(
             "INSERT INTO moderation_log (xuid, action, note, created) VALUES (?1, ?2, ?3, ?4)",
-            params![x, if kind == ResetKind::Moderation { "reset" } else { "season-reset" }, what, now],
+            params![
+                x,
+                match kind {
+                    ResetKind::Moderation => "reset",
+                    ResetKind::Season => "season-reset",
+                    ResetKind::Career => "career-reset",
+                },
+                what,
+                now
+            ],
         )
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         drop(db);
         // in the player's Message Center too, in their language (db/news.rs)
-        let message = if kind == ResetKind::Moderation { "Moderation found progress on this profile that could not be real and reset it: XP, level, credits, records and the garage (all but your first car). Your career and liveries are kept." } else { "New season! Your XP, level, credits, records and garage (all but your first car) started again. Your career, liveries and creations are kept. See you on the leaderboards!" };
+        let message = match kind {
+            ResetKind::Moderation => "Moderation found progress on this profile that could not be real and reset it: XP, level, credits, records and the garage (all but your first car). Your career and liveries are kept.",
+            ResetKind::Season => "New season! Your XP, level, credits, records and garage (all but your first car) started again. Your career, liveries and creations are kept. See you on the leaderboards!",
+            ResetKind::Career => "Your Infinity career starts again: every championship, event, road, barn find and treasure is there to win again, with the XP and credits they give. You keep your first car, your liveries and your creations.",
+        };
         self.send_news(&crate::l10n::tr(crate::l10n::is_portuguese(&self.lang(xuid)), message), &[xuid]);
-        let label = if kind == ResetKind::Moderation { "Progresso zerado pela moderação" } else { "Nova temporada: progresso zerado" };
+        let label = match kind {
+            ResetKind::Moderation => "Progresso zerado pela moderação",
+            ResetKind::Season => "Nova temporada: progresso zerado",
+            ResetKind::Career => "Carreira do Infinity recomeçada",
+        };
         self.add_event(xuid, "moderation", label, json!({ "car": kept.as_ref().map(|k| k.car) }));
         Ok(json!({
             "xuid": xuid.to_string(),
@@ -465,15 +537,16 @@ impl Store {
         }))
     }
 
-    /// The first save of a new profile (its offline progress) as it is kept: the season reset
-    /// applied. None: not a new profile's first save, or the save cannot be reset (kept as sent).
+    /// The first save of a new profile (the hook sends its offline save) as it is kept: a new
+    /// career with the starter car the offline save shows (see above). None: not a new profile's
+    /// first save, or no starting save could be made (kept as sent).
     pub fn new_profile_save(&self, xuid: u64, bundle: &[u8], revision: u64) -> Option<(Vec<u8>, String)> {
         if self.save_info(xuid).is_some() {
             return None;
         }
-        match reset_save(bundle, revision) {
+        match fresh_career_save(starter_of(bundle), revision) {
             Ok((b, c, kept)) => {
-                println!("  save: a new profile ({xuid}) starts from its offline career, car {} kept", kept.car);
+                println!("  save: a new profile ({xuid}) starts a new career with car {}", kept.car);
                 // the gates start from the season's 0 like everyone's
                 self.with(|db| {
                     db.execute(
@@ -486,7 +559,7 @@ impl Store {
                 Some((b, c))
             }
             Err(e) => {
-                eprintln!("  save: a new profile's first save could not be reset ({e}); kept as sent");
+                eprintln!("  save: no new career for a new profile ({e}); its save kept as sent");
                 None
             }
         }
@@ -655,6 +728,63 @@ mod tests {
         // days of play add up
         assert!(check_upload(&start, 0, &SaveProgress { credits: 900_000, xp: 250_000, level: 12, cars: 4 }, 3 * 24 * hour).is_ok());
         assert!(check_upload(&start, 0, &SaveProgress { credits: -1, ..played }, hour).is_err());
+    }
+
+    #[test]
+    fn new_career_from_the_starting_save() {
+        // a played offline save brings only its starter car's choice, never its career
+        let played = rich_save();
+        assert_eq!(starter_of(&played), 461);
+        assert_eq!(starter_of(&fixture(1218)), 1218);
+        assert_eq!(starter_of(b"not a save"), DEFAULT_STARTER);
+        let start = unpack(&fixture(461)).unwrap();
+        for car in STARTERS {
+            let (bundle, commit, kept) = fresh_career_save(car, 9).unwrap();
+            assert_eq!(kept.car, car);
+            assert_eq!(super::super::saves::check_bundle(&bundle), Ok(9));
+            assert_eq!(commit.len(), 64);
+            let files = unpack(&bundle).unwrap();
+            let db = get(&files, "data/PlayerDatabase");
+            assert_eq!(query(&db, "SELECT CarId FROM Career_Garage"), vec![car]);
+            // the career of a profile just past the first championship
+            assert_eq!(query(&db, "SELECT COUNT(*) FROM Career_ChampionshipsCompleted"), vec![1]);
+            let p = get(&files, "data/ProfileData");
+            for f in ["Credits", "XP", "Level"] {
+                assert_eq!(profile_int(&p, f), Some(0), "{f}");
+            }
+            if car == 461 {
+                // the collectibles' state is the starting save's
+                assert_eq!(get(&files, "data/BinarySaveState"), get(&start, "data/BinarySaveState"));
+            }
+        }
+        // a starter the server has no save for gets the default one
+        assert_eq!(fresh_career_save(999, 2).unwrap().2.car, DEFAULT_STARTER);
+    }
+
+    #[test]
+    fn career_reset_of_an_account() {
+        let dir = std::env::temp_dir().join(format!("fh2-career-{}", crate::db::accounts::new_token()));
+        let store = Store::open(&dir.join("t.sqlite")).unwrap();
+        let (account, _) = store.register_account("Alex", "01234", &"ab".repeat(32)).unwrap();
+        let x = account.xuid;
+        // the first save of a new profile: a new career, whatever the offline save had
+        let (bundle, commit) = store.new_profile_save(x, &rich_save(), 5).unwrap();
+        assert!(store.put_save(x, 5, &commit, &bundle));
+        let db = get(&unpack(&bundle).unwrap(), "data/PlayerDatabase");
+        assert_eq!(query(&db, "SELECT CarId FROM Career_Garage"), vec![461]);
+        assert!(query(&db, "SELECT TrackId FROM Career_Track_Stats").is_empty());
+        assert!(store.new_profile_save(x, &rich_save(), 6).is_none()); // only the first
+        // a profile made from its offline career (before this): the career reset replaces it
+        let (old, old_commit, _) = reset_save(&rich_save(), 6).unwrap();
+        assert!(store.put_save(x, 6, &old_commit, &old));
+        let done = store.reset_account(x, ResetKind::Career, "test").unwrap();
+        assert_eq!(done["keptCar"], 461);
+        assert_eq!(store.reset_pending(x), PENDING_CAREER);
+        let saved = store.save_data(x).unwrap();
+        assert_eq!(store.save_info(x).unwrap().revision, 7);
+        let (fresh, _, _) = fresh_career_save(461, 7).unwrap();
+        assert_eq!(saved, fresh);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

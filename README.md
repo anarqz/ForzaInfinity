@@ -19,8 +19,8 @@ Forza Horizon 2's online services, back for the PC version running on **Azimuth 
   cars' colours; friends first.
 - **Storefront**: share designs, vinyl groups and tunes; browse, download, like; three
   strikes from different players take a file down.
-- **Cloud save**: your profile starts from your offline progress and follows you to another
-  PC or the Deck.
+- **Cloud save**: your profile starts a new career with your first car (every event, road, barn
+  find and treasure there to win, as for every player) and follows you to another PC or the Deck.
 - **In Portuguese** when the game runs in Portuguese (Brazil); English otherwise.
 - **Updates itself**: a new release installs on its own (from this repository's GitHub
   releases, checked against their SHA-256) and the game asks you to restart.

@@ -13,6 +13,11 @@
 //!   fh2-server moderation ... season-reset [--yes] [--only XUID] [NOTE]   the same for every account (or one: --only; no drivatar
 //!                                                       deleted); without --yes it only counts. It backs
 //!                                                       the database up first (<db>.before-season-<ms>)
+//!   fh2-server moderation ... career-reset [--yes] [--only XUID] [NOTE]   every account (or one) starts a new
+//!                                                       career: the starting save of its starter car
+//!                                                       (db/reset.rs), records and server progress as in
+//!                                                       a season reset; liveries and creations stay. Backs
+//!                                                       the database up first (<db>.before-career-<ms>)
 //!   fh2-server moderation ... check-saves               every account's cloud save against the save
 //!                                                       checks (db/saves.rs), read only
 //!   fh2-server moderation ... files                     shared files off the storefront after 3 reports
@@ -37,6 +42,7 @@ fh2-server moderation [--db FILE] [--root DIR] clear XUID [NOTE]
 fh2-server moderation [--db FILE] [--root DIR] reset XUID [NOTE]
 fh2-server moderation [--db FILE] [--root DIR] delete XUID [--yes]
 fh2-server moderation [--db FILE] [--root DIR] season-reset [--yes] [--only XUID] [NOTE]
+fh2-server moderation [--db FILE] [--root DIR] career-reset [--yes] [--only XUID] [NOTE]
 fh2-server moderation [--db FILE] [--root DIR] check-saves
 fh2-server moderation [--db FILE] [--root DIR] files
 fh2-server moderation [--db FILE] [--root DIR] file ID [--preview-only]
@@ -111,7 +117,12 @@ pub fn run(args: Vec<String>) {
                 Err(e) => fail(&e),
             }
         }
-        Some("season-reset") => {
+        Some(command @ ("season-reset" | "career-reset")) => {
+            let (kind, tag) = if command == "career-reset" {
+                (crate::db::reset::ResetKind::Career, "career")
+            } else {
+                (crate::db::reset::ResetKind::Season, "season")
+            };
             let accounts: Vec<u64> = store.all_accounts().into_iter().filter(|x| only.is_none_or(|o| o == *x)).collect();
             let with_save = accounts.iter().filter(|x| store.save_info(**x).is_some()).count();
             if !yes {
@@ -119,14 +130,14 @@ pub fn run(args: Vec<String>) {
                               "next": "run again with --yes (the database is backed up first)" }));
                 return;
             }
-            let backup = db.with_extension(format!("before-season-{}", crate::unix_ms()));
+            let backup = db.with_extension(format!("before-{tag}-{}", crate::unix_ms()));
             if let Err(e) = store.backup_to(&backup) {
                 fail(&format!("backup failed ({e}); nothing was reset"));
             }
             let note = note(1);
             let (mut done, mut failed) = (0, Vec::new());
             for x in &accounts {
-                match store.reset_account(*x, crate::db::reset::ResetKind::Season, &note) {
+                match store.reset_account(*x, kind, &note) {
                     Ok(_) => done += 1,
                     Err(e) => failed.push(json!({ "xuid": x.to_string(), "error": e })),
                 }
