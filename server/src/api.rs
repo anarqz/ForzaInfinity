@@ -461,6 +461,7 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                 // a reset the game has not downloaded yet (db/reset.rs): the hook shows why
                 let notice = match app.store.reset_pending(a.xuid) {
                     crate::db::reset::PENDING_MODERATION => Some("Moderation reset this profile's progress. Restart the game to get it; your liveries were kept."),
+                    crate::db::reset::PENDING_REFUSED => Some("Your save had progress this server could not accept, so the server's save was restored. Restart the game to get it."),
                     crate::db::reset::PENDING_SEASON => Some("A new season started: XP, level, credits, records and the garage (all but your first car) start again; your career, liveries and creations stay. Restart the game to get it."),
                     _ => None,
                 };
@@ -483,9 +484,11 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
     use crate::db::saves;
     match (request.method.as_str(), route) {
         ("GET", "save/info") => match app.store.save_info(xuid) {
+            // restore: the server's save wins over the game's (a reset, or a refused upload)
             Some(s) => json_reply(
                 200,
-                &json!({ "revision": s.revision.to_string(), "commit": s.commit, "bytes": s.bytes, "updated": s.created }),
+                &json!({ "revision": s.revision.to_string(), "commit": s.commit, "bytes": s.bytes, "updated": s.created,
+                         "restore": app.store.reset_pending(xuid) != 0 }),
             ),
             None => json_reply(404, &json!({ "error": "No cloud save yet." })),
         },
@@ -521,6 +524,21 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
                 app.store.set_reset_pending(xuid, crate::db::reset::PENDING_NEW);
                 app.store.add_event(xuid, "save", "Perfil novo: save na nuvem a partir da carreira offline, temporada do zero", json!({}));
                 return json_reply(200, &json!({ "revision": revision.to_string(), "commit": reset_commit }));
+            }
+            // the save gates (db/reset.rs check_upload): the progress since the server's save, at most
+            // what an hour of play gives; refused, the server's save is restored at the next start
+            if let (Ok(_), Some(info)) = (saves::check_bundle(&request.body), app.store.save_info(xuid)) {
+                let previous = app.store.save_data(xuid).and_then(|b| crate::db::reset::save_progress(&b));
+                let new = crate::db::reset::save_progress(&request.body);
+                if let (Some(previous), Some(new)) = (previous, new)
+                    && let Err(why) = crate::db::reset::check_upload(&previous, info.created, &new, unix_ms())
+                {
+                    let strikes = app.store.strike(xuid, &format!("save: {why}"));
+                    app.store.set_reset_pending(xuid, crate::db::reset::PENDING_REFUSED);
+                    app.store.add_event(xuid, "integrity", &format!("Save recusado: {why}"), json!({ "strikes": strikes }));
+                    eprintln!("integrity: {xuid} save refused ({why}), strike {strikes}");
+                    return json_reply(409, &json!({ "error": "Your save had progress this server could not accept, so the server's save was restored. Restart the game to get it.", "why": "save" }));
+                }
             }
             match saves::check_bundle(&request.body) {
                 Ok(revision) if app.store.put_save(xuid, revision, commit, &request.body) => {
