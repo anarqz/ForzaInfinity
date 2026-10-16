@@ -1,4 +1,5 @@
-# ForzaInfinity uninstaller for Windows: puts back Azimuth's original azimuth-tls.dll.
+# ForzaInfinity uninstaller for Windows: puts back Azimuth's original azimuth-tls.dll and removes
+# the free roam relay (dedicated_server.exe; its server.cfg is the player's and stays).
 param([string]$Folder = '', [switch]$Quiet)
 $ErrorActionPreference = 'Stop'
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
@@ -21,4 +22,6 @@ if (-not $stock -or -not (Test-Path $stock)) { Say 'No backup (azimuth-tls.dll.s
 if (Get-Process -Name 'azimuth' -ErrorAction SilentlyContinue) { Say 'Close Forza Horizon 2 (Azimuth) first.' 'Error'; exit 1 }
 Copy-Item $stock (Join-Path (Get-Bin $azimuth) 'azimuth-tls.dll') -Force
 Remove-Item (Join-Path $azimuth 'ForzaInfinity-Update.cmd'), (Join-Path (Get-Bin $azimuth) 'forzainfinity-update.ps1'), (Join-Path $azimuth 'ForzaInfinity-Report.cmd'), (Join-Path (Get-Bin $azimuth) 'forzainfinity-report.ps1') -ErrorAction SilentlyContinue
-Say "Azimuth's original azimuth-tls.dll is back. Your saves and FH2_ExtraOptions.ini were left as they are."
+$relayFiles = 'dedicated_server.exe', 'dedicated_server.exe.previous', 'dedicated_server.exe.old', 'dedicated_server.net', 'dedicated_server.log'
+Remove-Item ($relayFiles | ForEach-Object { Join-Path (Get-Bin $azimuth) $_ }) -ErrorAction SilentlyContinue
+Say "Azimuth's original azimuth-tls.dll is back. Your saves, FH2_ExtraOptions.ini and server.cfg were left as they are."

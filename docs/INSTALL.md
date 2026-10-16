@@ -120,5 +120,5 @@ sends nothing by itself.
 | The game stops at start on Linux | `data/logs/azimuth.log`. `CreateDXGIFactory2` means the Vulkan driver is too old for Proton 11. |
 | A controller does nothing on Linux | Azimuth reads the first controller only. Check that it shows up as a gamepad (`/dev/input/js0`). |
 
-Not available yet: live multiplayer (Online Road Trip, online free roam). Layered designs of
-other players show in their car's factory colour for now.
+**Online free roam** (worlds the players host, up to 8 drivers): see [FREEROAM.md](FREEROAM.md).
+Not available yet: Online Road Trip and online races.

@@ -28,6 +28,11 @@ gcloud compute ssh "$VM" --project "$PROJECT" --zone "$ZONE" --tunnel-through-ia
   sudo install -m 0755 fh2-server /opt/infinity/bin/fh2-server
   sudo rm -rf /opt/infinity/responses && sudo tar -C /opt/infinity -xzf responses.tgz
   [ -f gamedbRC.slt ] && sudo install -m 0644 gamedbRC.slt /opt/infinity/gamedbRC.slt
+  # free roam (startup.sh has it from the next boot on; this is for the VM as it runs now)
+  if ! grep -q -- "--freeroam" /etc/systemd/system/fh2-server.service; then
+    sudo sed -i "s|^ExecStart=/opt/infinity/bin/fh2-server .*|& --freeroam|" /etc/systemd/system/fh2-server.service
+    sudo systemctl daemon-reload
+  fi
   sudo systemctl restart fh2-server
   sleep 2
   systemctl is-active fh2-server cloudflared-infinity

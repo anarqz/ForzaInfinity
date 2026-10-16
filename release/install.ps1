@@ -80,6 +80,14 @@ $stock = Join-Path $bin 'azimuth-tls.dll.stock'
 # update put its own back
 if ((Test-Path $target) -and (-not (Test-Path $stock) -or (Get-Item $target).Length -lt 65536)) { Copy-Item $target $stock -Force }
 Copy-Item $dll $target -Force
+# the free roam world a player hosts (Settings > INFINITY > HOST WORLD): dedicated_server.exe,
+# next to this script, else the latest release's
+$relay = Join-Path $here 'dedicated_server.exe'
+if (-not (Test-Path $relay)) {
+    $relay = Join-Path $env:TEMP 'forzainfinity-dedicated_server.exe'
+    try { Invoke-WebRequest -UseBasicParsing -Uri "$Release/dedicated_server.exe" -OutFile $relay } catch { $relay = '' }
+}
+if ($relay) { Copy-Item $relay (Join-Path $bin 'dedicated_server.exe') -Force }
 
 # 4. the settings. FH2_ExtraOptions.ini is the player's: what is in it stays as it is, and only the
 # options of our template it lacks are added (with their comments), at the end of their section.

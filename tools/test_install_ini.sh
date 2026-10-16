@@ -15,6 +15,7 @@ STAGE="$WORK/stage"; mkdir -p "$STAGE"
 cp "$ROOT/release/install.sh" "$ROOT/release/install.ps1" "$ROOT/release/update.sh" "$ROOT/release/update.ps1" \
     "$ROOT/release/report.sh" "$ROOT/release/report.ps1" "$ROOT/release/FH2_ExtraOptions.template.ini" "$STAGE/"
 printf 'MZ fake hook' > "$STAGE/azimuth-tls.dll"
+printf 'MZ fake relay' > "$STAGE/dedicated_server.exe"
 
 install_into() { # <azimuth folder>
     if [ -n "$PS" ]; then "$PS" -NoProfile -File "$STAGE/install.ps1" -Folder "$1" -Server "$SERVER" -Quiet >/dev/null
@@ -74,13 +75,13 @@ echo "ok: player's INI kept, template's missing options added, second run unchan
 
 # 3. an INI with [Network] Mode=Off and another server: ours now, the rest stays
 dir="$(fake_azimuth network)"; ini="$dir/data/bin/FH2_ExtraOptions.ini"
-tr -d '\r' < "$ROOT/release/FH2_ExtraOptions.template.ini" | sed 's/^Mode=Proxy/Mode=Off/; s/^Server=.*/Server=10.0.0.2:8081/; s/^OfflineVIP=1/OfflineVIP=0/; s/$/\r/' > "$ini"
-printf 'AutoUpdate=0\r\n' >> "$ini"
+tr -d '\r' < "$ROOT/release/FH2_ExtraOptions.template.ini" | sed 's/^Mode=Proxy/Mode=Off/; s/^Server=.*/Server=10.0.0.2:8081\r\nAutoUpdate=0/; s/^OfflineVIP=1/OfflineVIP=0/; s/$/\r/' > "$ini"
 install_into "$dir"
 expect "$ini" Network Mode Proxy; expect "$ini" Network Server "$SERVER"; expect "$ini" Network AutoUpdate 0
 expect "$ini" Content OfflineVIP 0; no_duplicates "$ini"; crlf "$ini"
 [ -e "$ini.pre-infinity" ] || { echo "FAIL network: no backup" >&2; exit 1; }
-echo "ok: [Network] set to the server, the player's options and AutoUpdate kept"
+cmp -s "$dir/data/bin/dedicated_server.exe" "$STAGE/dedicated_server.exe" || { echo "FAIL network: dedicated_server.exe not installed" >&2; exit 1; }
+echo "ok: [Network] set to the server, the player's options and AutoUpdate kept; dedicated_server.exe installed"
 
 # 4. already complete: nothing written, no backup
 dir="$(fake_azimuth complete)"; ini="$dir/data/bin/FH2_ExtraOptions.ini"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ForzaInfinity uninstaller for Linux and the Steam Deck: puts back Azimuth's original
-# azimuth-tls.dll (the azimuth-tls.dll.stock the installer kept).
+# azimuth-tls.dll (the azimuth-tls.dll.stock the installer kept) and removes the free roam
+# relay (dedicated_server.exe; its server.cfg is the player's and stays).
 #   ./uninstall.sh [<azimuth folder>]
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -16,4 +17,6 @@ STOCK="$AZIMUTH/data/bin/azimuth-tls.dll.stock"
 if ps -eo args | grep -qi '[a]zimuth\.exe'; then echo "Close Forza Horizon 2 (Azimuth) first." >&2; exit 1; fi
 cp "$STOCK" "$AZIMUTH/data/bin/azimuth-tls.dll"
 rm -f "$AZIMUTH/ForzaInfinity-Update.sh" "$AZIMUTH/ForzaInfinity-Report.sh"
-echo "Azimuth's original azimuth-tls.dll is back in $AZIMUTH. Saves and FH2_ExtraOptions.ini were left as they are."
+rm -f "$AZIMUTH/data/bin/dedicated_server.exe" "$AZIMUTH/data/bin/dedicated_server.exe.previous" \
+    "$AZIMUTH/data/bin/dedicated_server.net" "$AZIMUTH/data/bin/dedicated_server.log"
+echo "Azimuth's original azimuth-tls.dll is back in $AZIMUTH. Saves, FH2_ExtraOptions.ini and server.cfg were left as they are."

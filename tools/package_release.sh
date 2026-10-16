@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Builds a ForzaInfinity player release into dist/:
-#   dist/ForzaInfinity.zip    the package players download (hook + installers + INI template)
+#   dist/ForzaInfinity.zip    the package players download (hook, dedicated_server.exe for
+#                             hosting free roam worlds, installers, INI template)
 #   dist/<each file>          the same files loose, uploaded next to the zip so that
 #                             install.sh / install.ps1 run straight from the release URL
 # Usage: tools/package_release.sh [--zig <zig>] [--server <host:port | https://host>] [--dll <prebuilt dll>]
 #                                 [--release vX.Y.Z]
 #   --server bakes a default server address into the installers (they still ask).
 # Needs the release signing key (FH2_SIGNING_KEY, by default ~/.config/forzainfinity/release-ed25519.pem):
-# tools/sign_release.sh writes azimuth-tls.dll.sig, without which hooks refuse the self-update.
+# tools/sign_release.sh writes azimuth-tls.dll.sig and dedicated_server.exe.sig, without which
+# hooks refuse the self-update (the relay's SHA-256 is also built into the hook:
+# tools/embed_relay_hash.py).
 #   --release also writes server/responses/infinity/latest.json ({hook, release}): the server's
 #   /info names it, and hooks older than it install it from that GitHub release by themselves.
 # Then attach every file in dist/ to the GitHub release (the landing links to releases/latest),
@@ -41,6 +44,13 @@ STAGE="$DIST/ForzaInfinity"
 rm -rf "$DIST"
 mkdir -p "$STAGE"
 
+# the free roam relay (dedicated/), built first: the hook carries its SHA-256
+(cd "$ROOT/dedicated" && bash ./build-windows.sh >/dev/null)
+RELAY="$ROOT/dedicated/target/x86_64-pc-windows-gnu/release/dedicated_server.exe"
+python3 "$ROOT/tools/embed_relay_hash.py" "$RELAY" >/dev/null
+if ! git -C "$ROOT/hook" diff --quiet -- adapters/azimuth_relay_hash.h; then
+    echo "warning: hook/adapters/azimuth_relay_hash.h changed with the relay: commit it in the hook" >&2
+fi
 # the hook: the same build as hook/BUILD.md, with the INI template it writes for a player who has
 # none taken from release/FH2_ExtraOptions.template.ini
 python3 "$ROOT/tools/embed_ini_template.py" >/dev/null
@@ -52,6 +62,7 @@ if [ -z "$DLL" ]; then
     DLL="$ROOT/hook/build/azimuth-tls.dll"
 fi
 cp "$DLL" "$STAGE/azimuth-tls.dll"
+cp "$RELAY" "$STAGE/dedicated_server.exe"
 VERSION="$(grep -o 'MOD_VERSION "[^"]*"' "$ROOT/hook/extra_options.h" | cut -d'"' -f2)"
 
 for f in Install.cmd Uninstall.cmd Update.cmd Report.cmd install.ps1 uninstall.ps1 update.ps1 report.ps1 install.sh uninstall.sh update.sh report.sh \
@@ -70,11 +81,17 @@ fi
     printf 'ForzaInfinity-Update in the Azimuth folder (Update.cmd / update.sh here do the same).\r\n\r\n'
     printf 'Something wrong? ForzaInfinity-Report in the Azimuth folder (Report.cmd / report.sh here) writes\r\n'
     printf 'ForzaInfinity-Report.txt, the last launch, to send to whoever helps you.\r\n\r\n'
-    printf 'Then start the game and open Settings > INFINITY > Create profile.\r\n'
+    printf 'Then start the game and open Settings > INFINITY > Create profile.\r\n\r\n'
+    printf 'Free roam online: Settings > INFINITY > HOST WORLD hosts a world on this PC\r\n'
+    printf '(dedicated_server.exe; Windows asks once about the firewall: allow private networks).\r\n'
+    printf 'FREE ROAM ONLINE joins your friends; FIND WORLD lists the others.\r\n'
+    printf 'Guide: https://github.com/anarqz/ForzaInfinity/blob/main/docs/FREEROAM.md\r\n\r\n'
     printf 'Full guide: https://github.com/anarqz/ForzaInfinity/blob/main/docs/INSTALL.md\r\n'
 } > "$STAGE/README.txt"
 sha256sum "$STAGE/azimuth-tls.dll" | cut -d' ' -f1 > "$STAGE/azimuth-tls.dll.sha256"
 FH2_SIGNING_KEY="$SIGNING_KEY" "$ROOT/tools/sign_release.sh" "$STAGE/azimuth-tls.dll" >/dev/null
+sha256sum "$STAGE/dedicated_server.exe" | cut -d' ' -f1 > "$STAGE/dedicated_server.exe.sha256"
+FH2_SIGNING_KEY="$SIGNING_KEY" "$ROOT/tools/sign_release.sh" "$STAGE/dedicated_server.exe" >/dev/null
 if [ -n "$RELEASE" ]; then
     [[ "$RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "--release must look like v1.2.3" >&2; exit 2; }
     mkdir -p "$ROOT/server/responses/infinity"

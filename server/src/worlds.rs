@@ -277,14 +277,15 @@ fn is_lan(ip: &IpAddr) -> bool {
 
 /// The `public` (or `candidates`) addresses of a host or a player: at most MAX_PUBLIC
 /// `ip:port`; IPv4 only at the address this server sees them at (`seen`), IPv6 only global.
-/// A caller on loopback or a LAN address (a server on the same network) may send any.
+/// A caller on loopback or a LAN address (a server on the same network) may send any, and one
+/// seen over IPv6 (its HTTPS goes over IPv6, its game may well use IPv4) one IPv4 address.
 fn public_addresses(v: &Value, seen: IpAddr) -> Result<Vec<SocketAddr>, String> {
     let list = match v {
         Value::Null => return Ok(Vec::new()),
         Value::Array(a) if a.len() <= MAX_PUBLIC => a,
         _ => return Err(format!("public: at most {MAX_PUBLIC} addresses")),
     };
-    let mut out = Vec::new();
+    let mut out: Vec<SocketAddr> = Vec::new();
     for item in list {
         let Some(a) = item.as_str().and_then(|s| s.trim().parse::<SocketAddr>().ok()) else {
             return Err("public: ip:port addresses".into());
@@ -293,7 +294,10 @@ fn public_addresses(v: &Value, seen: IpAddr) -> Result<Vec<SocketAddr>, String> 
         let ok = a.port() != 0
             && match a.ip() {
                 IpAddr::V4(v4) => {
-                    seen.is_loopback() || is_lan(&seen) || (IpAddr::V4(v4) == seen && !v4.is_unspecified())
+                    seen.is_loopback()
+                        || is_lan(&seen)
+                        || (IpAddr::V4(v4) == seen && !v4.is_unspecified())
+                        || (seen.is_ipv6() && !v4.is_unspecified() && !out.iter().any(|o| o.is_ipv4() && o.ip() != a.ip()))
                 }
                 IpAddr::V6(v6) => {
                     let first = v6.segments()[0];
@@ -406,7 +410,8 @@ impl Worlds {
             .filter(|(host, w)| {
                 w.listed && w.password.is_none() && caller.is_friend(**host) && s.why(**host, w, caller).is_empty()
             })
-            .max_by_key(|(host, w)| (w.host_ip == caller.ip, s.players(**host), w.heartbeat))
+            // a tie goes to the oldest account (the lowest XUID): the same answer every time
+            .max_by_key(|(host, w)| (w.host_ip == caller.ip, s.players(**host), w.heartbeat, std::cmp::Reverse(**host)))
             .map(|(host, _)| *host)?;
         Some(pick(best, Via::Auto))
     }
@@ -993,6 +998,10 @@ mod tests {
         for bad in [json!(["203.0.113.6:1"]), json!(["203.0.113.5:0"]), json!(["[fe80::1]:5"]), json!(["x"]), json!("a"), json!(["203.0.113.5:1", "203.0.113.5:2", "203.0.113.5:3", "203.0.113.5:4"])] {
             assert!(public_addresses(&bad, seen).is_err(), "{bad}");
         }
+        // seen over IPv6: one IPv4 address (unverifiable), not two different ones
+        let v6: IpAddr = "2001:db8::7".parse().unwrap();
+        assert!(public_addresses(&json!(["198.51.100.4:5101", "[2001:db8::7]:5101"]), v6).is_ok());
+        assert!(public_addresses(&json!(["198.51.100.4:5101", "198.51.100.5:5101"]), v6).is_err());
         // a server on the same LAN (or loopback) sees private addresses: anything goes
         assert!(public_addresses(&json!(["191.251.57.219:5101"]), "192.168.68.93".parse().unwrap()).is_ok());
     }
