@@ -765,7 +765,7 @@ mod tests {
     fn career_reset_of_an_account() {
         let dir = std::env::temp_dir().join(format!("fh2-career-{}", crate::db::accounts::new_token()));
         let store = Store::open(&dir.join("t.sqlite")).unwrap();
-        let (account, _) = store.register_account("Alex", "01234", &"ab".repeat(32)).unwrap();
+        let (account, _) = store.register_account("Alex", "01234", &"ab".repeat(32), crate::db::accounts::MODE_HARDCORE).unwrap();
         let x = account.xuid;
         // the first save of a new profile: a new career, whatever the offline save had
         let (bundle, commit) = store.new_profile_save(x, &rich_save(), 5).unwrap();

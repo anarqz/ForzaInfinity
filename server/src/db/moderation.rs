@@ -55,6 +55,10 @@ pub fn migrate(db: &Connection) -> rusqlite::Result<()> {
     if !columns.iter().any(|c| c == "reset_pending") {
         db.execute_batch("ALTER TABLE accounts ADD COLUMN reset_pending INTEGER NOT NULL DEFAULT 0;")?;
     }
+    // the profile's mode (db/accounts.rs MODE_*): the accounts made before it are Hardcore
+    if !columns.iter().any(|c| c == "mode") {
+        db.execute_batch("ALTER TABLE accounts ADD COLUMN mode INTEGER NOT NULL DEFAULT 0;")?;
+    }
     Ok(())
 }
 

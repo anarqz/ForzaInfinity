@@ -36,6 +36,11 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// A Noob profile (db/accounts.rs MODE_NOOB): no progress gates, only the technical checks.
+    fn noob(&self) -> bool {
+        self.store.account_mode(self.xuid) == crate::db::accounts::MODE_NOOB
+    }
+
     fn event(&self, kind: &str, title: impl AsRef<str>, detail: Value) {
         self.event_for(self.xuid, kind, title, detail);
     }
@@ -548,7 +553,12 @@ fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
     let params = &merged;
     // integrity: credits / XP / level growth and top speed within reason (gates.rs)
     let now = crate::unix_ms();
+    let noob = ctx.noob();
     let checked = gates::progress(params).and_then(|p| {
+        // a Noob profile: only the game's limits (gates::progress), no growth or speed gate
+        if noob {
+            return Ok(p);
+        }
         let arriving = gates::arriving(ctx.store.account_created(ctx.xuid), now);
         gates::check_growth(ctx.store.baseline(ctx.xuid).as_ref(), &p, now, arriving)?;
         // a new top speed record must fit the cars (an old record may come from a car since sold)
@@ -601,7 +611,8 @@ fn profile_update_tables(ctx: &Ctx, params: &Value) -> Value {
     // integrity: only real cars, and not a garage full of them at once
     let stored = garage_cars(ctx).len();
     let now = crate::unix_ms();
-    let arriving = gates::arriving(ctx.store.account_created(ctx.xuid), now);
+    // Noob: cars that exist, however many come at once
+    let arriving = ctx.noob() || gates::arriving(ctx.store.account_created(ctx.xuid), now);
     if let Err(reason) = gates::check_garage(ctx.catalog, params, stored, ctx.store.garage_baseline(ctx.xuid), now, arriving) {
         gates::refuse(ctx, "Garage sync", &reason);
         return json!({});
@@ -637,7 +648,7 @@ fn submit_score(ctx: &Ctx, params: &Value) -> Value {
         return json!({ "__xtsw_error": { "code": 1, "message": "invalid score" } });
     }
     // integrity: a race time the car could not have done
-    if crate::db::lower_is_better(score_type) {
+    if crate::db::lower_is_better(score_type) && !ctx.noob() {
         let car = data["carId"].as_i64().unwrap_or(-1);
         if let Err(reason) = gates::check_race_time(ctx.catalog, car, data["trackId"].as_i64().unwrap_or(-1), score) {
             gates::refuse(ctx, "Score", &reason);
@@ -719,7 +730,7 @@ fn submit_xp(ctx: &Ctx, params: &Value) -> Value {
     // one race pays at most a few thousand XP; the club ladder adds these up
     let xp = params["xp"].as_f64().filter(|x| x.is_finite()).unwrap_or(0.0).clamp(0.0, 50_000.0);
     // integrity: XP reported in the last hour within reason
-    if ctx.store.xp_since(ctx.xuid, crate::unix_ms() - 3_600_000) + xp > gates::XP_REPORTED_PER_HOUR {
+    if !ctx.noob() && ctx.store.xp_since(ctx.xuid, crate::unix_ms() - 3_600_000) + xp > gates::XP_REPORTED_PER_HOUR {
         gates::refuse(ctx, "XP", &format!("{:.0} XP over an hour", gates::XP_REPORTED_PER_HOUR));
         return json!({ "weeklyTierAchieved": false, "weeklyTierInfo": {} });
     }
@@ -1243,7 +1254,7 @@ mod tests {
         let store = Store::open(&dir.join("t.sqlite")).unwrap();
         let catalog = Catalog::default();
         let pc = |n: u8| format!("{n:02x}").repeat(32);
-        let [a, b, c, d] = [1u8, 2, 3, 4].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n)).unwrap().0.xuid);
+        let [a, b, c, d] = [1u8, 2, 3, 4].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n), crate::db::accounts::MODE_HARDCORE).unwrap().0.xuid);
         let ctx = |xuid| Ctx { store: &store, catalog: &catalog, xuid, events: RefCell::new(Vec::new()) };
         let call = |xuid, method: &str, params: Value| handle(&ctx(xuid), "Scoreboard", method, &params).unwrap();
         let route = json!({ "scoreboardType": 0, "scoreType": 1, "trackId": 7, "gameScoreboardId": 70, "carId": 461 });
@@ -1304,7 +1315,7 @@ mod tests {
         let store = Store::open(&dir.join("t.sqlite")).unwrap();
         let catalog = Catalog::default();
         let pc = |n: u8| format!("{n:02x}").repeat(32);
-        let [a, b, c, d] = [1u8, 2, 3, 4].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n)).unwrap().0.xuid);
+        let [a, b, c, d] = [1u8, 2, 3, 4].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n), crate::db::accounts::MODE_HARDCORE).unwrap().0.xuid);
         let fields = |tag: &str, privacy| ClubFields {
             tag: tag.into(), name: format!("Club {tag}"), description: String::new(), privacy, region: 0, attitude: 0, interest: 0,
         };
@@ -1329,7 +1340,7 @@ mod tests {
         let store = Store::open(&dir.join("t.sqlite")).unwrap();
         let catalog = Catalog::default();
         let pc = |n: u8| format!("{n:02x}").repeat(32);
-        let [a, b, c] = [1u8, 2, 3].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n)).unwrap().0.xuid);
+        let [a, b, c] = [1u8, 2, 3].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n), crate::db::accounts::MODE_HARDCORE).unwrap().0.xuid);
         let fields = |tag: &str| ClubFields {
             tag: tag.into(), name: format!("Club {tag}"), description: String::new(), privacy: PRIVACY_OPEN, region: 0, attitude: 0, interest: 0,
         };

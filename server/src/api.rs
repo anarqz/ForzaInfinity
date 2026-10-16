@@ -272,22 +272,48 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
             let name = body["name"].as_str().unwrap_or("").trim();
             let discriminator = body["discriminator"].as_str().unwrap_or("").trim();
             let device = body["device"].as_str().unwrap_or("").trim();
+            let Some(mode) = crate::db::accounts::mode_from_name(body["mode"].as_str().unwrap_or("").trim()) else {
+                return json_reply(400, &json!({ "error": "Unknown profile mode." }));
+            };
             // the profile's save is the player's own offline one: the hook uploads it (PUT save)
-            // right after, and deletes the account (POST delete) if that fails
-            match app.store.register_account(name, discriminator, device) {
+            // right after, and deletes the account (POST delete) if that fails. A Hardcore profile
+            // keeps only its starter car from it (a new career); a Noob one keeps it all
+            match app.store.register_account(name, discriminator, device, mode) {
                 Ok((account, token)) => {
                     let gamertag = account.gamertag();
                     let web_key = app.store.rotate_web_key(account.xuid).unwrap_or_default();
-                    app.store.add_event(account.xuid, "account", &format!("Conta {gamertag} criada"), json!({}));
+                    app.store.add_event(
+                        account.xuid,
+                        "account",
+                        &format!("Conta {gamertag} criada ({})", crate::db::accounts::mode_name(mode)),
+                        json!({ "mode": crate::db::accounts::mode_name(mode) }),
+                    );
                     app.hub.broadcast(&json!({ "type": "users", "users": app.store.users() }));
                     json_reply(
                         200,
-                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key, "expansions": app.store.expansions(account.xuid) }),
+                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key, "expansions": app.store.expansions(account.xuid), "mode": crate::db::accounts::mode_name(app.store.account_mode(account.xuid)) }),
                     )
                 }
                 Err(e) => json_reply(400, &json!({ "error": e })),
             }
         }
+        // Hardcore -> Noob (never back): the profile keeps its progress and leaves the gates; a
+        // save the server wanted back (refused progress) is the player's again
+        ("POST", "mode/noob") => match token_account() {
+            Some(a) => match app.store.make_noob(a.xuid) {
+                Ok(changed) => {
+                    if changed {
+                        if app.store.reset_pending(a.xuid) == crate::db::reset::PENDING_REFUSED {
+                            app.store.set_reset_pending(a.xuid, 0);
+                        }
+                        app.store.add_event(a.xuid, "account", "Perfil convertido para Noob", json!({ "mode": "noob" }));
+                    }
+                    json_reply(200, &json!({ "mode": "noob", "changed": changed }))
+                }
+                Err(e) => json_reply(500, &json!({ "error": e })),
+            },
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
+        },
         // The player deletes their own account from the game (Settings > INFINITY): everything
         // they have on the server goes (Store::delete_user); their offline save stays.
         ("POST", "delete") => match token_account() {
@@ -454,7 +480,7 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                     app.store.add_event(account.xuid, "account", &format!("{gamertag} entrou em outro PC"), json!({}));
                     json_reply(
                         200,
-                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key, "expansions": app.store.expansions(account.xuid) }),
+                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key, "expansions": app.store.expansions(account.xuid), "mode": crate::db::accounts::mode_name(app.store.account_mode(account.xuid)) }),
                     )
                 }
                 Err(e) => json_reply(401, &json!({ "error": e })),
@@ -487,7 +513,7 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                     app.store.add_event(account.xuid, "account", &format!("{gamertag} voltou ao PC que o criou"), json!({}));
                     json_reply(
                         200,
-                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key, "expansions": app.store.expansions(account.xuid) }),
+                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key, "expansions": app.store.expansions(account.xuid), "mode": crate::db::accounts::mode_name(app.store.account_mode(account.xuid)) }),
                     )
                 }
                 Err(e) => json_reply(401, &json!({ "error": e })),
@@ -521,7 +547,7 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
         ("GET", "me") => match token_account() {
             Some(a) if a.banned => json_reply(403, &json!({ "error": "Account suspended on this server." })),
             Some(a) => {
-                let mut me = json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag(), "expansions": app.store.expansions(a.xuid) });
+                let mut me = json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag(), "expansions": app.store.expansions(a.xuid), "mode": crate::db::accounts::mode_name(app.store.account_mode(a.xuid)) });
                 // a reset the game has not downloaded yet (db/reset.rs): the hook shows why
                 let notice = match app.store.reset_pending(a.xuid) {
                     crate::db::reset::PENDING_MODERATION => Some("Moderation reset this profile's progress. Restart the game to get it; your liveries were kept."),
@@ -592,8 +618,11 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
             }
             // a new profile's first save (its offline save) is not kept: the profile starts a new
             // career with the starter car it shows (db/reset.rs), every event there to win again
+            // (a Noob profile keeps its offline save as it is, and has no save gates)
+            let noob = app.store.account_mode(xuid) == crate::db::accounts::MODE_NOOB;
             let fresh = saves::check_bundle(&request.body)
                 .ok()
+                .filter(|_| !noob)
                 .and_then(|revision| app.store.new_profile_save(xuid, &request.body, revision).map(|(b, c)| (revision, b, c)));
             if let Some((revision, bundle, reset_commit)) = fresh {
                 if !app.store.put_save(xuid, revision, &reset_commit, &bundle) {
@@ -605,7 +634,7 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
             }
             // the save gates (db/reset.rs check_upload): the progress since the server's save, at most
             // what an hour of play gives; refused, the server's save is restored at the next start
-            if let (Ok(_), Some(info)) = (saves::check_bundle(&request.body), app.store.save_info(xuid)) {
+            if let (false, Ok(_), Some(info)) = (noob, saves::check_bundle(&request.body), app.store.save_info(xuid)) {
                 let previous = app.store.save_data(xuid).and_then(|b| crate::db::reset::save_progress(&b));
                 let new = crate::db::reset::save_progress(&request.body);
                 if let (Some(previous), Some(new)) = (previous, new)

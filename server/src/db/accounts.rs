@@ -64,6 +64,25 @@ pub struct Account {
     pub banned: bool,
 }
 
+/// A profile's mode. Hardcore: a new career, every progress gate (forza/gates.rs, the save gates
+/// of db/reset.rs). Noob: the player's own offline save as it is, no progress gates (the technical
+/// checks stay: a save's shape and sizes, cars that exist, the game's limits). Players only meet
+/// players of their own mode. Hardcore may become Noob, never the other way.
+pub const MODE_HARDCORE: i64 = 0;
+pub const MODE_NOOB: i64 = 1;
+
+pub fn mode_name(mode: i64) -> &'static str {
+    if mode == MODE_NOOB { "noob" } else { "hardcore" }
+}
+
+pub fn mode_from_name(name: &str) -> Option<i64> {
+    match name {
+        "hardcore" | "" => Some(MODE_HARDCORE),
+        "noob" => Some(MODE_NOOB),
+        _ => None,
+    }
+}
+
 impl Account {
     pub fn gamertag(&self) -> String {
         format!("{}#{}", self.name, self.discriminator)
@@ -130,7 +149,7 @@ fn os_random(buf: &mut [u8]) {
 
 impl Store {
     /// Creates the account and its first device token. Err: a message for the player.
-    pub fn register_account(&self, name: &str, discriminator: &str, device: &str) -> Result<(Account, String), String> {
+    pub fn register_account(&self, name: &str, discriminator: &str, device: &str, mode: i64) -> Result<(Account, String), String> {
         if !valid_name(name) {
             return Err("The name must have 1 to 20 letters or digits and start with a letter.".into());
         }
@@ -158,8 +177,8 @@ impl Store {
         let now = unix_ms();
         self.with(|db| {
             db.execute(
-                "INSERT INTO accounts (xuid, name, discriminator, device, created) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![xuid as i64, name, discriminator, device, now],
+                "INSERT INTO accounts (xuid, name, discriminator, device, created, mode) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![xuid as i64, name, discriminator, device, now, mode],
             )?;
             db.execute(
                 "INSERT INTO devices (token_hash, xuid, created, last_seen) VALUES (?1, ?2, ?3, ?3)",
@@ -169,6 +188,23 @@ impl Store {
         .ok_or("Could not save the account.")?;
         self.grant_expansions();
         Ok((Account { xuid, name: name.into(), discriminator: discriminator.into(), banned: false }, token))
+    }
+
+    /// The account's mode (MODE_*); Hardcore for an unknown account.
+    pub fn account_mode(&self, xuid: u64) -> i64 {
+        self.with(|db| db.query_row("SELECT mode FROM accounts WHERE xuid = ?1", params![xuid as i64], |r| r.get::<_, i64>(0)))
+            .unwrap_or(MODE_HARDCORE)
+    }
+
+    /// Hardcore -> Noob (never back). Ok(true) when it changed.
+    pub fn make_noob(&self, xuid: u64) -> Result<bool, String> {
+        match self.account_mode(xuid) {
+            MODE_NOOB => Ok(false),
+            _ => self
+                .with(|db| db.execute("UPDATE accounts SET mode = ?2 WHERE xuid = ?1 AND mode = ?3", params![xuid as i64, MODE_NOOB, MODE_HARDCORE]))
+                .map(|n| n > 0)
+                .ok_or_else(|| "Could not change the profile.".to_string()),
+        }
     }
 
     /// Gives every account the GRANTED_EXPANSIONS it does not have yet (a new account, and at
@@ -516,19 +552,40 @@ mod tests {
     }
 
     #[test]
+    fn modes() {
+        let dir = std::env::temp_dir().join(format!("fh2-modes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join("m.sqlite"));
+        let store = Store::open(&dir.join("m.sqlite")).unwrap();
+        let pc = |n: u8| format!("{n:02x}").repeat(32);
+        let (hard, _) = store.register_account("Hard", "00001", &pc(1), MODE_HARDCORE).unwrap();
+        let (noob, _) = store.register_account("Noob", "00001", &pc(1), MODE_NOOB).unwrap();
+        assert_eq!(store.account_mode(hard.xuid), MODE_HARDCORE);
+        assert_eq!(store.account_mode(noob.xuid), MODE_NOOB);
+        assert_eq!(mode_from_name("noob"), Some(MODE_NOOB));
+        assert_eq!(mode_from_name(""), Some(MODE_HARDCORE));
+        assert_eq!(mode_from_name("cheater"), None);
+        // Hardcore -> Noob once; Noob stays Noob
+        assert_eq!(store.make_noob(hard.xuid), Ok(true));
+        assert_eq!(store.account_mode(hard.xuid), MODE_NOOB);
+        assert_eq!(store.make_noob(hard.xuid), Ok(false));
+        assert_eq!(store.make_noob(noob.xuid), Ok(false));
+    }
+
+    #[test]
     fn register_and_token() {
         let dir = std::env::temp_dir().join(format!("fh2-accounts-{}", new_token()));
         let store = Store::open(&dir.join("t.sqlite")).unwrap();
         let pc = |n: u8| format!("{n:02x}").repeat(32);
-        let (acc, token) = store.register_account("Alex", "01234", &pc(1)).unwrap();
+        let (acc, token) = store.register_account("Alex", "01234", &pc(1), MODE_HARDCORE).unwrap();
         assert_eq!(acc.gamertag(), "Alex#01234");
         assert_eq!(token.len(), 64);
         // same name#discriminator from another PC
-        assert!(store.register_account("alex", "01234", &pc(2)).is_err());
+        assert!(store.register_account("alex", "01234", &pc(2), MODE_HARDCORE).is_err());
         // a PC has up to three profiles on a server
-        let (second, second_token) = store.register_account("Outra", "01234", &pc(1)).unwrap();
-        let (third, _) = store.register_account("Terceira", "01234", &pc(1)).unwrap();
-        let full = store.register_account("Quarta", "01234", &pc(1)).err().unwrap();
+        let (second, second_token) = store.register_account("Outra", "01234", &pc(1), MODE_HARDCORE).unwrap();
+        let (third, _) = store.register_account("Terceira", "01234", &pc(1), MODE_HARDCORE).unwrap();
+        let full = store.register_account("Quarta", "01234", &pc(1), MODE_HARDCORE).err().unwrap();
         assert!(full.contains("Alex#01234") && full.contains("Terceira#01234"), "{full}");
         let mine: Vec<u64> = store.device_accounts(&pc(1)).iter().map(|a| a.xuid).collect();
         assert_eq!(mine, vec![acc.xuid, second.xuid, third.xuid]);
@@ -547,9 +604,9 @@ mod tests {
         assert_eq!(known[0].1.xuid, acc.xuid);
         // a deleted profile frees its slot
         assert!(store.delete_user(third.xuid));
-        assert!(store.register_account("Quarta", "01234", &pc(1)).is_ok());
-        assert!(store.register_account("Alex", "99999", &pc(3)).is_ok());
-        assert!(store.register_account("Alex", "55555", "curto").is_err());
+        assert!(store.register_account("Quarta", "01234", &pc(1), MODE_HARDCORE).is_ok());
+        assert!(store.register_account("Alex", "99999", &pc(3), MODE_HARDCORE).is_ok());
+        assert!(store.register_account("Alex", "55555", "curto", MODE_HARDCORE).is_err());
         let found = store.account_by_token(&token).unwrap();
         assert_eq!(found.xuid, acc.xuid);
         assert_eq!(store.gamertag(acc.xuid), "Alex#01234");

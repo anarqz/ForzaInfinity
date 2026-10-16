@@ -139,7 +139,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fh2-news-{}", crate::db::accounts::new_token()));
         let store = Store::open(&dir.join("t.sqlite")).unwrap();
         let pc = |n: u8| format!("{n:02x}").repeat(32);
-        let [a, b, c] = [1u8, 2, 3].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n)).unwrap().0.xuid);
+        let [a, b, c] = [1u8, 2, 3].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n), crate::db::accounts::MODE_HARDCORE).unwrap().0.xuid);
         store.set_banned(c, true);
         assert_eq!(store.news_recipients(None), vec![a, b]);
         assert_eq!(store.news_recipients(Some("p2#00001")), vec![b]);
