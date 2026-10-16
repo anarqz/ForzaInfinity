@@ -142,7 +142,7 @@ fn main() {
     println!("Pronto. Ctrl+C para fechar.");
 
     let verbose = verbose || cfg.verbose;
-    let settings = relay::Settings { max_players: cfg.max_players, mirror, verbose, ..Default::default() };
+    let settings = relay::Settings { max_players: cfg.max_players, mirror, verbose, races: cfg.races, ..Default::default() };
     let mut r = relay::Relay::new(sock, settings);
     r.set_commands(stdin_commands());
     r.set_nat(Nat::new(NatSettings::new(cfg.port, cfg.upnp, Some(exe_dir.join("dedicated_server.net"))), dual));

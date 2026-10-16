@@ -612,6 +612,58 @@ fn group_sat_nav_is_answered_and_does_not_lose_the_car() {
     }
 }
 
+/// Events: a console that enters one asks for its GameOptions (ObjectRequestOwnership, router 6
+/// type 1, a Transfer handle). With races on, the first one gets it (ObjectGrantOwnership, seq 0:
+/// the object's first message from the server) and a resend of the same request is not answered
+/// again; while it has the event the others are denied (ObjectTransferOwnership), until it
+/// leaves. With races off nothing is answered (the hook sends the player back to free roam).
+#[test]
+fn events_go_to_the_first_console_that_enters_one() {
+    fn request(id: u32) -> Msg {
+        let mut b = Bits::new();
+        b.push(6, 4).push(nerd::GAME_OPTIONS_TYPE as u64, 2);
+        Handle::Transfer(id).write(&mut b, 2);
+        Msg::Other { id: nerd::MSG_OBJECT_REQUEST_OWNERSHIP, body: b }
+    }
+    fn answer(m: &Msg) -> Option<(u8, Msg)> {
+        match m {
+            Msg::Other { id, .. } if *id == nerd::MSG_OBJECT_GRANT_OWNERSHIP || *id == nerd::MSG_OBJECT_TRANSFER_OWNERSHIP => Some((*id, m.clone())),
+            _ => None,
+        }
+    }
+    let is_answer = |m: &Msg| answer(m).is_some();
+
+    let off = Server::start(settings());
+    let mut x = Client::new(&off, 7);
+    x.join();
+    x.send(&[request(0)]);
+    x.expect_none(Duration::from_millis(400), "an answer with races off", is_answer);
+    drop(x);
+    drop(off);
+
+    let server = Server::start(Settings { races: true, ..settings() });
+    let mut a = Client::new(&server, 1);
+    let mut b = Client::new(&server, 2);
+    a.join();
+    b.join();
+    a.send(&[request(0)]);
+    let g = a.wait_for("the grant", is_answer);
+    assert_eq!(g.write(), nerd::grant_ownership(6, Handle::Transfer(0), 0, &Bits::new()));
+    a.send(&[request(0)]);
+    a.expect_none(Duration::from_millis(400), "a second answer to a resent request", is_answer);
+
+    b.send(&[request(0)]);
+    let d = b.wait_for("the denial", is_answer);
+    assert_eq!(d.write(), nerd::transfer_ownership(6, Handle::Transfer(0), 0));
+
+    // A leaves: B's next request (after the resend window) gets the event, as its seq 1
+    a.send(&[Msg::Close]);
+    b.expect_none(Duration::from_millis(2100), "an answer while waiting", is_answer);
+    b.send(&[request(0)]);
+    let g = b.wait_for("the grant once A left", is_answer);
+    assert_eq!(g.write(), nerd::grant_ownership(6, Handle::Transfer(0), 1, &Bits::new()));
+}
+
 /// `kick <xuid>` on stdin: the player goes at once (the others delete its objects) and may
 /// come back right away. Unknown and over-long lines do nothing.
 #[test]

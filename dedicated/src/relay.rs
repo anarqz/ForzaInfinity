@@ -141,6 +141,8 @@ const ALLOW_TTL: Duration = Duration::from_secs(600);
 const REFUSAL_LOG_EVERY: Duration = Duration::from_secs(60);
 /// The longest stdin command line (main.rs cuts there) and log line.
 pub const COMMAND_LINE_MAX: usize = 256;
+/// A request again inside this is the console resending the same one (our answer not acked yet).
+const OWNERSHIP_RESEND: Duration = Duration::from_secs(2);
 /// carstate.rs: a player's state goes to the others when it changes and again this often (a lost
 /// packet, a player who came later); and one indication per peer this often at most.
 const CARSTATE_RESEND: Duration = Duration::from_secs(1);
@@ -166,6 +168,10 @@ pub struct Settings {
     pub verbose: bool,
     /// Nothing on the console (tests).
     pub quiet: bool,
+    /// Events: a console that enters one gets its GameOptions (ObjectGrantOwnership) if no one
+    /// else has the event, else ObjectTransferOwnership (denied). Off: requests are not answered
+    /// (the hook sends the player back to free roam).
+    pub races: bool,
     /// A peer that has not finished the handshake is dropped after this long.
     pub unsynced_timeout: Duration,
     /// Peers (connected or not) from one IP.
@@ -202,6 +208,7 @@ impl Default for Settings {
             mirror: None,
             verbose: false,
             quiet: false,
+            races: false,
             unsynced_timeout: Duration::from_secs(3),
             max_peers_per_ip: 2,
             max_unsynced: 32,
@@ -403,6 +410,10 @@ struct Peer {
     /// FinaliseSessionEntry came (answered once the ConsoleSynced object is known).
     finalise_asked: bool,
     finalised: bool,
+    /// Its lobby objects (router 6) we answered ownership for: id -> the seq of our last message
+    /// to it (an object's first one from the server is seq 0), and when (a resent request inside
+    /// OWNERSHIP_RESEND is the same one).
+    lobby_seq: Vec<(u32, u8, Instant)>,
     /// What it owns: (router, id) -> history.
     objects: Vec<((u8, u32), Obj)>,
     objects_full: bool,
@@ -450,6 +461,7 @@ impl Peer {
             console_seq: None,
             finalise_asked: false,
             finalised: false,
+            lobby_seq: Vec::new(),
             objects: Vec::new(),
             objects_full: false,
             orphans: VecDeque::new(),
@@ -562,6 +574,9 @@ pub struct Relay {
     /// GroupSatNavNode var (0: no group destination).
     host_seq: u8,
     group_sat_nav: i32,
+    /// The peer that has the event (its GameOptions granted), if any: the host's relay is the
+    /// arbiter, first come.
+    event_owner: Option<u8>,
     /// Stdin commands (main.rs).
     commands: Option<Receiver<String>>,
     bans: Vec<(BanKey, Instant)>,
@@ -595,6 +610,7 @@ impl Relay {
             mirror_queue: VecDeque::new(),
             host_seq: 0,
             group_sat_nav: 0,
+            event_owner: None,
             commands: None,
             bans: Vec::new(),
             allow: Vec::new(),
@@ -1006,6 +1022,10 @@ impl Relay {
         if self.peers.is_empty() {
             // a new group starts without the old destination (the seq goes on: harmless)
             self.group_sat_nav = 0;
+        }
+        if self.event_owner == Some(peer.index) {
+            self.event_owner = None;
+            self.log(&format!("jogador {} saiu: o evento dele está livre", peer.index));
         }
         if !peer.synced {
             self.debug(&format!("conexão {} ({}) desfeita: {why}", peer.index, net::show(&peer.addr)));
@@ -1488,6 +1508,11 @@ impl Relay {
                     }
                     self.set_group_sat_nav(index, node);
                 }
+                Msg::Other { id: nerd::MSG_OBJECT_REQUEST_OWNERSHIP, ref body } if self.settings.races => {
+                    if let Some(m) = self.on_ownership_request(pi, body) {
+                        out_seq.push(m);
+                    }
+                }
                 // Read only so the rest of the packet is: the traffic and the collidable objects
                 // were the Xbox server's own simulation, which this relay does not run; Tag's
                 // second car would need a handle per receiver (Playground games, not free roam);
@@ -1564,6 +1589,48 @@ impl Relay {
             if self.peers[j].synced {
                 self.send_seq(j, vec![update.clone()]);
             }
+        }
+    }
+
+    /// ObjectRequestOwnership: a console entered an event and asks for its GameOptions. The
+    /// first one gets it (ObjectGrantOwnership, no vars: the console's own values stand); while
+    /// it has the event the others are denied (ObjectTransferOwnership), and their games say the
+    /// event is taken. Other objects are not answered (no console asks for them).
+    fn on_ownership_request(&mut self, pi: usize, body: &Bits) -> Option<Bits> {
+        let index = self.peers[pi].index;
+        let Some(req) = nerd::ownership_request(body) else {
+            self.log_once(format!("peer {index}: ObjectRequestOwnership not understood"));
+            return None;
+        };
+        let (nerd::ROUTER_LOBBY, nerd::GAME_OPTIONS_TYPE, Handle::Transfer(id)) = (req.router, req.ty, req.handle) else {
+            self.log_once(format!("peer {index}: ObjectRequestOwnership for {req:?} not answered"));
+            return None;
+        };
+        let now = Instant::now();
+        let peer = &mut self.peers[pi];
+        let at = match peer.lobby_seq.iter().position(|(i, ..)| *i == id) {
+            Some(at) => at,
+            None => {
+                peer.lobby_seq.push((id, 0xFE, now - OWNERSHIP_RESEND));
+                peer.lobby_seq.len() - 1
+            }
+        };
+        if now.duration_since(peer.lobby_seq[at].2) < OWNERSHIP_RESEND {
+            return None;
+        }
+        let seq = nerd::seq_next(peer.lobby_seq[at].1);
+        peer.lobby_seq[at] = (id, seq, now);
+        let granted = self.event_owner.map_or(true, |o| o == index);
+        if granted {
+            self.event_owner = Some(index);
+            self.log(&format!("jogador {index} entrou num evento: o evento é dele (GameOptions {id}, seq {seq})"));
+            Some(nerd::grant_ownership(req.router, req.handle, seq, &Bits::new()))
+        } else {
+            self.log(&format!(
+                "jogador {index} quis entrar num evento: negado, o jogador {} já tem um (seq {seq})",
+                self.event_owner.unwrap_or(0)
+            ));
+            Some(nerd::transfer_ownership(req.router, req.handle, seq))
         }
     }
 

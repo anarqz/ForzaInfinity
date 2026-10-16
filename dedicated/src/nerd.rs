@@ -19,10 +19,10 @@
 //! MsgTagCollision (36), the traffic messages (16, 17, 71, 72, 73, 74), MsgCollObjDetachPart
 //! (24), MsgChatManagement (33), MsgInactivePlayersPulled (70), SetGroupSatNavEvent (52), and
 //! every other message a console sends (`other_layout`: ownership, car meet, race, road trip,
-//! weather replies, leadership, bucket list). Still unknown, so they end the parse: the
-//! server-to-console messages (a console never sends them), ObjectGrantOwnership /
-//! ObjectTransferOwnership (11, 12; no console sender), and ObjectNeedsUpdates (13) for objects
-//! whose var index width is not known (every router but ConsoleSynced).
+//! weather replies, leadership, bucket list), and ObjectGrantOwnership / ObjectTransferOwnership
+//! (11, 12), which the relay sends. Still unknown, so they end the parse: the other
+//! server-to-console messages (a console never sends them), and ObjectNeedsUpdates (13) for
+//! objects whose var index width is not known (every router but ConsoleSynced).
 
 use crate::bits::{BitError, BitResult, Bits, Reader};
 
@@ -789,7 +789,60 @@ pub fn other_layout(id: u8) -> Option<&'static [Field]> {
 }
 
 pub const MSG_OBJECT_REQUEST_OWNERSHIP: u8 = 10;
+pub const MSG_OBJECT_GRANT_OWNERSHIP: u8 = 11;
+pub const MSG_OBJECT_TRANSFER_OWNERSHIP: u8 = 12;
 pub const MSG_OBJECT_NEEDS_UPDATES: u8 = 13;
+/// The lobby's GameOptions type (router 6): the event a console wants to start.
+pub const GAME_OPTIONS_TYPE: u32 = 1;
+
+/// ObjectRequestOwnership's body: what a console asks the server to own. A console asks for an
+/// object it made itself (its GameOptions, when it enters an event: stateflow
+/// NetworkGetGameOptionsOwnership) with a Transfer handle, takes it as its own at once with the
+/// request pending (SyncedObject +0x38 = 0xFFFFFFFE, +0x70 set; 1417B6A80), and waits until the
+/// server answers with ObjectGrantOwnership or ObjectTransferOwnership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnershipRequest {
+    pub router: u8,
+    pub ty: u32,
+    pub handle: Handle,
+}
+
+pub fn ownership_request(body: &Bits) -> Option<OwnershipRequest> {
+    let mut r = Reader::new(body.as_bytes());
+    let router = r.u8(4).ok()?;
+    let (id_bits, type_bits) = router_widths(router)?;
+    let ty = if type_bits > 0 { r.u32(type_bits).ok()? } else { 0 };
+    let handle = Handle::read(&mut r, id_bits).ok()?;
+    Some(OwnershipRequest { router, ty, handle })
+}
+
+/// ObjectGrantOwnership (11; the console reads it with 1417AB720 -> 1417AD1B0 -> 1417B1E70 ->
+/// 1417B1C10): router u4, the handle of the request (a Transfer handle: the reader asserts flag
+/// 31), seq u8 (the object's next seq from the server, as an update: 1417B1E70), payload size u14
+/// and vars as in an update (the server's values; the console keeps those it changed while
+/// pending). The console then owns the object, its pending request is dropped (slot 0x78,
+/// 1417AE450), and it sends the object to the server.
+pub fn grant_ownership(router: u8, handle: Handle, seq: u8, payload: &Bits) -> Bits {
+    let (id_bits, _) = router_widths(router).unwrap_or((0, 0));
+    let mut w = Bits::new();
+    w.push(MSG_OBJECT_GRANT_OWNERSHIP as u64, 7).push(router as u64, 4);
+    handle.write(&mut w, id_bits);
+    w.push(seq as u64, 8).push(payload.len() as u64, 14).append(payload);
+    w
+}
+
+/// ObjectTransferOwnership (12; 1417AB9B0 -> 1417B01D0 -> 1417B1E70 -> 1417B24C0): router u4, the
+/// handle, seq u8. The sender (the server) owns the object from then on; a console whose request
+/// was pending drops it (1417A7290), so its NetworkGetGameOptionsOwnership leaves by
+/// OwnershipDenied: someone else has the event.
+pub fn transfer_ownership(router: u8, handle: Handle, seq: u8) -> Bits {
+    let (id_bits, _) = router_widths(router).unwrap_or((0, 0));
+    let mut w = Bits::new();
+    w.push(MSG_OBJECT_TRANSFER_OWNERSHIP as u64, 7).push(router as u64, 4);
+    handle.write(&mut w, id_bits);
+    w.push(seq as u64, 8);
+    w
+}
 
 /// Var index widths, where known: ConsoleSynced (router 3; one type).
 pub fn var_index_bits(router: u8) -> Option<u32> {
@@ -801,9 +854,21 @@ pub fn var_index_bits(router: u8) -> Option<u32> {
 ///     the router has more than one type (1417B1840), the handle.
 ///   - ObjectNeedsUpdates (13; send 1417B1550, from 1417B6C60): router u4, the handle, u16
 ///     count, then per var asked for: two 0 bits and the var index (the object's index width).
+///   - ObjectGrantOwnership / ObjectTransferOwnership (11, 12; server to console, read so the
+///     tests' consoles see them): `grant_ownership`, `transfer_ownership`.
 ///   - the `other_layout` ones.
 fn skip_other(r: &mut Reader, id: u8) -> Result<(), ReadError> {
     match id {
+        MSG_OBJECT_GRANT_OWNERSHIP | MSG_OBJECT_TRANSFER_OWNERSHIP => {
+            let router = r.u8(4)?;
+            let (id_bits, _) = router_widths(router).ok_or(ReadError::UnknownRouter(router))?;
+            Handle::read(r, id_bits)?;
+            r.take(8)?;
+            if id == MSG_OBJECT_GRANT_OWNERSHIP {
+                let n = r.bits(14)? as usize;
+                r.take(n)?;
+            }
+        }
         MSG_OBJECT_REQUEST_OWNERSHIP | MSG_OBJECT_NEEDS_UPDATES => {
             let router = r.u8(4)?;
             let (id_bits, type_bits) = router_widths(router).ok_or(ReadError::UnknownRouter(router))?;
@@ -838,7 +903,10 @@ fn skip_other(r: &mut Reader, id: u8) -> Result<(), ReadError> {
 
 /// Whether `skip_other` knows the message.
 pub fn is_other(id: u8) -> bool {
-    matches!(id, MSG_OBJECT_REQUEST_OWNERSHIP | MSG_OBJECT_NEEDS_UPDATES) || other_layout(id).is_some()
+    matches!(
+        id,
+        MSG_OBJECT_REQUEST_OWNERSHIP | MSG_OBJECT_GRANT_OWNERSHIP | MSG_OBJECT_TRANSFER_OWNERSHIP | MSG_OBJECT_NEEDS_UPDATES
+    ) || other_layout(id).is_some()
 }
 
 fn read_bytes(r: &mut Reader, n: usize) -> BitResult<Vec<u8>> {
@@ -1523,7 +1591,7 @@ mod tests {
         assert_eq!(size(59), 2 + 7);
         assert_eq!(size(63), 64);
         // still unknown: server-to-console ones, and the ownership messages with no sender
-        for id in [11u8, 12, 18, 19, 22, 25, 37, 39, 40, 42, 48, 50, 53, 55, 57, 61, 65, 69, 75, 76] {
+        for id in [18u8, 19, 22, 25, 37, 39, 40, 42, 48, 50, 53, 55, 57, 61, 65, 69, 75, 76] {
             assert!(!is_other(id), "{id}");
             let mut w = Bits::new();
             w.push(id as u64, 7).push(0, 40);
@@ -1538,6 +1606,38 @@ mod tests {
         Handle::Own(1).write(&mut w, 7);
         w.string(&[0; 9]).push(0, 64);
         assert_eq!(Msg::read(&mut Reader::new(w.as_bytes())), Err(ReadError::Bits(BitError::TooLong)));
+    }
+
+    #[test]
+    fn ownership_answers() {
+        // a request as the PC sent it: GameOptions, Transfer handle id 0
+        let mut b = Bits::new();
+        b.push(6, 4).push(GAME_OPTIONS_TYPE as u64, 2);
+        Handle::Transfer(0).write(&mut b, 2);
+        assert_eq!(
+            ownership_request(&b),
+            Some(OwnershipRequest { router: 6, ty: GAME_OPTIONS_TYPE, handle: Handle::Transfer(0) })
+        );
+        // grant: 7 id + 4 router + 2 flags + 2 id + 8 seq + 14 size, no vars
+        let g = grant_ownership(6, Handle::Transfer(0), 0, &Bits::new());
+        assert_eq!(g.len(), 7 + 4 + 4 + 8 + 14);
+        let mut r = Reader::new(g.as_bytes());
+        assert_eq!(r.u8(7), Ok(MSG_OBJECT_GRANT_OWNERSHIP));
+        assert_eq!(r.u8(4), Ok(6));
+        assert_eq!(Handle::read(&mut r, 2), Ok(Handle::Transfer(0)));
+        assert_eq!((r.u8(8), r.bits(14)), (Ok(0), Ok(0)));
+        let t = transfer_ownership(6, Handle::Transfer(1), 7);
+        assert_eq!(t.len(), 7 + 4 + 4 + 8);
+        let mut r = Reader::new(t.as_bytes());
+        assert_eq!((r.u8(7), r.u8(4)), (Ok(MSG_OBJECT_TRANSFER_OWNERSHIP), Ok(6)));
+        assert_eq!((Handle::read(&mut r, 2), r.u8(8)), (Ok(Handle::Transfer(1)), Ok(7)));
+        assert_eq!(ownership_request(&Bits::new()), None);
+        // read back as messages (what the tests' consoles do)
+        for m in [g, t] {
+            let mut r = Reader::new(m.as_bytes());
+            let read = Msg::read(&mut r).unwrap();
+            assert_eq!(read.write(), m);
+        }
     }
 
     #[test]
