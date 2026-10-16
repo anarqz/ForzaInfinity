@@ -846,6 +846,10 @@ impl Store {
                 "DELETE FROM saves WHERE xuid = ?1",
                 "DELETE FROM integrity WHERE xuid = ?1",
                 "DELETE FROM friend_requests WHERE from_xuid = ?1 OR to_xuid = ?1",
+                "DELETE FROM account_expansions WHERE xuid = ?1",
+                // reports by them and on them, and their moderation history
+                "DELETE FROM player_reports WHERE reporter = ?1 OR reported = ?1",
+                "DELETE FROM moderation_log WHERE xuid = ?1",
             ] {
                 tx.execute(sql, [x])?;
             }

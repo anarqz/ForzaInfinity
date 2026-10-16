@@ -9,6 +9,7 @@
 //!   fh2-server moderation [--db FILE] [--root DIR] reset XUID [NOTE] cheating: XP, credits, records and
 //!                                                                     cars but the first start again
 //!                                                                     (db/reset.rs); career and liveries stay
+//!   fh2-server moderation ... delete XUID [--yes]   the account and everything that is theirs, for good (backup first)
 //!   fh2-server moderation ... season-reset [--yes] [--only XUID] [NOTE]   the same for every account (or one: --only; no drivatar
 //!                                                       deleted); without --yes it only counts. It backs
 //!                                                       the database up first (<db>.before-season-<ms>)
@@ -34,6 +35,7 @@ const USAGE: &str = "fh2-server moderation [--db FILE] [--root DIR] list
 fh2-server moderation [--db FILE] [--root DIR] show XUID
 fh2-server moderation [--db FILE] [--root DIR] clear XUID [NOTE]
 fh2-server moderation [--db FILE] [--root DIR] reset XUID [NOTE]
+fh2-server moderation [--db FILE] [--root DIR] delete XUID [--yes]
 fh2-server moderation [--db FILE] [--root DIR] season-reset [--yes] [--only XUID] [NOTE]
 fh2-server moderation [--db FILE] [--root DIR] check-saves
 fh2-server moderation [--db FILE] [--root DIR] files
@@ -130,6 +132,19 @@ pub fn run(args: Vec<String>) {
                 }
             }
             print(json!({ "reset": done, "failed": failed, "backup": backup.display().to_string() }));
+        }
+        Some("delete") => {
+            let x = xuid(words.get(1));
+            let Some(d) = store.moderation_detail(x) else { fail("there is no such account") };
+            if !yes {
+                print(json!({ "dryRun": true, "account": d, "next": "run again with --yes (the database is backed up first)" }));
+                return;
+            }
+            let backup = db.with_extension(format!("before-delete-{}", crate::unix_ms()));
+            if let Err(e) = store.backup_to(&backup) {
+                fail(&format!("backup failed ({e}); nothing was deleted"));
+            }
+            print(json!({ "xuid": x.to_string(), "deleted": store.delete_user(x), "backup": backup.display().to_string() }));
         }
         Some("check-saves") => {
             let (mut good, mut bad) = (0, Vec::new());
