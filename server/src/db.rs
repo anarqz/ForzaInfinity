@@ -119,6 +119,12 @@ impl Store {
         Ok(Store { db: Mutex::new(db) })
     }
 
+    /// A consistent copy of the whole database (VACUUM INTO), for a reset of every account.
+    pub fn backup_to(&self, path: &Path) -> Result<(), String> {
+        let target = path.to_str().ok_or("the backup path is not UTF-8")?;
+        self.with(|db| db.execute("VACUUM INTO ?1", [target])).map(|_| ()).ok_or_else(|| "VACUUM INTO failed".to_string())
+    }
+
     fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Option<T> {
         let db = self.db.lock().unwrap_or_else(|p| p.into_inner());
         f(&db).map_err(|e| eprintln!("db: {e}")).ok()
