@@ -2,6 +2,15 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-16 (hook fh2online.46, v0.2.0 Latest): free roam online e fair play
+
+- **v0.2.0 publicada** (`releases/tag/v0.2.0`): hook `.46` SHA `cd869dcd…`, `dedicated_server.exe` `cf6d508a…` (o hash dele está dentro do hook: `adapters/azimuth_relay_hash.h`), os dois assinados (Ed25519). O servidor público anuncia `.46`; hooks a partir do 0.1.3 se atualizam sozinhos e, já na `.46`, buscam o relay da própria release.
+- **Servidor público** (deploy de 16/10, `--freeroam`, Terraform aplicado: o `startup-script` tem `--freeroam` e `cloudflared --protocol http2` a partir do próximo boot). Landing publicada com o card de mundos (`/stats` `worlds`/`worldPlayers`).
+- **Free roam (M7 F0-F3), provado:** PC, DECK, SDECK e Windows no mesmo mundo; SDECK no 5G entrou no mundo do Windows atrás do NAT de casa (Deco: cone, **sem UPnP**), só com STUN + punch. Relay `dedicated/` (stun/nat/upnp), servidor `worlds/punch|punches`, hook `azimuth_proxy.c` (proxy local = filtro de origem), TESTAR CONEXÃO, `docs/FREEROAM.md`. Testes pela internet: túnel `trycloudflare` temporário só com o OK do Alex.
+- **Fair play:** só o `gamedbRC.slt` original (`4d50013d…`) joga online (`cardb.rs`; header `X-Fh2-CarDb` em toda requisição). Na troca de versão, hooks `.45` aparecem como "car database is missing" e jogam offline até reiniciar com a `.46`. DENUNCIAR JOGADOR (jogador real: conta de 1 dia que já jogou online; 1 denúncia por par; 5 marcam `accounts.flagged`); arquivos da loja vão para revisão com 3. Moderação: `fh2-server moderation …` / `infra/moderation.sh`, reset = save inicial do primeiro carro (`server/templates/`), 0 créditos, recordes apagados, pinturas mantidas; sem ban. Skills `.claude/skills/fh2-moderation` e `fh2-news`.
+- **Aparelhos de teste** (todos com a release): PC (Toretto#24890), DECK (alex#08723), SDECK `deck@192.168.68.58` (Sauron#91842, jogo no cartão SD), Windows (Diablo), todos no servidor LAN `192.168.68.40:8081` (`run-freeroam-server.sh` do job).
+- **Próximos passos:** tirar o loop de 15 s do `/info` no hook (`.47`: um `/info` na abertura e o ping da pausa passando a ler `latestHook`); senha no JOIN WORLD (o slot `0x5b8` da página de ações); aviso para quem cai quando o host sai; Road Trip e corridas online (F4); build reprodutível do relay (dois builds do mesmo código dão SHAs diferentes; o `package_release.sh` sempre grava o hash do exe que empacota).
+
 ## Estado em 2026-10-15 (hook fh2online.45, v0.1.8 Latest): o INI do jogador é preservado
 
 - **v0.1.8** (hook .45, SHA `b0a2b558…`), com o .44 (Storm Island) junto. O servidor público anuncia (`latestHook` .45); os hooks a partir do 0.1.3 se atualizam sozinhos.
