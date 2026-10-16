@@ -2,6 +2,14 @@
 
 Estado em 2026-10-13. Este documento substitui a conversa anterior, que rodou no Claude.ai/cloud: tudo o que foi descoberto e provado está aqui.
 
+## Estado em 2026-10-16, madrugada (hook fh2online.47, v0.2.1 Latest): nova temporada
+
+- **v0.2.1 publicada** (hook `.47` SHA `e0778a26…`, o mesmo relay `cf6d508a…`) e no servidor público.
+- **Reset de temporada rodado em produção** (16/10 04:21 UTC-3): 72/72 contas, backup `/opt/infinity/data/fh2online.before-season-1792124513805`. O reset (`server/src/db/reset.rs`) edita o save de cada um: a carreira fica; zeram XP (`ProfileData` **`XP`**, que é o que o jogo usa e sincroniza, e o `WristbandLevel`), nível, pontos/vantagens, créditos, recordes de pista e radar, emblemas além dos 51 de fábrica e a garagem (fica o primeiro carro inicial, por Id). No servidor: placares, fantasmas, XP, perfil e garagem sincronizados. Aviso no Message Center e no INFINITY. Perfil novo nasce assim também.
+- **O save do servidor é o perfil online:** na abertura o hook põe o do servidor no lugar de qualquer local diferente (o local vai para `saves\fh2online-backup`) e nunca envia o local; sessão que começou sem servidor não envia nada. `GET save/info` tem `restore`.
+- **Gates do save** (`PUT save`): tamanhos de save real por arquivo, os arquivos essenciais, cada arquivo batendo com o `commit`, SQLite e XML válidos, 384 KB comprimido; progresso por hora contra o último save aceito. Recusa = strike + restore na próxima abertura. Sem janela de chegada. `fh2-server moderation check-saves` confere tudo (só leitura).
+- Testado no SDECK (reset no jogo, Message Center) e com uploads adulterados (409/400) no servidor local.
+
 ## Estado em 2026-10-16 (hook fh2online.46, v0.2.0 Latest): free roam online e fair play
 
 - **v0.2.0 publicada** (`releases/tag/v0.2.0`): hook `.46` SHA `cd869dcd…`, `dedicated_server.exe` `cf6d508a…` (o hash dele está dentro do hook: `adapters/azimuth_relay_hash.h`), os dois assinados (Ed25519). O servidor público anuncia `.46`; hooks a partir do 0.1.3 se atualizam sozinhos e, já na `.46`, buscam o relay da própria release.
