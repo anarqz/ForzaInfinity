@@ -296,9 +296,9 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
             }
             json!({})
         }
-        // A report is a strike; STRIKES_TO_REMOVE from different players take the file off the
-        // storefront for good. There is no moderation: only players who can see the file (not its
-        // owner) count, once each.
+        // A report is a strike; STRIKES_TO_REMOVE from different real players take the file off
+        // the storefront until moderation decides (fh2-server moderation files): it comes back or
+        // goes for good. Only players who can see the file (not its owner) count, once each.
         ("Storefront", "ReportContent") => {
             let Some(f) = ctx.store.shared_file(int(&params["fileId"])).filter(|f| f.xuid != me && ctx.can_see(f.xuid)) else {
                 return Some(json!({}));
@@ -308,11 +308,11 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                     ctx.event("storefront", format!("Denúncia de \"{}\" ({strikes}/{STRIKES_TO_REMOVE})", f.title), json!({ "fileId": f.id }));
                 }
                 Report::Removed => {
-                    ctx.event("storefront", format!("\"{}\" removido após {STRIKES_TO_REMOVE} denúncias", f.title), json!({ "fileId": f.id }));
+                    ctx.event("storefront", format!("\"{}\" em revisão após {STRIKES_TO_REMOVE} denúncias", f.title), json!({ "fileId": f.id }));
                     ctx.event_for(
                         f.xuid,
                         "storefront",
-                        format!("Seu arquivo \"{}\" saiu da Storefront após {STRIKES_TO_REMOVE} denúncias", f.title),
+                        format!("Seu arquivo \"{}\" saiu da Storefront para revisão da moderação após {STRIKES_TO_REMOVE} denúncias", f.title),
                         json!({ "fileId": f.id }),
                     );
                 }

@@ -33,6 +33,8 @@ const en = {
   stat: {
     players: "drivers",
     online: "online now",
+    worlds: "free roam worlds open",
+    worldPlayers: "driving in them",
     races: "races finished",
     kilometres: "km driven",
     designs: "liveries painted",
@@ -136,7 +138,7 @@ const en = {
       },
       {
         q: "Is live multiplayer back?",
-        a: "Not yet. Online Road Trip and online free roam need a replacement for the original dedicated servers; it is planned for a later version.",
+        a: "Online free roam is: up to 8 drivers in a world that a player hosts on their own PC (Settings › INFINITY › HOST WORLD). Players connect to each other directly, through their routers, with no port to open, and no ForzaInfinity server carries the game. Online Road Trip and online races come later.",
       },
       {
         q: "How do I uninstall?",
@@ -183,6 +185,8 @@ const pt: Texts = {
   stat: {
     players: "pilotos",
     online: "online agora",
+    worlds: "mundos de passeio livre abertos",
+    worldPlayers: "pilotando neles",
     races: "corridas concluídas",
     kilometres: "km rodados",
     designs: "pinturas criadas",
@@ -286,7 +290,7 @@ const pt: Texts = {
       },
       {
         q: "O multiplayer ao vivo voltou?",
-        a: "Ainda não. O Online Road Trip e o free roam online precisam substituir os servidores dedicados originais; está planejado para uma versão futura.",
+        a: "O passeio livre online voltou: até 8 pilotos num mundo que um jogador hospeda no próprio PC (Configurações › INFINITY › HOSPEDAR MUNDO). Os jogadores se conectam diretamente, pelos roteadores, sem abrir porta nenhuma, e nenhum servidor do ForzaInfinity carrega o jogo. O Online Road Trip e as corridas online vêm depois.",
       },
       {
         q: "Como desinstalo?",

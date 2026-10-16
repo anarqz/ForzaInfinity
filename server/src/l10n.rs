@@ -6,6 +6,11 @@
 /// (English, Portuguese); `{}` marks the same values in both.
 const TEXTS: &[(&str, &str)] = &[
     ("Account suspended on this server.", "Conta suspensa neste servidor."),
+    ("Moderation reset this profile's progress. Restart the game to get it; your liveries were kept.", "A moderação zerou o progresso deste perfil. Reinicie o jogo para recebê-lo; suas pinturas foram mantidas."),
+    (
+        "This game's car database is not the original one: only the game's own cars play online on this server. Put the original gamedbRC.slt back (or reinstall the game) and restart.",
+        "O banco de carros deste jogo não é o original: neste servidor, só os carros do próprio jogo jogam online. Coloque o gamedbRC.slt original de volta (ou reinstale o jogo) e reinicie.",
+    ),
     ("Unknown token.", "Token desconhecido."),
     ("This server is not taking new profiles right now.", "Este servidor não está aceitando perfis novos no momento."),
     ("Could not delete the account.", "Não foi possível excluir a conta."),
@@ -21,12 +26,28 @@ const TEXTS: &[(&str, &str)] = &[
         "Pedido enviado para {}. Quando {} adicionar você também, vocês viram amigos e rivais.",
     ),
     ("{} is no longer your friend.", "{} não é mais seu amigo."),
+    ("Thanks. Your report on {} was sent to moderation.", "Obrigado. Sua denúncia contra {} foi enviada à moderação."),
+    ("Too many reports today. Try again tomorrow.", "Denúncias demais hoje. Tente de novo amanhã."),
+    (
+        "Only players whose profile is a day old and has played online can report.",
+        "Só pode denunciar quem tem o perfil há pelo menos um dia e já jogou online.",
+    ),
+    ("You already reported {}.", "Você já denunciou {}."),
     ("{} was not your friend.", "{} não era seu amigo."),
     ("Wrong profile or key.", "Perfil ou chave errados."),
     ("No cloud save yet.", "Ainda não há save na nuvem."),
     ("The name must have 1 to 20 letters or digits and start with a letter.", "O nome precisa ter de 1 a 20 letras ou números e começar com uma letra."),
     ("This PC already has the account {} on this server.", "Este PC já tem a conta {} neste servidor."),
     ("{} already exists on this server.", "{} já existe neste servidor."),
+    // player-hosted worlds (worlds.rs)
+    ("There is no such world.", "Esse mundo não existe."),
+    ("This world is closed.", "Este mundo está fechado."),
+    ("You cannot join this world.", "Você não pode entrar neste mundo."),
+    ("Only the host's friends can join this world.", "Só os amigos do anfitrião podem entrar neste mundo."),
+    ("This world is full.", "Este mundo está cheio."),
+    ("Too many wrong passwords. Try again later.", "Senhas erradas demais. Tente de novo mais tarde."),
+    ("Too many worlds on this server right now. Try again later.", "Mundos demais neste servidor agora. Tente de novo mais tarde."),
+    ("Free roam is off on this server.", "O free roam online está desligado neste servidor."),
     // Message Center notices (in the receiver's language)
     (
         "You and {} are now friends and rivals. Compare times in ghost races!",

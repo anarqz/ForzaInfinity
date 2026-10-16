@@ -13,8 +13,8 @@ OUT_DIR="$HOME/Desktop"; [ -d "$OUT_DIR" ] || OUT_DIR="$HOME"
 OUT="$OUT_DIR/ForzaInfinity-Report.txt"
 
 section() { printf '\n===== %s =====\n' "$1"; }
-# a text file without its tokens and keys
-clean() { if [ -f "$1" ]; then tr -d '\r' < "$1" | sed -E 's/^([[:space:]]*(Token|Key|WebKey)[[:space:]]*=).*/\1 (removed)/I'; else echo "(missing)"; fi; }
+# a text file without its tokens, keys and passwords
+clean() { if [ -f "$1" ]; then tr -d '\r' < "$1" | sed -E 's/^([[:space:]]*(Token|Key|WebKey|Password)[[:space:]]*=).*/\1 (removed)/I'; else echo "(missing)"; fi; }
 version() {
     LC_ALL=C grep -aoP '(?<![0-9.]\x00)0\x00\.\x00[0-9]+\x00\.\x00[0-9]+\x00(?!\.)' "$1" 2>/dev/null | tr -d '\0' | sort | uniq -c | sort -rn | awk 'NR == 1 { print $2 }'
 }
@@ -40,6 +40,12 @@ version() {
     clean "$BIN/FH2_ExtraOptions.ini"
     section "FH2Online_Accounts.ini"
     clean "$BIN/FH2Online_Accounts.ini"
+    section "Free roam world: dedicated_server.net (what the last hosted world found about the network)"
+    clean "$BIN/dedicated_server.net"
+    section "Free roam world: server.cfg"
+    clean "$BIN/server.cfg"
+    section "Free roam world: dedicated_server.log (last 300 lines)"
+    clean "$BIN/dedicated_server.log" | tail -n 300
     section "Last requests (FH2_Network.jsonl: method, address, result)"
     if [ -f "$BIN/FH2_Network.jsonl" ] && command -v python3 >/dev/null 2>&1; then
         tail -n 40 "$BIN/FH2_Network.jsonl" | python3 -c '
