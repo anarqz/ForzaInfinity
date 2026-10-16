@@ -24,6 +24,10 @@ export type Stats = {
   queued?: number;
   capacity?: number;
   full?: boolean;
+  /** Player-hosted free roam worlds alive now and the players in them, hosts included.
+   *  Missing from servers before free roam. */
+  worlds?: number;
+  worldPlayers?: number;
   updated: string;
 };
 

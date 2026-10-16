@@ -389,6 +389,7 @@ function Avatar({ letter, hue }: { letter: string; hue: number }) {
 type StatKey = keyof Texts["stat"];
 const BENTO: { key: StatKey; size?: "wide" | "tall" | "big" }[] = [
   { key: "players", size: "big" },
+  { key: "worlds", size: "wide" },
   { key: "races", size: "wide" },
   { key: "kilometres" },
   { key: "designs" },
@@ -397,8 +398,8 @@ const BENTO: { key: StatKey; size?: "wide" | "tall" | "big" }[] = [
   { key: "downloads" },
   { key: "clubs" },
   { key: "friendships" },
-  { key: "speedTraps" },
-  { key: "ghosts" },
+  { key: "speedTraps", size: "wide" },
+  { key: "ghosts", size: "wide" },
   { key: "scores", size: "wide" },
   { key: "cars", size: "wide" },
 ];
@@ -427,6 +428,11 @@ function Live({ t, stats, reachable }: { t: Texts; stats: Stats | null; reachabl
                   </span>
                 ) : null}
               </>
+            ) : null}
+            {key === "worlds" && stats ? (
+              <span className="online-line">
+                <i /> {formatNumber(stats.worldPlayers ?? 0, t.locale)} {t.stat.worldPlayers}
+              </span>
             ) : null}
           </StatCard>
         ))}
