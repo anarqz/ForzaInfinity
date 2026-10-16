@@ -25,8 +25,10 @@ Forza Horizon 2's online services, back for the PC version running on **Azimuth 
 - **Updates itself**: a new release installs on its own (from this repository's GitHub
   releases, checked against their SHA-256) and the game asks you to restart.
 
-Live multiplayer (Online Road Trip, online free roam) is planned for a later version; see
-[MILESTONES.md](MILESTONES.md) (M7).
+**Online free roam** is back: players host worlds on their own PC (Settings › INFINITY › HOST WORLD)
+and reach each other directly, through routers, with no port to open; see
+[docs/FREEROAM.md](docs/FREEROAM.md). Online Road Trip and online races are planned for a later
+version ([MILESTONES.md](MILESTONES.md), M7).
 
 ## Play
 

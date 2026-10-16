@@ -88,6 +88,11 @@ if [ -f "$BIN/azimuth-tls.dll" ] && { [ ! -f "$BIN/azimuth-tls.dll.stock" ] || [
     cp "$BIN/azimuth-tls.dll" "$BIN/azimuth-tls.dll.stock"
 fi
 cp "$DLL" "$BIN/azimuth-tls.dll.new" && mv "$BIN/azimuth-tls.dll.new" "$BIN/azimuth-tls.dll"
+# the free roam world a player hosts (Settings > INFINITY > HOST WORLD): dedicated_server.exe,
+# next to this script, else the latest release's
+RELAY="$HERE/dedicated_server.exe"
+if [ ! -f "$RELAY" ]; then RELAY="$TMP/dedicated_server.exe"; curl -fsSL "$RELEASE/dedicated_server.exe" -o "$RELAY" || RELAY=""; fi
+if [ -n "$RELAY" ]; then cp "$RELAY" "$BIN/dedicated_server.exe.new" && mv -f "$BIN/dedicated_server.exe.new" "$BIN/dedicated_server.exe"; fi
 
 # 4. the settings. FH2_ExtraOptions.ini is the player's: what is in it stays as it is, and only the
 # options of our template it lacks are added (with their comments), at the end of their section.

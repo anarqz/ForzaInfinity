@@ -47,7 +47,9 @@ User=infinity
 Group=infinity
 WorkingDirectory=/opt/infinity
 # Only cloudflared (on loopback) reaches it. --registration closed turns new profiles away.
-ExecStart=/opt/infinity/bin/fh2-server --listen 127.0.0.1:8081 --root /opt/infinity --behind-proxy --gamedb /opt/infinity/gamedbRC.slt
+# --freeroam: the player-hosted free roam worlds (announcements, sessions, punches; no game
+# traffic ever reaches this VM).
+ExecStart=/opt/infinity/bin/fh2-server --listen 127.0.0.1:8081 --root /opt/infinity --behind-proxy --gamedb /opt/infinity/gamedbRC.slt --freeroam
 Restart=always
 RestartSec=3
 LimitNOFILE=4096
