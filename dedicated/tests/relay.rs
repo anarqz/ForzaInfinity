@@ -738,6 +738,8 @@ fn a_second_console_joins_the_event() {
     let g = b.wait_for("A's GameOptions", |m| is_obj(m, false, 6, Handle::Transfer(0), 0).is_some());
     assert_eq!(is_obj(&g, false, 6, Handle::Transfer(0), 0), Some(opts));
     a.send(&[Msg::Other { id: nerd::MSG_REQUEST_RACE, body: Bits::new() }]);
+    // B is invited (MsgRequestRace from the server), A is not
+    b.wait_for("the invite", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_REQUEST_RACE));
     // the launch countdown, to both
     for c in [&mut a, &mut b] {
         let p = c.wait_for("the launch countdown", |m| is_obj(m, false, 6, Handle::Own(0), 1).is_some());

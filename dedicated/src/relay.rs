@@ -1739,6 +1739,16 @@ impl Relay {
         self.set_host_vars(&vars);
         if !others {
             self.select_participants();
+            return;
+        }
+        // the invite: MsgRequestRace from the server makes their lobby (CLobby's ILobbyRouter slot
+        // 9, 140A2DFB0) fire NetworkRaceRequestingParticipants, which shows the "press to join"
+        // prompt (NetworkRaceStartingPromptComponent); accepting makes them ask Ready
+        let invite = Msg::Other { id: nerd::MSG_REQUEST_RACE, body: Bits::new() }.write();
+        for j in 0..self.peers.len() {
+            if self.peers[j].synced && self.peers[j].index != index {
+                self.send_seq(j, vec![invite.clone()]);
+            }
         }
     }
 
