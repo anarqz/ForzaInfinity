@@ -155,9 +155,13 @@ in INFINITY. Everything is in `moderation_log`.
   (no drivatar deleted); without `--yes` it only counts; with it, the database is first copied to
   `<db>.before-season-<ms>` (`VACUUM INTO`). A new profile's first save (its offline progress) is
   kept season-reset too: it keeps its offline career and starts with its first car.
-- **The server's save is the online profile.** At the start the hook downloads it over any local
-  save that differs (edited, or played without the server: kept in `saves\fh2online-backup`), and
-  uploads only what a session that started in step with the server writes.
+- **The server's save is the online profile.** At the start, a local save newer than the last one
+  synced (`SaveCommit`), with the server still on that one, is the last session's own progress
+  (revisions after the hook's last one-minute look, or written as the game closed): the hook
+  uploads it, and the save gates measure it. Any other local save that differs (edited, played
+  without the server, or one the server refused) is kept in `saves\fh2online-backup` and the
+  server's is downloaded over it. A session that starts without the server forgets `SaveCommit`,
+  so nothing it saves is uploaded, not even at the next start.
 - **Save gates** (`PUT /infinity/v1/save`): only a real save's shape (per-file sizes of real
   saves, the files every save has, each file matching its commit line, PlayerDatabase a SQLite
   database, SaveState XML, at most 384 KB packed), and progress since the server's last save
