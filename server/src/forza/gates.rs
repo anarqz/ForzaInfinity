@@ -3,7 +3,10 @@
 //! or times, cars that do not exist. A refused report is not stored (the game is answered as
 //! usual), and the player gets a strike with the reason.
 //!
-//! Allowances are generous: a session of normal play stays far below them.
+//! Each allowance is twice the most production saw between two accepted syncs (2026-10-16:
+//! credits +268k at once and +310k in an hour, levels +6 at once and +8 in an hour, XP +192k
+//! between two syncs and +251k in an hour, 50k in one report, 3 cars in one sync). The hook holds
+//! back a profile sync beyond the same numbers before it is sent.
 
 use serde_json::Value;
 
@@ -12,18 +15,18 @@ use crate::db::integrity::Baseline;
 use crate::gamedb::Catalog;
 
 /// Credits (or race winnings) a player may gain: this much at once...
-pub const CREDITS_BASE: i64 = 400_000;
+pub const CREDITS_BASE: i64 = 540_000;
 /// ...plus this much per hour since the last accepted sync.
-pub const CREDITS_PER_HOUR: i64 = 800_000;
-pub const XP_BASE: i64 = 150_000;
-pub const XP_PER_HOUR: i64 = 400_000;
-pub const LEVELS_BASE: i64 = 8;
-pub const LEVELS_PER_HOUR: i64 = 10;
+pub const CREDITS_PER_HOUR: i64 = 620_000;
+pub const XP_BASE: i64 = 384_000;
+pub const XP_PER_HOUR: i64 = 503_000;
+pub const LEVELS_BASE: i64 = 12;
+pub const LEVELS_PER_HOUR: i64 = 16;
 /// XP the game may report with Scoreboard.SubmitXpScore in any hour.
-pub const XP_REPORTED_PER_HOUR: f64 = 400_000.0;
+pub const XP_REPORTED_PER_HOUR: f64 = 503_000.0;
 /// Over a car's stock top speed: upgrades, drafting, downhill.
 pub const SPEED_MARGIN: f64 = 1.3;
-pub const CARS_BASE: i64 = 10;
+pub const CARS_BASE: i64 = 6;
 pub const CARS_PER_HOUR: i64 = 20;
 /// Hours after an account is made in which its offline progress would arrive as it is. None since
 /// the season resets (db/reset.rs): every profile starts from 0 like everyone, so even its first
@@ -202,7 +205,8 @@ mod tests {
         assert!(check_growth(None, &p(60_000, 100_717, 2), now, false).is_ok());
         assert!(check_growth(None, &p(5_000_000, 100_717, 2), now, false).is_err());
         assert!(check_growth(None, &p(60_000, 100_717, 6), now, false).is_ok());
-        assert!(check_growth(None, &p(60_000, 100_717, 10), now, false).is_err());
+        assert!(check_growth(None, &p(60_000, 100_717, 12), now, false).is_ok());
+        assert!(check_growth(None, &p(60_000, 100_717, 14), now, false).is_err());
         // winnings: a baseline of 0 (new account, career reset) takes the lifetime total once...
         let reset = Baseline { winnings: 0, ..base };
         let mut w = p(10_000, 100_000, 6);
