@@ -143,6 +143,12 @@ const REFUSAL_LOG_EVERY: Duration = Duration::from_secs(60);
 pub const COMMAND_LINE_MAX: usize = 256;
 /// The race starts this long after the last participant's race route is loaded.
 const RACE_START_DELAY_MS: u32 = 5000;
+/// The SessionHost's CountdownType (2 bits) and CountdownEndTime (u32, server ms) vars; type 1 is
+/// the launch countdown (SessionHost 140A313F0 fires NetworkLaunchCountdownStarted on it).
+const COUNTDOWN_NONE: u64 = 0;
+const COUNTDOWN_LAUNCH: u64 = 1;
+/// What the event owner's GameOptions updates may hold for the others, in bits.
+const GAME_OPTIONS_MAX_BITS: usize = 64 * 1024;
 
 /// A race the relay runs (the event owner's): who takes part and how far it got.
 #[derive(Debug)]
@@ -153,11 +159,15 @@ struct Race {
     finished: Vec<u8>,
     stage: RaceStage,
     start_time: u32,
+    /// When the launch countdown ends (Inviting).
+    invite_until: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RaceStage {
-    /// RaceReady sent; the participants pick their cars and load them.
+    /// The launch countdown (CountdownType 1): the others are invited and join by asking Ready.
+    Inviting,
+    /// The participants are selected; they pick their cars and load them.
     Gathering,
     /// MsgStartingGrid sent; the race route loads.
     Grid,
@@ -196,6 +206,9 @@ pub struct Settings {
     /// else has the event, else ObjectTransferOwnership (denied). Off: requests are not answered
     /// (the hook sends the player back to free roam).
     pub races: bool,
+    /// The launch countdown: how long the others have to join an event that is starting (the
+    /// game's invite prompt shows 15 s).
+    pub race_invite: Duration,
     /// A peer that has not finished the handshake is dropped after this long.
     pub unsynced_timeout: Duration,
     /// Peers (connected or not) from one IP.
@@ -233,6 +246,7 @@ impl Default for Settings {
             verbose: false,
             quiet: false,
             races: false,
+            race_invite: Duration::from_secs(15),
             unsynced_timeout: Duration::from_secs(3),
             max_peers_per_ip: 2,
             max_unsynced: 32,
@@ -608,6 +622,10 @@ pub struct Relay {
     /// they are now (sent in the Create to a late joiner): (var, value, bits).
     race: Option<Race>,
     host_vars: Vec<(u8, u64, u32)>,
+    /// The event owner's GameOptions (its updates, the event's settings) passed to the others:
+    /// the owner's handle id, its last seq, and the updates so far (for a console that joins
+    /// later in the event).
+    game_options: Option<(u32, u8, Vec<Bits>)>,
     /// Stdin commands (main.rs).
     commands: Option<Receiver<String>>,
     bans: Vec<(BanKey, Instant)>,
@@ -644,6 +662,7 @@ impl Relay {
             event_owner: None,
             race: None,
             host_vars: Vec::new(),
+            game_options: None,
             commands: None,
             bans: Vec::new(),
             allow: Vec::new(),
@@ -1717,14 +1736,108 @@ impl Relay {
         if self.race.is_some() {
             return;
         }
-        self.log(&format!("jogador {index} começou o evento: corrida pronta (RaceReady)"));
-        self.race = Some(Race { owner: index, participants: vec![index], finished: Vec::new(), stage: RaceStage::Gathering, start_time: 0 });
+        let others = self.peers.iter().any(|p| p.synced && p.index != index);
+        let wait = if others { self.settings.race_invite.as_millis() as u32 } else { 0 };
+        self.log(&format!(
+            "jogador {index} começou o evento: corrida pronta (RaceReady){}",
+            if others { format!(", convite de {} s para os outros", wait / 1000) } else { String::new() }
+        ));
+        self.race = Some(Race {
+            owner: index,
+            participants: vec![index],
+            finished: Vec::new(),
+            stage: RaceStage::Inviting,
+            start_time: 0,
+            invite_until: Instant::now() + Duration::from_millis(wait as u64),
+        });
+        let end = self.now_ms().wrapping_add(wait);
+        let mut vars = vec![(nerd::SESSION_HOST_RACE_READY, 1, 1), (nerd::SESSION_HOST_IN_RACE, 0, 1)];
+        if others {
+            vars.push((nerd::SESSION_HOST_COUNTDOWN_TYPE, COUNTDOWN_LAUNCH, 2));
+            vars.push((nerd::SESSION_HOST_COUNTDOWN_END_TIME, end as u64, 32));
+        }
+        self.set_host_vars(&vars);
+        if !others {
+            self.select_participants();
+        }
+    }
+
+    /// The launch countdown is over: who asked Ready takes part (RaceParticipantsSelected,
+    /// ParticipatingInRace on each), and their games go on to the car select.
+    fn select_participants(&mut self) {
+        let Some(race) = &mut self.race else { return };
+        if race.stage != RaceStage::Inviting {
+            return;
+        }
+        race.stage = RaceStage::Gathering;
+        let participants = race.participants.clone();
+        self.log(&format!("corrida: participantes {participants:?}"));
         self.set_host_vars(&[
-            (nerd::SESSION_HOST_RACE_READY, 1, 1),
             (nerd::SESSION_HOST_RACE_PARTICIPANTS_SELECTED, 1, 1),
-            (nerd::SESSION_HOST_IN_RACE, 0, 1),
+            (nerd::SESSION_HOST_COUNTDOWN_TYPE, COUNTDOWN_NONE, 2),
         ]);
-        self.set_console_vars(index, &[(nerd::CONSOLE_PARTICIPATING_IN_RACE, true)]);
+        for p in participants {
+            self.set_console_vars(p, &[(nerd::CONSOLE_PARTICIPATING_IN_RACE, true)]);
+        }
+    }
+
+    /// The event owner's GameOptions update (handle Transfer: the object it made and was
+    /// granted): the event's settings, passed to every other console as the server's update of
+    /// its own GameOptions (which the server owns there: same handle, that console's next seq
+    /// from us). The joiners' games read the event from it (its start, for their fast travel).
+    fn on_game_options(&mut self, pi: usize, id: u32, o: &ObjectMsg) {
+        let index = self.peers[pi].index;
+        if self.event_owner != Some(index) || o.create {
+            self.log_once(format!("peer {index}: GameOptions {} sem ter o evento, ignorado", if o.create { "Create" } else { "update" }));
+            return;
+        }
+        let (gid, last, updates) = self.game_options.get_or_insert_with(|| (id, 0xFE, Vec::new()));
+        if *gid != id {
+            *gid = id;
+            *last = 0xFE;
+            updates.clear();
+        }
+        if !nerd::seq_newer(o.seq, *last) && *last != 0xFE {
+            return;
+        }
+        *last = o.seq;
+        let total: usize = updates.iter().map(Bits::len).sum::<usize>() + o.payload.len();
+        if total > GAME_OPTIONS_MAX_BITS {
+            self.log_once(format!("peer {index}: GameOptions grande demais ({total} bits); não repassado"));
+            return;
+        }
+        updates.push(o.payload.clone());
+        self.debug(&format!("peer {index} GameOptions {id} seq {} {} bits -> os outros", o.seq, o.payload.len()));
+        let payload = o.payload.clone();
+        for j in 0..self.peers.len() {
+            if j != pi && self.peers[j].synced {
+                self.send_game_options(j, id, &payload);
+            }
+        }
+    }
+
+    fn send_game_options(&mut self, j: usize, id: u32, payload: &Bits) {
+        let now = Instant::now();
+        let peer = &mut self.peers[j];
+        let at = match peer.lobby_seq.iter().position(|(i, ..)| *i == id) {
+            Some(at) => at,
+            None => {
+                peer.lobby_seq.push((id, 0xFE, now - OWNERSHIP_RESEND));
+                peer.lobby_seq.len() - 1
+            }
+        };
+        let seq = nerd::seq_next(peer.lobby_seq[at].1);
+        peer.lobby_seq[at].1 = seq;
+        let m = Msg::Object(ObjectMsg {
+            create: false,
+            router: nerd::ROUTER_LOBBY,
+            handle: Handle::Transfer(id),
+            ty: 0,
+            seq,
+            payload: payload.clone(),
+        })
+        .write();
+        self.send_seq(j, vec![m]);
     }
 
     /// MsgReadyRequest (41): its Ready var (a server var) as it asks.
@@ -1737,6 +1850,16 @@ impl Relay {
         self.peers[pi].console_vals[nerd::CONSOLE_READY as usize] = ready as u64;
         self.debug(&format!("jogador {index}: MsgReadyRequest {ready}"));
         self.set_console_vars(index, &[(nerd::CONSOLE_READY, ready)]);
+        if let Some(race) = &mut self.race
+            && race.stage == RaceStage::Inviting
+        {
+            if ready && !race.participants.contains(&index) {
+                race.participants.push(index);
+                self.log(&format!("corrida: jogador {index} entrou no evento"));
+            } else if !ready && index != race.owner {
+                race.participants.retain(|p| *p != index);
+            }
+        }
     }
 
     /// The race's next step once every participant is there: the grid when their cars are
@@ -1809,6 +1932,7 @@ impl Relay {
     fn end_race(&mut self, why: &str) {
         let Some(race) = self.race.take() else { return };
         self.log(&format!("corrida encerrada: {why}"));
+        self.game_options = None;
         if self.event_owner == Some(race.owner) {
             self.event_owner = None;
         }
@@ -1885,6 +2009,10 @@ impl Relay {
     /// the history, and what to forward (None: a duplicate, refused, or not the sender's own).
     fn on_object(&mut self, pi: usize, o: ObjectMsg) -> Option<Relayed> {
         let index = self.peers[pi].index;
+        if let (true, nerd::ROUTER_LOBBY, Handle::Transfer(gid)) = (self.settings.races, o.router, o.handle) {
+            self.on_game_options(pi, gid, &o);
+            return None;
+        }
         let Handle::Own(id) = o.handle else {
             self.log_once(format!(
                 "peer {index}: {} router {} with handle {:?} not relayed (logged once)",
@@ -2028,6 +2156,12 @@ impl Relay {
                     self.pass_car_state(pi);
                 }
             }
+        }
+        if let Some(race) = &self.race
+            && race.stage == RaceStage::Inviting
+            && now >= race.invite_until
+        {
+            self.select_participants();
         }
         if now.duration_since(self.last_resend_scan) >= Duration::from_millis(50) {
             self.last_resend_scan = now;

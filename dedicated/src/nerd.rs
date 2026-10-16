@@ -267,6 +267,8 @@ pub const SESSION_HOST_GROUP_SAT_NAV_NODE: u8 = 12;
 
 /// SessionHost race vars (widths from the var types' pack functions: SyncedBool 1417DE9F0, 1 bit;
 /// the times 1417D8030, 32 bits).
+pub const SESSION_HOST_COUNTDOWN_TYPE: u8 = 2;
+pub const SESSION_HOST_COUNTDOWN_END_TIME: u8 = 3;
 pub const SESSION_HOST_RACE_READY: u8 = 4;
 pub const SESSION_HOST_RACE_PARTICIPANTS_SELECTED: u8 = 5;
 pub const SESSION_HOST_IN_RACE: u8 = 6;

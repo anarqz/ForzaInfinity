@@ -680,9 +680,13 @@ fn a_race_with_one_console_starts() {
     a.send(&[Msg::Other { id: nerd::MSG_OBJECT_REQUEST_OWNERSHIP, body: req }]);
     a.wait_for("the grant", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_OBJECT_GRANT_OWNERSHIP));
     a.send(&[Msg::Other { id: nerd::MSG_REQUEST_RACE, body: Bits::new() }]);
-    let ready = nerd::session_host_payload(&[(4, 1, 1), (5, 1, 1), (6, 0, 1)]);
+    // alone in the world: no launch countdown, selected at once
+    let ready = nerd::session_host_payload(&[(4, 1, 1), (6, 0, 1)]);
     let p = a.wait_for("RaceReady", |m| is_obj(m, false, 6, Handle::Own(0), 1).is_some());
     assert_eq!(is_obj(&p, false, 6, Handle::Own(0), 1), Some(ready));
+    let selected = nerd::session_host_payload(&[(5, 1, 1), (2, 0, 2)]);
+    let p = a.wait_for("RaceParticipantsSelected", |m| is_obj(m, false, 6, Handle::Own(0), 2).is_some());
+    assert_eq!(is_obj(&p, false, 6, Handle::Own(0), 2), Some(selected));
     let p = a.wait_for("ParticipatingInRace", |m| is_obj(m, false, 3, Handle::Server(5), 0).is_some());
     assert_eq!(is_obj(&p, false, 3, Handle::Server(5), 0), Some(console(&[(2, 1)])));
     // ready, then its cars loaded: the grid, with its own console first
@@ -697,7 +701,7 @@ fn a_race_with_one_console_starts() {
     // its route loaded: the start
     a.send(&[object(false, 3, 5, 2, &console(&[(0, 1)]))]);
     a.wait_for("the start", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_START_RACE));
-    a.wait_for("InRace", |m| is_obj(m, false, 6, Handle::Own(0), 2).is_some());
+    a.wait_for("InRace", |m| is_obj(m, false, 6, Handle::Own(0), 3).is_some());
     // it crosses the line (MsgScoreKeyframe): the race is over, InRace off
     let mut kf = Bits::new();
     Handle::Own(2).write(&mut kf, 7);
@@ -707,8 +711,57 @@ fn a_race_with_one_console_starts() {
     kf.push(0, 32 + 3 * 8 + 3);
     a.send(&[Msg::Other { id: nerd::MSG_SCORE_KEYFRAME, body: kf }]);
     let off = nerd::session_host_payload(&[(4, 0, 1), (5, 0, 1), (6, 0, 1)]);
-    let p = a.wait_for("the end", |m| is_obj(m, false, 6, Handle::Own(0), 3).is_some());
-    assert_eq!(is_obj(&p, false, 6, Handle::Own(0), 3), Some(off));
+    let p = a.wait_for("the end", |m| is_obj(m, false, 6, Handle::Own(0), 4).is_some());
+    assert_eq!(is_obj(&p, false, 6, Handle::Own(0), 4), Some(off));
+}
+
+/// Two consoles: A starts its event, B is invited (the launch countdown on the SessionHost),
+/// gets A's GameOptions, joins by asking Ready; at the countdown's end both take part, and the
+/// grid waits for both.
+#[test]
+fn a_second_console_joins_the_event() {
+    let server = Server::start(Settings { races: true, race_invite: Duration::from_millis(600), ..settings() });
+    let mut a = Client::new(&server, 1);
+    let mut b = Client::new(&server, 2);
+    a.join();
+    b.join();
+    a.send(&[object(true, 3, 5, 0, &console(&[(0, 0)]))]);
+    b.send(&[object(true, 3, 6, 0, &console(&[(0, 0)]))]);
+    let mut req = Bits::new();
+    req.push(6, 4).push(nerd::GAME_OPTIONS_TYPE as u64, 2);
+    Handle::Transfer(0).write(&mut req, 2);
+    a.send(&[Msg::Other { id: nerd::MSG_OBJECT_REQUEST_OWNERSHIP, body: req }]);
+    a.wait_for("the grant", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_OBJECT_GRANT_OWNERSHIP));
+    // A's GameOptions: B gets it as the server's update of its own (seq 0 from us)
+    let opts = payload(40, 3);
+    a.send(&[Msg::Object(ObjectMsg { create: false, router: 6, handle: Handle::Transfer(0), ty: 0, seq: 0, payload: opts.clone() })]);
+    let g = b.wait_for("A's GameOptions", |m| is_obj(m, false, 6, Handle::Transfer(0), 0).is_some());
+    assert_eq!(is_obj(&g, false, 6, Handle::Transfer(0), 0), Some(opts));
+    a.send(&[Msg::Other { id: nerd::MSG_REQUEST_RACE, body: Bits::new() }]);
+    // the launch countdown, to both
+    for c in [&mut a, &mut b] {
+        let p = c.wait_for("the launch countdown", |m| is_obj(m, false, 6, Handle::Own(0), 1).is_some());
+        let body = is_obj(&p, false, 6, Handle::Own(0), 1).unwrap();
+        assert_eq!(body.len(), 4 * 4 + 1 + 1 + 2 + 32);
+    }
+    let mut ready_req = Bits::new();
+    Handle::Own(0).write(&mut ready_req, 2);
+    ready_req.bool(true);
+    b.send(&[Msg::Other { id: nerd::MSG_READY_REQUEST, body: ready_req }]);
+    // the countdown's end: both selected, both taking part
+    a.wait_for("A taking part", |m| is_obj(m, false, 3, Handle::Server(5), 0).is_some());
+    let p = b.wait_for("B taking part", |m| {
+        is_obj(m, false, 3, Handle::Server(6), 1).is_some_and(|p| p == console(&[(2, 1)]))
+    });
+    let _ = p;
+    // the grid only once both have their cars loaded
+    a.send(&[object(false, 3, 5, 1, &console(&[(5, 1)]))]);
+    a.expect_none(Duration::from_millis(300), "a grid before B is loaded", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_STARTING_GRID));
+    b.send(&[object(false, 3, 6, 1, &console(&[(5, 1)]))]);
+    let g = a.wait_for("A's grid", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_STARTING_GRID));
+    assert_eq!(g.write(), nerd::starting_grid(&[Handle::Own(5), Handle::Relay(6, 2)]));
+    let g = b.wait_for("B's grid", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_STARTING_GRID));
+    assert_eq!(g.write(), nerd::starting_grid(&[Handle::Relay(5, 1), Handle::Own(6)]));
 }
 
 /// `kick <xuid>` on stdin: the player goes at once (the others delete its objects) and may
