@@ -62,6 +62,8 @@ const GSI_SET: &str = "00000000-0000-0000-0000-00000000f003";
 const GSI_NAME: &str = "Release_6CC152FD.FreeRoam";
 /// fh2srv.py 92: the game's default datacenter (0x1422EDAE8).
 const LOCATION: &str = "North Central US";
+/// The one hopper that meets in a world (free roam, public or private: hopperId 2).
+const FREEROAM_HOPPER: &str = "FreeRoam_qos";
 /// fh2srv.py 94-95: base64 of "fh2net-game-server", when no world is configured.
 const PLACEHOLDER_ADDRESS: &str = "ZmgybmV0LWdhbWUtc2VydmVy";
 const PLACEHOLDER_HOST: &str = "127.0.0.1";
@@ -497,6 +499,14 @@ impl Freeroam {
             }
             _ => return None,
         }
+        // Only free roam meets in a world. The game also opens RoadTrip_qos (and CarMeet_qos)
+        // tickets on its own, in the background (after a car change, at the start): matched to a
+        // world, it joined the relay unseen and its next FREE ROAM ONLINE hung on "JOINING
+        // SESSION..." (seen on 2026-10-15). Refused, the game stays solo, as before F1.
+        if !hopper.eq_ignore_ascii_case(FREEROAM_HOPPER) {
+            println!("freeroam: ticket for {hopper} refused (only {FREEROAM_HOPPER} meets in a world; xuid {xuid})");
+            return Some(Reply::json(503, json!({ "error": "no world" })));
+        }
         let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let ticket_ref = &request["ticketSessionRef"];
         let (Some(ticket_template), Some(ticket_name)) =
@@ -839,6 +849,12 @@ mod tests {
         call(&f, "PUT", SESSIONDIRECTORY, &tsession, json!({}), 7);
         let r = call(&f, "POST", MOMATCH, &hopper, json!({"ticketSessionRef": {"name": "T9", "scid": scid, "templateName": "defaultTemplate_qos"}}), 66);
         assert_eq!(r.status, 404);
+        // the game's own background road trip / car meet tickets never meet in the world
+        for other in ["RoadTrip_qos", "CarMeet_qos"] {
+            let path = format!("/serviceconfigs/{scid}/hoppers/{other}");
+            let r = call(&f, "POST", MOMATCH, &path, json!({"ticketSessionRef": {"name": "T9", "scid": scid, "templateName": "defaultTemplate_qos"}}), 7);
+            assert_eq!(r.status, 503, "{other}");
+        }
         let r = call(&f, "POST", MOMATCH, &hopper, json!({"ticketSessionRef": {"name": "T9", "scid": scid, "templateName": "defaultTemplate_qos"}}), 7);
         let id = r.body.unwrap()["ticketId"].as_str().unwrap().to_owned();
         assert_eq!(call(&f, "GET", MOMATCH, &format!("{hopper}/tickets/{id}"), Value::Null, 66).status, 404);
