@@ -502,8 +502,13 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
         },
         ("PUT", "save") => {
             // a game still running with the progress from before a reset (db/reset.rs)
-            if app.store.reset_pending(xuid) != 0 {
-                return json_reply(409, &json!({ "error": "Moderation reset this profile's progress. Restart the game to get it; your liveries were kept." }));
+            let pending = app.store.reset_pending(xuid);
+            if pending != 0 {
+                let why = match pending {
+                    crate::db::reset::PENDING_MODERATION => "Moderation reset this profile's progress. Restart the game to get it; your liveries were kept.",
+                    _ => "The server's save comes first: restart the game to get it, then play on.",
+                };
+                return json_reply(409, &json!({ "error": why, "why": "restore" }));
             }
             if request.body.len() > saves::MAX_BUNDLE {
                 return json_reply(413, &json!({ "error": "save too big" }));

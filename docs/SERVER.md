@@ -136,14 +136,34 @@ machine:
 fh2-server moderation --root /opt/infinity list            # flagged accounts, oldest first (JSON)
 fh2-server moderation --root /opt/infinity show XUID       # reports, records, profile, garage, gates, log
 fh2-server moderation --root /opt/infinity clear XUID why  # nothing wrong: the flag and reports go
-fh2-server moderation --root /opt/infinity reset XUID why  # cheating: progress back to a new profile's
+fh2-server moderation --root /opt/infinity reset XUID why  # cheating: the account's season starts again
 ```
 
-A reset deletes the account's scores, ghosts, drivatar, XP, transactions and synced profile and
-garage, and makes its cloud save the starting save (`server/templates/starter-<car>.bundle`) of
-the starter car it chose at the beginning, with 0 credits. Liveries and shared creations stay.
-The profile gates start again from the reset's numbers, uploads are refused until the game has
-downloaded the reset save, and INFINITY tells the player. Everything is in `moderation_log`.
+A reset edits the player's own cloud save (`server/src/db/reset.rs`), so the career stays (story,
+championships, events, unlocks, tutorials, barn finds, bucket list). XP (ProfileData `XP` and its
+copy `WristbandLevel`), level, skill points, perks and credits go to 0; the garage keeps only the
+first starter car the player got, with its parts; track records, speed trap/zone bests and badges
+beyond the 51 every profile has go. On the server the scores, ghosts, XP, transactions and synced
+profile and garage are deleted (a moderation reset also deletes the drivatar, the flag and the
+reports). Liveries and shared creations stay. The gates start again from 0, uploads are refused
+until the game has downloaded the reset save, and the player is told in their Message Center and
+in INFINITY. Everything is in `moderation_log`.
+
+## Seasons and the cloud save
+
+- `fh2-server moderation season-reset [--yes] [--only XUID] [why]` resets every account like that
+  (no drivatar deleted); without `--yes` it only counts; with it, the database is first copied to
+  `<db>.before-season-<ms>` (`VACUUM INTO`). A new profile's first save (its offline progress) is
+  kept season-reset too: it keeps its offline career and starts with its first car.
+- **The server's save is the online profile.** At the start the hook downloads it over any local
+  save that differs (edited, or played without the server: kept in `saves\fh2online-backup`), and
+  uploads only what a session that started in step with the server writes.
+- **Save gates** (`PUT /infinity/v1/save`): only a real save's shape (per-file sizes of real
+  saves, the files every save has, each file matching its commit line, PlayerDatabase a SQLite
+  database, SaveState XML, at most 384 KB packed), and progress since the server's last save
+  within the profile gates' allowances per hour (credits, XP, level, cars). A refused upload is a
+  strike, and the server's save is restored at the next start (`GET save/info` says `restore`).
+- `fh2-server moderation check-saves` runs the save checks over every account's save, read only.
 
 Shared files (liveries, vinyl groups, tunes) reported with the game's own Storefront › Report:
 
