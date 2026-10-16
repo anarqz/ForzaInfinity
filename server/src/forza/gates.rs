@@ -12,12 +12,12 @@ use crate::db::integrity::Baseline;
 use crate::gamedb::Catalog;
 
 /// Credits (or race winnings) a player may gain: this much at once...
-pub const CREDITS_BASE: i64 = 250_000;
+pub const CREDITS_BASE: i64 = 400_000;
 /// ...plus this much per hour since the last accepted sync.
-pub const CREDITS_PER_HOUR: i64 = 500_000;
+pub const CREDITS_PER_HOUR: i64 = 800_000;
 pub const XP_BASE: i64 = 150_000;
 pub const XP_PER_HOUR: i64 = 400_000;
-pub const LEVELS_BASE: i64 = 3;
+pub const LEVELS_BASE: i64 = 8;
 pub const LEVELS_PER_HOUR: i64 = 10;
 /// XP the game may report with Scoreboard.SubmitXpScore in any hour.
 pub const XP_REPORTED_PER_HOUR: f64 = 400_000.0;
@@ -98,7 +98,10 @@ pub fn check_growth(previous: Option<&Baseline>, new: &Progress, now: i64, arriv
     if new.credits - b.credits > allowed(CREDITS_BASE, CREDITS_PER_HOUR) {
         return Err(format!("credits {} -> {} in {:.1} h", b.credits, new.credits, hours));
     }
-    if previous.is_some() && new.winnings - b.winnings > allowed(CREDITS_BASE, CREDITS_PER_HOUR) {
+    // Total winnings are a lifetime figure the game keeps through a career reset: a baseline
+    // of 0 (a new account, or the season reset of db/reset.rs) takes the first one as it is
+    // (credits stay checked), else every sync after a reset was refused for good.
+    if previous.is_some() && b.winnings > 0 && new.winnings - b.winnings > allowed(CREDITS_BASE, CREDITS_PER_HOUR) {
         return Err(format!("winnings {} -> {} in {:.1} h", b.winnings, new.winnings, hours));
     }
     if new.xp - b.xp > allowed(XP_BASE, XP_PER_HOUR) {
@@ -198,7 +201,19 @@ mod tests {
         // a first sync with no baseline: measured from a season's start (0)
         assert!(check_growth(None, &p(60_000, 100_717, 2), now, false).is_ok());
         assert!(check_growth(None, &p(5_000_000, 100_717, 2), now, false).is_err());
-        assert!(check_growth(None, &p(60_000, 100_717, 6), now, false).is_err());
+        assert!(check_growth(None, &p(60_000, 100_717, 6), now, false).is_ok());
+        assert!(check_growth(None, &p(60_000, 100_717, 10), now, false).is_err());
+        // winnings: a baseline of 0 (new account, career reset) takes the lifetime total once...
+        let reset = Baseline { winnings: 0, ..base };
+        let mut w = p(10_000, 100_000, 6);
+        w.winnings = 27_979_523;
+        assert!(check_growth(Some(&reset), &w, now, false).is_ok());
+        // ...and from then on it is measured like credits
+        let known = Baseline { winnings: 27_979_523, ..base };
+        w.winnings = 27_979_523 + 5_000_000;
+        assert!(check_growth(Some(&known), &w, now, false).is_err());
+        w.winnings = 27_979_523 + 20_000;
+        assert!(check_growth(Some(&known), &w, now, false).is_ok());
         // no arrival window any more: a new account brings nothing as it is
         assert!(!arriving(Some(now - 1), now) && !arriving(None, now));
     }
