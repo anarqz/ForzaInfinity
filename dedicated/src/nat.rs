@@ -1,4 +1,4 @@
-//! What the host's network looks like from the Internet, and the punches (F3, PLANO_FREEROAM.md):
+//! What the host's network looks like from the Internet, and the punches:
 //! STUN rounds on the relay's socket (stun.rs), the router's port mapping (upnp.rs, its own
 //! thread) and the joining players' punches. The relay owns one Nat and feeds it every STUN
 //! packet and its timer; the result is written to `dedicated_server.net` for the hook:
@@ -25,7 +25,7 @@ use crate::{
     upnp,
 };
 
-/// Public STUN servers (no server of ours: PLANO_FREEROAM.md). Two, for the NAT's kind.
+/// Public STUN servers (no server of ours). Two, for the NAT's kind.
 pub const STUN_SERVERS: [&str; 2] = ["stun.l.google.com:19302", "stun.cloudflare.com:3478"];
 /// A punch: this many Binding requests, this far apart.
 const PUNCH_SENDS: u8 = 10;

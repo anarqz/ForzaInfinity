@@ -1,5 +1,5 @@
 //! The game server's UDP side: a NerdCore relay (nerd.rs has the formats). Port of fh2-mods
-//! `tools/online/server/relay.py`, with the fixes listed in PLANO_FREEROAM.md.
+//! `tools/online/server/relay.py`.
 //!
 //! Each console (peer) gets the server's side of a connection: OpenConnection is answered Ok,
 //! the console's ResponseAck gets TimeSync and ConnectionSyncDone, Pings get Pongs, sequenced

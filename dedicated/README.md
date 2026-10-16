@@ -1,6 +1,6 @@
 # dedicated_server
 
-O servidor de free roam online do Forza Horizon 2 que um jogador roda no próprio PC (fase F0 do `PLANO_FREEROAM.md`).
+O servidor de free roam online do Forza Horizon 2 que um jogador roda no próprio PC.
 
 No Xbox One, cada console se ligava a um servidor dedicado da Turn 10, que só repassava os objetos e os carros de cada console para os outros. O `dedicated_server` faz esse papel. Ele fala o protocolo do jogo (NerdCore, UDP) e não simula nada: o jogo de cada jogador continua dono do próprio carro.
 

@@ -1,4 +1,4 @@
-//! Online free roam (PLANO_FREEROAM.md, phase F0): the Xbox Live game-server and session calls
+//! Online free roam: the Xbox Live game-server and session calls
 //! that take the game into online free roam and to a world's relay.
 //!
 //! Ported from the fh2-mods research (`tools/online/server/fh2srv.py`, MIT; line refs below are

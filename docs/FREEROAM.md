@@ -69,7 +69,6 @@ CGNAT.
 
 ## For the curious
 
-- [PLANO_FREEROAM.md](../PLANO_FREEROAM.md) (in Portuguese) has the whole design.
 - `[FreeRoam] Direct=1` in `FH2_ExtraOptions.ini` turns the joining side's proxy off (the game
   then sends straight to the world's address), for troubleshooting only.
 - What a world found about its network is in `data/bin/dedicated_server.net`; its log is

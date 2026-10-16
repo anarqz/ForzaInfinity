@@ -1,5 +1,4 @@
-//! STUN (RFC 5389) on the relay's own socket, and what the host learns from it (F3,
-//! PLANO_FREEROAM.md):
+//! STUN (RFC 5389) on the relay's own socket, and what the host learns from it (F3):
 //!   - Binding requests to two public STUN servers every `stun_every`: the world's public address
 //!     (IPv4 and IPv6) and the NAT's kind (the same public port for both servers: a cone NAT;
 //!     different ports: symmetric, which a cone client cannot punch). They also keep the NAT's
