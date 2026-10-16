@@ -149,6 +149,8 @@ const RACE_START_DELAY_MS: u32 = 5000;
 struct Race {
     owner: u8,
     participants: Vec<u8>,
+    /// Those who crossed the line (their MsgScoreKeyframe).
+    finished: Vec<u8>,
     stage: RaceStage,
     start_time: u32,
 }
@@ -972,6 +974,28 @@ impl Relay {
         }
     }
 
+    /// Cars (and their unreliable events): during a race (from the grid on) the participants'
+    /// cars go only to participants and the others' only to the others, as in the game's own
+    /// universes (racers are in the race's, NetworkSetOverrideUniverse; free roam does not see
+    /// them, and they do not see free roam). Less traffic for the racers too.
+    fn forward_cars(&mut self, from: usize, msgs: &[Bits]) {
+        let racing: Option<Vec<u8>> = self
+            .race
+            .as_ref()
+            .filter(|r| r.stage != RaceStage::Gathering)
+            .map(|r| r.participants.clone());
+        let Some(racing) = racing else {
+            self.forward(from, msgs, false);
+            return;
+        };
+        let side = racing.contains(&self.peers[from].index);
+        for j in 0..self.peers.len() {
+            if j != from && self.peers[j].synced && racing.contains(&self.peers[j].index) == side {
+                self.send(j, msgs.to_vec(), false);
+            }
+        }
+    }
+
     /// An answer to an address that is not a peer (a refusal), acking its packet: only if it is
     /// no bigger than what came from there.
     fn send_to_stranger(&self, addr: SocketAddr, pid: u16, msg: Msg, request_len: usize) {
@@ -1549,6 +1573,7 @@ impl Relay {
                     self.set_group_sat_nav(index, node);
                 }
                 Msg::Other { id: nerd::MSG_REQUEST_RACE, .. } if self.settings.races => self.on_request_race(pi),
+                Msg::Other { id: nerd::MSG_SCORE_KEYFRAME, .. } if self.race.is_some() => self.on_finished(pi),
                 Msg::Other { id: nerd::MSG_READY_REQUEST, ref body } if self.settings.races => {
                     if let Some(ready) = nerd::ready_request(body) {
                         self.on_ready_request(pi, ready);
@@ -1595,7 +1620,7 @@ impl Relay {
             self.send_seq(pi, ghost);
         }
         if !cars.is_empty() {
-            self.forward(pi, &cars, false);
+            self.forward_cars(pi, &cars);
         }
         // the ConsoleSynced Create may have come after FinaliseSessionEntry
         if let Some(m) = self.finalise(pi) {
@@ -1693,7 +1718,7 @@ impl Relay {
             return;
         }
         self.log(&format!("jogador {index} começou o evento: corrida pronta (RaceReady)"));
-        self.race = Some(Race { owner: index, participants: vec![index], stage: RaceStage::Gathering, start_time: 0 });
+        self.race = Some(Race { owner: index, participants: vec![index], finished: Vec::new(), stage: RaceStage::Gathering, start_time: 0 });
         self.set_host_vars(&[
             (nerd::SESSION_HOST_RACE_READY, 1, 1),
             (nerd::SESSION_HOST_RACE_PARTICIPANTS_SELECTED, 1, 1),
@@ -1760,6 +1785,23 @@ impl Relay {
                 self.set_host_vars(&[(nerd::SESSION_HOST_IN_RACE, 1, 1), (nerd::SESSION_HOST_RACE_START_TIME, start as u64, 32)]);
             }
             _ => {}
+        }
+    }
+
+    /// MsgScoreKeyframe (45): a console sends it once, as its car crosses the line. When every
+    /// participant has, the race is over: InRace off is what its results screen waits for
+    /// (NetworkWaitForRaceEnd, 1408EEB20: the SessionHost's IsInRace).
+    fn on_finished(&mut self, pi: usize) {
+        let index = self.peers[pi].index;
+        let Some(race) = &mut self.race else { return };
+        if race.stage != RaceStage::Started || !race.participants.contains(&index) || race.finished.contains(&index) {
+            return;
+        }
+        race.finished.push(index);
+        let done = race.participants.iter().all(|p| race.finished.contains(p));
+        self.log(&format!("corrida: jogador {index} cruzou a linha"));
+        if done {
+            self.end_race("todos cruzaram a linha");
         }
     }
 

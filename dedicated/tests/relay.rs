@@ -698,6 +698,17 @@ fn a_race_with_one_console_starts() {
     a.send(&[object(false, 3, 5, 2, &console(&[(0, 1)]))]);
     a.wait_for("the start", |m| matches!(m, Msg::Other { id, .. } if *id == nerd::MSG_START_RACE));
     a.wait_for("InRace", |m| is_obj(m, false, 6, Handle::Own(0), 2).is_some());
+    // it crosses the line (MsgScoreKeyframe): the race is over, InRace off
+    let mut kf = Bits::new();
+    Handle::Own(2).write(&mut kf, 7);
+    for _ in 0..5 {
+        kf.string(&[0; 8]);
+    }
+    kf.push(0, 32 + 3 * 8 + 3);
+    a.send(&[Msg::Other { id: nerd::MSG_SCORE_KEYFRAME, body: kf }]);
+    let off = nerd::session_host_payload(&[(4, 0, 1), (5, 0, 1), (6, 0, 1)]);
+    let p = a.wait_for("the end", |m| is_obj(m, false, 6, Handle::Own(0), 3).is_some());
+    assert_eq!(is_obj(&p, false, 6, Handle::Own(0), 3), Some(off));
 }
 
 /// `kick <xuid>` on stdin: the player goes at once (the others delete its objects) and may

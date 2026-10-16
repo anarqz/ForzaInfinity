@@ -955,6 +955,7 @@ pub const MSG_REQUEST_RACE: u8 = 38;
 pub const MSG_STARTING_GRID: u8 = 39;
 pub const MSG_START_RACE: u8 = 40;
 pub const MSG_READY_REQUEST: u8 = 41;
+pub const MSG_SCORE_KEYFRAME: u8 = 45;
 
 /// MsgStartingGrid (39; the lobby router 141809420 reads the SessionHost handle with 1418092B0,
 /// then 141824040): u4 count and the participants' handles (7-bit ids) in grid order. The
