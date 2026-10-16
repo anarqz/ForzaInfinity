@@ -481,6 +481,8 @@ fn serve_connection(app: &App, stream: TcpStream) -> std::io::Result<()> {
             continue;
         }
         if !app.guard.allow(request.client_ip(), guard::Bucket::Game) {
+            let path = request.path_and_query.split('?').next().unwrap_or("");
+            api::log_refusal(app, &request, request.client_ip(), guard::Bucket::Game, path);
             writer.write_all(&plain_reply(429, "slow down"))?;
             break;
         }

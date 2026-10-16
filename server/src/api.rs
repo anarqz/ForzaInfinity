@@ -83,7 +83,21 @@ pub fn allowed(app: &App, request: &Request) -> bool {
         (Bucket::Account, Some(token)) if !token.is_empty() => token_key(token),
         _ => request.client_ip(),
     };
-    app.guard.allow(key, bucket)
+    let ok = app.guard.allow(key, bucket);
+    if !ok {
+        log_refusal(app, request, key, bucket, path);
+    }
+    ok
+}
+
+/// A rate-limited request in the log (one line a minute per key and bucket, with how many
+/// more were refused since): who hits the limits, on which route.
+pub fn log_refusal(app: &App, request: &Request, key: std::net::IpAddr, bucket: Bucket, path: &str) {
+    if let Some(more) = app.guard.refusal(key, bucket) {
+        let who = if key == request.client_ip() { String::new() } else { " (per account)".to_string() };
+        let since = if more > 0 { format!(", {more} more refused in the last minute") } else { String::new() };
+        println!("429 {} {} {} from {}{who}{since}", bucket.name(), request.method, path, request.client_ip());
+    }
 }
 
 /// A stand-in address for a token's rate-limit bucket (never a real one: fd00::/8, from the

@@ -28,6 +28,16 @@ pub enum Bucket {
 }
 
 impl Bucket {
+    pub fn name(self) -> &'static str {
+        match self {
+            Bucket::Game => "game",
+            Bucket::Account => "account",
+            Bucket::Register => "register",
+            Bucket::Login => "login",
+            Bucket::Save => "save",
+        }
+    }
+
     fn limits(self) -> (f64, f64) {
         match self {
             Bucket::Game => (400.0, 25.0),
@@ -44,7 +54,12 @@ impl Bucket {
 pub struct Guard {
     connections: Mutex<HashMap<IpAddr, usize>>,
     buckets: Mutex<HashMap<(IpAddr, u8), (f64, Instant)>>,
+    /// Refusals logged: (key, bucket) -> (when last logged, refusals since).
+    refusals: Mutex<HashMap<(IpAddr, u8), (Instant, u32)>>,
 }
+
+/// A refused request is logged at most this often per (key, bucket); the line counts the rest.
+const REFUSAL_LOG_EVERY_SECS: u64 = 60;
 
 /// Releases the connection slot when dropped.
 pub struct Slot<'a> {
@@ -83,6 +98,31 @@ impl Guard {
 
     /// Takes one token from `ip`'s bucket; false when it is empty. Loopback is never limited
     /// (the manager and local tests).
+    /// A request refused by `allow`: Some(refusals since the last line) when a line is due.
+    pub fn refusal(&self, key: IpAddr, bucket: Bucket) -> Option<u32> {
+        let now = Instant::now();
+        let mut refusals = self.refusals.lock().unwrap_or_else(|p| p.into_inner());
+        if refusals.len() > 10_000 {
+            refusals.retain(|_, (at, _)| now.duration_since(*at).as_secs() < REFUSAL_LOG_EVERY_SECS);
+        }
+        match refusals.get_mut(&(key, bucket as u8)) {
+            Some((at, held)) if now.duration_since(*at).as_secs() < REFUSAL_LOG_EVERY_SECS => {
+                *held += 1;
+                None
+            }
+            Some((at, held)) => {
+                let before = *held;
+                *at = now;
+                *held = 0;
+                Some(before)
+            }
+            None => {
+                refusals.insert((key, bucket as u8), (now, 0));
+                Some(0)
+            }
+        }
+    }
+
     pub fn allow(&self, ip: IpAddr, bucket: Bucket) -> bool {
         if ip.is_loopback() {
             return true;
@@ -120,6 +160,22 @@ fn bucket_by_id(id: u8) -> Bucket {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refusals_are_logged_once_a_minute_with_the_count() {
+        let g = Guard::default();
+        let ip: IpAddr = "203.0.113.9".parse().unwrap();
+        assert_eq!(g.refusal(ip, Bucket::Register), Some(0));
+        assert_eq!(g.refusal(ip, Bucket::Register), None);
+        assert_eq!(g.refusal(ip, Bucket::Register), None);
+        // another bucket or address gets its own line
+        assert_eq!(g.refusal(ip, Bucket::Login), Some(0));
+        assert_eq!(g.refusal("203.0.113.10".parse().unwrap(), Bucket::Register), Some(0));
+        // a minute later: one line, counting the two held back
+        g.refusals.lock().unwrap().get_mut(&(ip, Bucket::Register as u8)).unwrap().0 -=
+            std::time::Duration::from_secs(REFUSAL_LOG_EVERY_SECS);
+        assert_eq!(g.refusal(ip, Bucket::Register), Some(2));
+    }
+
     use super::*;
 
     #[test]
