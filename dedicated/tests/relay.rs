@@ -633,7 +633,7 @@ fn events_go_to_the_first_console_that_enters_one() {
     }
     let is_answer = |m: &Msg| answer(m).is_some();
 
-    let off = Server::start(settings());
+    let off = Server::start(Settings { races: false, ..settings() });
     let mut x = Client::new(&off, 7);
     x.join();
     x.send(&[request(0)]);

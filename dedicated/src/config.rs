@@ -53,7 +53,8 @@ pub struct Config {
     /// [Log] Verbose: every protocol message in the log, as --verbose (the hook starts the
     /// relay with --config only, so a test turns it on here).
     pub verbose: bool,
-    /// [Events] Races: the relay answers a console that enters an event (relay::Settings::races).
+    /// [Events] Races: the relay runs the races of the world's events (relay::Settings::races); on
+    /// unless the host turns it off.
     pub races: bool,
 }
 
@@ -71,7 +72,7 @@ impl Default for Config {
             allow: Vec::new(),
             ban: Vec::new(),
             verbose: false,
-            races: false,
+            races: true,
         }
     }
 }
@@ -209,9 +210,9 @@ mod tests {
         let (c, w) = Config::parse("[Log]\nVerbose=1\n");
         assert!(c.verbose && w.is_empty());
         assert!(!Config::default().verbose);
-        let (c, w) = Config::parse("[Events]\nRaces=1\n");
-        assert!(c.races && w.is_empty());
-        assert!(!Config::default().races);
+        let (c, w) = Config::parse("[Events]\nRaces=0\n");
+        assert!(!c.races && w.is_empty());
+        assert!(Config::default().races);
     }
 
     #[test]
