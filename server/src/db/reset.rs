@@ -451,6 +451,9 @@ impl Store {
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         drop(db);
+        // in the player's Message Center too, in their language (db/news.rs)
+        let message = if kind == ResetKind::Moderation { "Moderation found progress on this profile that could not be real and reset it: XP, level, credits, records and the garage (all but your first car). Your career and liveries are kept." } else { "New season! Your XP, level, credits, records and garage (all but your first car) started again. Your career, liveries and creations are kept. See you on the leaderboards!" };
+        self.send_news(&crate::l10n::tr(crate::l10n::is_portuguese(&self.lang(xuid)), message), &[xuid]);
         let label = if kind == ResetKind::Moderation { "Progresso zerado pela moderação" } else { "Nova temporada: progresso zerado" };
         self.add_event(xuid, "moderation", label, json!({ "car": kept.as_ref().map(|k| k.car) }));
         Ok(json!({
