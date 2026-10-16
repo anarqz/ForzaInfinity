@@ -697,6 +697,18 @@ impl Worlds {
         Reply::json(200, json!({ "ok": true }))
     }
 
+    /// For /stats (the landing page): the worlds alive now (public, friends-only and with a
+    /// password alike; only numbers) and the players in them, hosts included.
+    pub fn active(&self) -> (usize, usize) {
+        self.active_at(Instant::now())
+    }
+
+    fn active_at(&self, now: Instant) -> (usize, usize) {
+        let mut s = self.lock();
+        s.purge(now);
+        (s.worlds.len(), s.worlds.len() + s.members.len())
+    }
+
     #[cfg(test)]
     fn counts(&self) -> (usize, usize, usize) {
         let s = self.lock();
@@ -1087,7 +1099,10 @@ mod tests {
         let c = w.choose(&pal(5, AWAY), t0).unwrap();
         w.assign(5, Some(&c), t0);
         assert!(w.choose(&pal(5, AWAY), t0 + Duration::from_secs(44)).is_some());
+        // /stats: one world, its host and one guest
+        assert_eq!(w.active_at(t0 + Duration::from_secs(44)), (1, 2));
         let later = t0 + WORLD_TTL + Duration::from_secs(1);
+        assert_eq!(w.active_at(later), (0, 0));
         assert!(w.choose(&pal(5, AWAY), later).is_none());
         assert_eq!(w.counts(), (0, 0, 0));
         assert_eq!(call(&w, "GET", "worlds", Value::Null, &who(5, AWAY), later).body.unwrap(), json!({"worlds": []}));

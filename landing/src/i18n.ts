@@ -33,6 +33,8 @@ const en = {
   stat: {
     players: "drivers",
     online: "online now",
+    worlds: "free roam worlds open",
+    worldPlayers: "driving in them",
     races: "races finished",
     kilometres: "km driven",
     designs: "liveries painted",
@@ -183,6 +185,8 @@ const pt: Texts = {
   stat: {
     players: "pilotos",
     online: "online agora",
+    worlds: "mundos de passeio livre abertos",
+    worldPlayers: "pilotando neles",
     races: "corridas concluídas",
     kilometres: "km rodados",
     designs: "pinturas criadas",

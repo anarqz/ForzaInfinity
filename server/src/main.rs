@@ -120,6 +120,10 @@ impl App {
         value["queued"] = json!(queued);
         value["capacity"] = json!(capacity);
         value["full"] = json!(capacity > 0 && online >= capacity);
+        // player-hosted worlds alive now and the players in them (free roam off: none)
+        let (worlds, world_players) = self.freeroam.as_ref().map(|f| f.worlds.active()).unwrap_or((0, 0));
+        value["worlds"] = json!(worlds);
+        value["worldPlayers"] = json!(world_players);
         value
     }
 }
