@@ -22,7 +22,8 @@ notes/decomp_*/
 __pycache__/
 
 # Claude Code worktrees (branches live on origin)
-.claude/
+.claude/*
+!.claude/skills/
 
 WIP
 Forza\ Horizon\ 2

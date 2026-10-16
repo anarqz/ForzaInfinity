@@ -150,6 +150,21 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
         return json_reply(413, &json!({ "error": "too large" }));
     }
     let token_account = || request.header("x-fh2-token").and_then(|t| app.store.account_by_token(t));
+    // only the game's own cars play online (cardb.rs): an account (or a new one) with another
+    // car database is refused everything but the server's info and stats (updates, the landing
+    // page) and deleting itself
+    let open = matches!((request.method.as_str(), route), ("GET", "info") | ("GET", "stats") | ("POST", "delete"));
+    if !open && app.car_db.on() {
+        let account = if route == "register" { Some(0) } else { token_account().map(|a| a.xuid) };
+        if let Some(xuid) = account
+            && let Some(why) = app.car_db.refusal(request.header("x-fh2-cardb"))
+        {
+            if xuid == 0 || app.car_db.first_time(xuid) {
+                println!("  {} /infinity/v1/{route}: refused, the car database is {} (xuid {xuid})", request.method, why.name());
+            }
+            return json_reply(403, &json!({ "error": "This game's car database is not the original one: only the game's own cars play online on this server. Put the original gamedbRC.slt back (or reinstall the game) and restart.", "why": "cars" }));
+        }
+    }
     // player-hosted worlds (worlds.rs), with free roam on
     if route == "worlds" || route.starts_with("worlds/") {
         return match (token_account(), &app.freeroam) {
@@ -298,6 +313,49 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
             Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
             None => json_reply(401, &json!({ "error": "Unknown token." })),
         },
+        // Reports a player (PLAYER ACTIONS > REPORT PLAYER): {xuid, reason} -> {message}.
+        // Five different players' reports flag the account for moderation (db/moderation.rs).
+        ("POST", "report") => match token_account() {
+            Some(me) if !me.banned => {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let reason = body["reason"].as_str().unwrap_or("");
+                match body_xuid(&body, "xuid").filter(|&x| x != 0).and_then(|x| app.store.account(x)) {
+                    Some(t) => match app.store.report_player(me.xuid, t.xuid, reason) {
+                        Ok(flagged) => {
+                            println!(
+                                "  report: {} reported {}{}",
+                                me.xuid,
+                                t.xuid,
+                                if flagged { " (now flagged for moderation)" } else { "" }
+                            );
+                            json_reply(
+                                200,
+                                &json!({ "message": format!("Thanks. Your report on {} was sent to moderation.", t.gamertag()) }),
+                            )
+                        }
+                        Err(crate::db::moderation::ReportError::Yourself) => {
+                            json_reply(400, &json!({ "error": "That is your own profile." }))
+                        }
+                        Err(crate::db::moderation::ReportError::TooMany) => {
+                            json_reply(429, &json!({ "error": "Too many reports today. Try again tomorrow." }))
+                        }
+                        Err(crate::db::moderation::ReportError::TooNew) => json_reply(
+                            403,
+                            &json!({ "error": "Only players whose profile is a day old and has played online can report." }),
+                        ),
+                        Err(crate::db::moderation::ReportError::Already) => {
+                            json_reply(200, &json!({ "message": format!("You already reported {}.", t.gamertag()) }))
+                        }
+                        Err(crate::db::moderation::ReportError::NoSuchPlayer) => {
+                            json_reply(404, &json!({ "error": "That player has no profile on this server." }))
+                        }
+                    },
+                    None => json_reply(404, &json!({ "error": "That player has no profile on this server." })),
+                }
+            }
+            Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
+        },
         // Ends a friendship (or a request either way): {xuid} -> {message}.
         ("POST", "friends/remove") => match token_account() {
             Some(me) if !me.banned => {
@@ -398,7 +456,17 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
         }
         ("GET", "me") => match token_account() {
             Some(a) if a.banned => json_reply(403, &json!({ "error": "Account suspended on this server." })),
-            Some(a) => json_reply(200, &json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag(), "expansions": app.store.expansions(a.xuid) })),
+            Some(a) => {
+                let mut me = json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag(), "expansions": app.store.expansions(a.xuid) });
+                // a moderation reset the game has not downloaded yet (db/reset.rs): the hook shows it
+                if app.store.reset_pending(a.xuid) {
+                    me["notice"] = Value::from("Moderation reset this profile's progress. Restart the game to get it; your liveries were kept.");
+                    if REPLY_PORTUGUESE.with(|p| p.get()) {
+                        me["notice"] = Value::from(crate::l10n::tr(true, "Moderation reset this profile's progress. Restart the game to get it; your liveries were kept."));
+                    }
+                }
+                json_reply(200, &me)
+            }
             None => json_reply(401, &json!({ "error": "Unknown token." })),
         },
         _ => json_reply(404, &json!({ "error": "not found" })),
@@ -420,10 +488,18 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
             None => json_reply(404, &json!({ "error": "No cloud save yet." })),
         },
         ("GET", "save") => match app.store.save_data(xuid) {
-            Some(data) => response(200, "application/octet-stream", "", &data),
+            Some(data) => {
+                // the game has the reset save now: its uploads are taken again (db/reset.rs)
+                app.store.reset_downloaded(xuid);
+                response(200, "application/octet-stream", "", &data)
+            }
             None => json_reply(404, &json!({ "error": "No cloud save yet." })),
         },
         ("PUT", "save") => {
+            // a game still running with the progress from before a moderation reset
+            if app.store.reset_pending(xuid) {
+                return json_reply(409, &json!({ "error": "Moderation reset this profile's progress. Restart the game to get it; your liveries were kept." }));
+            }
             if request.body.len() > saves::MAX_BUNDLE {
                 return json_reply(413, &json!({ "error": "save too big" }));
             }

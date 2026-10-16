@@ -39,6 +39,7 @@
 
 mod admission;
 mod api;
+mod cardb;
 mod db;
 mod forza;
 mod freeroam;
@@ -48,7 +49,9 @@ mod gamerpic;
 mod l10n;
 mod guard;
 mod live;
+mod moderation_cli;
 mod news_cli;
+mod sha256;
 mod worlds;
 mod xtsw;
 
@@ -98,6 +101,8 @@ struct App {
     admission: admission::Admission,
     /// Online free roam (--freeroam / --freeroam-world): game servers and sessions.
     freeroam: Option<freeroam::Freeroam>,
+    /// Only the game's own cars play online (cardb.rs).
+    car_db: cardb::Gate,
 }
 
 impl App {
@@ -239,6 +244,11 @@ fn main() {
         news_cli::run(std::env::args().skip(2).collect());
         return;
     }
+    // reported accounts: list, review, clear or reset (never over HTTP): moderation_cli.rs
+    if std::env::args().nth(1).as_deref() == Some("moderation") {
+        moderation_cli::run(std::env::args().skip(2).collect());
+        return;
+    }
     let mut listen: SocketAddr = "127.0.0.1:8081".parse().unwrap();
     let mut root = std::env::current_dir().unwrap();
     let mut gamedb_path = None;
@@ -250,10 +260,30 @@ fn main() {
     let mut max_players = 150;
     let mut freeroam_on = false;
     let mut freeroam_world = None;
+    let mut cardb_allow: Vec<String> = Vec::new();
+    let mut cardb_gate = true;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--capture" => capture_on = true,
+            "--cardb-allow" => {
+                let h = args.next().expect("--cardb-allow SHA-256");
+                if !cardb::is_sha256(&h) {
+                    eprintln!("--cardb-allow: a SHA-256 in hex (64 digits)");
+                    std::process::exit(2);
+                }
+                cardb_allow.push(h);
+            }
+            "--cardb-gate" => {
+                cardb_gate = match args.next().as_deref() {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => {
+                        eprintln!("--cardb-gate on|off");
+                        std::process::exit(2);
+                    }
+                }
+            }
             "--behind-proxy" => behind_proxy = true,
             "--max-players" => max_players = args.next().expect("--max-players N").parse().expect("bad number"),
             "--registration" => {
@@ -280,7 +310,7 @@ fn main() {
             "--db" => db_path = Some(PathBuf::from(args.next().expect("--db FILE"))),
             "-h" | "--help" => {
                 println!(
-                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist] [--capture] [--behind-proxy] [--registration open|closed] [--max-players 150 (0: no limit)] [--freeroam] [--freeroam-world HOST:PORT]"
+                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist] [--capture] [--behind-proxy] [--registration open|closed] [--max-players 150 (0: no limit)] [--freeroam] [--freeroam-world HOST:PORT] [--cardb-gate on|off] [--cardb-allow SHA-256]..."
                 );
                 return;
             }
@@ -343,6 +373,24 @@ fn main() {
     if !catalog.cars.is_empty() {
         println!("  gamedb:    {} cars, {} tracks", catalog.cars.len(), catalog.tracks.len());
     }
+    // the game's own car database: only it plays online (cardb.rs)
+    let car_db = if cardb_gate {
+        let mut allowed = cardb_allow;
+        match std::fs::read(&gamedb_path) {
+            Ok(bytes) => allowed.insert(0, sha256::hex(&bytes)),
+            Err(e) if allowed.is_empty() => eprintln!("  cars:      the car database gate is off ({e}; --cardb-allow names one)"),
+            Err(_) => {}
+        }
+        let gate = cardb::Gate::new(allowed);
+        if gate.on() {
+            let shown: Vec<String> = gate.allowed().iter().map(|h| format!("{}...", &h[..16])).collect();
+            println!("  cars:      only the game's own car database plays online ({})", shown.join(", "));
+        }
+        gate
+    } else {
+        println!("  cars:      car database gate off (--cardb-gate off)");
+        cardb::Gate::default()
+    };
     let web = web.unwrap_or_else(|| root.join("../web/dist"));
     println!("  manager:   http://{listen}/ui/  (api /api, live /ws)");
 
@@ -361,6 +409,7 @@ fn main() {
         registration_open,
         admission: admission::Admission::new(max_players),
         freeroam: (freeroam_on || freeroam_world.is_some()).then(|| freeroam::Freeroam::new(freeroam_world)),
+        car_db,
     });
     match max_players {
         0 => println!("  players:   no limit"),
@@ -533,6 +582,16 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
             .into_bytes();
         out.extend_from_slice(body);
         return out;
+    }
+    // only the game's own cars play online (cardb.rs): the game gets what a suspended account
+    // gets and plays offline; the hook's GET /infinity/v1/me says why
+    if xuid != 0
+        && let Some(why) = app.car_db.refusal(request.header("x-fh2-cardb"))
+    {
+        if app.car_db.first_time(xuid) {
+            println!("#{seq:<4} {:<5} refused: xuid {xuid}'s car database is {}", request.method, why.name());
+        }
+        return plain_reply(403, "car database not accepted");
     }
     // Without an FH2Online account (or with Online=0 in the hook) the Forza services are down:
     // the game plays offline and nothing is written under a shared or claimed identity.

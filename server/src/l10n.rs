@@ -6,6 +6,11 @@
 /// (English, Portuguese); `{}` marks the same values in both.
 const TEXTS: &[(&str, &str)] = &[
     ("Account suspended on this server.", "Conta suspensa neste servidor."),
+    ("Moderation reset this profile's progress. Restart the game to get it; your liveries were kept.", "A moderação zerou o progresso deste perfil. Reinicie o jogo para recebê-lo; suas pinturas foram mantidas."),
+    (
+        "This game's car database is not the original one: only the game's own cars play online on this server. Put the original gamedbRC.slt back (or reinstall the game) and restart.",
+        "O banco de carros deste jogo não é o original: neste servidor, só os carros do próprio jogo jogam online. Coloque o gamedbRC.slt original de volta (ou reinstale o jogo) e reinicie.",
+    ),
     ("Unknown token.", "Token desconhecido."),
     ("This server is not taking new profiles right now.", "Este servidor não está aceitando perfis novos no momento."),
     ("Could not delete the account.", "Não foi possível excluir a conta."),
@@ -21,6 +26,13 @@ const TEXTS: &[(&str, &str)] = &[
         "Pedido enviado para {}. Quando {} adicionar você também, vocês viram amigos e rivais.",
     ),
     ("{} is no longer your friend.", "{} não é mais seu amigo."),
+    ("Thanks. Your report on {} was sent to moderation.", "Obrigado. Sua denúncia contra {} foi enviada à moderação."),
+    ("Too many reports today. Try again tomorrow.", "Denúncias demais hoje. Tente de novo amanhã."),
+    (
+        "Only players whose profile is a day old and has played online can report.",
+        "Só pode denunciar quem tem o perfil há pelo menos um dia e já jogou online.",
+    ),
+    ("You already reported {}.", "Você já denunciou {}."),
     ("{} was not your friend.", "{} não era seu amigo."),
     ("Wrong profile or key.", "Perfil ou chave errados."),
     ("No cloud save yet.", "Ainda não há save na nuvem."),

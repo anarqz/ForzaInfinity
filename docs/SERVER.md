@@ -108,9 +108,54 @@ mundo, e nunca vai para o log.
   most one upload every 30 s per address after a burst of 5.
 - Rates per address (token buckets): game traffic, account calls, account creation (3 an
   hour), sign-ins (slow on purpose).
-- Storefront: 100 shared files per player; a file goes after reports from 3 different players.
+- Storefront: 100 shared files per player; after reports from 3 different real players a file
+  leaves the storefront and waits for moderation (`fh2-server moderation files`).
 - Profile syncs are checked for impossible growth (credits, XP, level, top speed, race times);
   a refused sync is not stored and counts as a strike on the profile.
+
+## Only the game's own cars
+
+Every request of the hook (fh2online.46 and later) carries `X-Fh2-CarDb`, the SHA-256 of the
+player's `media/stripped/gamedbRC.slt`. An account whose header is missing, says `changed` (the
+file changed while the game ran) or names another file is refused everything but `/info`,
+`/stats` and deleting itself: the game plays offline and INFINITY says why. The accepted hash is
+the server's own `--gamedb` file; `--cardb-allow <sha-256>` adds others, `--cardb-gate off` turns
+the check off. The header is only as honest as the client: it keeps modified databases out of the
+official hook, the profile gates and the players' reports are for the rest.
+
+## Reports and moderation
+
+PLAYER ACTIONS › REPORT PLAYER (on a leaderboard, a club or the friends list) sends
+`POST /infinity/v1/report {xuid}`: a player reports another once, 20 a day; only an account at
+least a day old that has played online (its profile synced) may report. When five
+different players reported an account, `accounts.flagged` (and `flagged_at`) is set. Nobody is
+banned by reports; the moderator (a person, or an agent they run) decides, on the server's
+machine:
+
+```sh
+fh2-server moderation --root /opt/infinity list            # flagged accounts, oldest first (JSON)
+fh2-server moderation --root /opt/infinity show XUID       # reports, records, profile, garage, gates, log
+fh2-server moderation --root /opt/infinity clear XUID why  # nothing wrong: the flag and reports go
+fh2-server moderation --root /opt/infinity reset XUID why  # cheating: progress back to a new profile's
+```
+
+A reset deletes the account's scores, ghosts, drivatar, XP, transactions and synced profile and
+garage, and makes its cloud save the starting save (`server/templates/starter-<car>.bundle`) of
+the starter car it chose at the beginning, with 0 credits. Liveries and shared creations stay.
+The profile gates start again from the reset's numbers, uploads are refused until the game has
+downloaded the reset save, and INFINITY tells the player. Everything is in `moderation_log`.
+
+Shared files (liveries, vinyl groups, tunes) reported with the game's own Storefront › Report:
+
+```sh
+fh2-server moderation --root /opt/infinity files                       # the queue
+fh2-server moderation --root /opt/infinity file ID [--preview-only]    # details (the preview PNG as base64)
+fh2-server moderation --root /opt/infinity file-keep ID why            # back on the storefront
+fh2-server moderation --root /opt/infinity file-delete ID why          # gone for good
+```
+
+`infra/moderation.sh` runs all of these on the public server (`preview ID OUT` saves the image);
+`.claude/skills/fh2-moderation` and `.claude/skills/fh2-news` teach Claude to use them.
 
 ## Privacy
 
