@@ -62,6 +62,11 @@
 //!     range, NetworkName length, ConsoleSynced's server vars stripped, a size cap per router),
 //!     car positions and event floats checked (nerd::car_ok, car_event_ok). Everything else is
 //!     read only to get past it.
+//!   - Car states (carstate.rs: the ExtraOptions headlights and roof the game does not send): a
+//!     private STUN indication, never NerdCore. Taken from a synced peer's own address with its
+//!     own XUID, or from loopback for the loopback peer of that XUID (the host's hook), one per
+//!     50 ms at most, values in range; passed on (on a change and every second) only to peers
+//!     whose hook has spoken one, so never into a game socket.
 //!   - Handshake: our OpenConnectionResponse carries a random attempt per peer, which the
 //!     console's ResponseAck must echo before it counts as connected (a spoofed source address
 //!     never sees it). Until then the peer gets only handshake replies, never more bytes than
@@ -97,6 +102,7 @@ use std::{
 
 use crate::{
     bits::{Bits, Reader},
+    carstate,
     nat::Nat,
     nerd::{self, Car, CarEvent, Handle, Header, Msg, ObjectDelete, ObjectMsg, OpenResponse, ReadError},
     net,
@@ -135,6 +141,10 @@ const ALLOW_TTL: Duration = Duration::from_secs(600);
 const REFUSAL_LOG_EVERY: Duration = Duration::from_secs(60);
 /// The longest stdin command line (main.rs cuts there) and log line.
 pub const COMMAND_LINE_MAX: usize = 256;
+/// carstate.rs: a player's state goes to the others when it changes and again this often (a lost
+/// packet, a player who came later); and one indication per peer this often at most.
+const CARSTATE_RESEND: Duration = Duration::from_secs(1);
+const CARSTATE_EVERY: Duration = Duration::from_millis(50);
 const LOG_LINE_MAX: usize = 512;
 /// How often what waits in a peer's queue goes out, and how much each time.
 const PACE_EVERY: Duration = Duration::from_millis(20);
@@ -412,6 +422,13 @@ struct Peer {
     queue_bits: usize,
     /// It is to be dropped, and why (set where dropping at once would move other peers).
     doom: Option<String>,
+    /// carstate.rs: what ExtraOptions set on its car (once it said), its car's last position,
+    /// where its hook listens (its own address, or the host's loopback socket), and when it last
+    /// said something (one every CARSTATE_EVERY at most).
+    car_state: Option<carstate::State>,
+    car_pos: Option<[f32; 3]>,
+    car_hook: Option<SocketAddr>,
+    car_state_at: Option<Instant>,
 }
 
 impl Peer {
@@ -446,6 +463,10 @@ impl Peer {
             queue: VecDeque::new(),
             queue_bits: 0,
             doom: None,
+            car_state: None,
+            car_pos: None,
+            car_hook: None,
+            car_state_at: None,
         }
     }
 
@@ -554,6 +575,7 @@ pub struct Relay {
     payload_seen: [usize; 16],
     /// STUN, UPnP and punches (nat.rs); None: not used (the tests).
     nat: Option<Nat>,
+    last_car_states: Instant,
 }
 
 impl Relay {
@@ -582,6 +604,7 @@ impl Relay {
             panics_logged: Vec::new(),
             payload_seen: [0; 16],
             nat: None,
+            last_car_states: now,
         }
     }
 
@@ -1178,7 +1201,12 @@ impl Relay {
     /// One packet. A packet whose handling panics is dropped (logged once per address); the
     /// relay goes on.
     pub fn handle(&mut self, data: &[u8], addr: SocketAddr) {
-        // STUN (answers to our requests, players' punches) never reaches the NerdCore parser
+        // the hooks' car states (carstate.rs), then STUN (answers to our requests, players'
+        // punches): neither reaches the NerdCore parser
+        if carstate::is_carstate(data) {
+            self.on_car_state(data, addr, Instant::now());
+            return;
+        }
         if let Some(nat) = &mut self.nat
             && nat.on_packet(&self.sock, data, addr, Instant::now())
         {
@@ -1191,6 +1219,54 @@ impl Relay {
             }
         }
         self.drop_doomed();
+    }
+
+    /// A hook's car state (carstate.rs). From a peer's own address (the joining player's proxy)
+    /// it must carry that peer's XUID; from another loopback address it is the host's hook,
+    /// whose game is the loopback peer of that XUID, and that address becomes where the host's
+    /// hook hears the others. Anything else is dropped, as is more than one per CARSTATE_EVERY.
+    fn on_car_state(&mut self, data: &[u8], addr: SocketAddr, now: Instant) {
+        let Some(up) = carstate::parse_up(data) else { return };
+        let pi = match self.find(addr) {
+            Some(pi) if self.peers[pi].xuid == up.xuid => pi,
+            Some(_) => return,
+            None if norm_ip(addr.ip()).is_loopback() => {
+                match self.peers.iter().position(|p| p.synced && p.ip().is_loopback() && p.xuid == up.xuid) {
+                    Some(pi) => pi,
+                    None => return,
+                }
+            }
+            None => return,
+        };
+        let peer = &mut self.peers[pi];
+        if !peer.synced || peer.car_state_at.is_some_and(|t| now.duration_since(t) < CARSTATE_EVERY) {
+            return;
+        }
+        peer.car_state_at = Some(now);
+        peer.last_seen = now;
+        let first = peer.car_hook.is_none();
+        peer.car_hook = Some(addr);
+        let changed = peer.car_state.map(|s| (s.lights, s.roof)) != Some((up.state.lights, up.state.roof));
+        peer.car_state = Some(up.state);
+        if first {
+            let index = peer.index;
+            self.log(&format!("peer {index}: o hook dele manda faróis e capota ({})", net::show(&addr)));
+        }
+        if changed {
+            self.pass_car_state(pi);
+        }
+    }
+
+    /// Peer `pi`'s car state to every other synced peer whose hook listens for it.
+    fn pass_car_state(&mut self, pi: usize) {
+        let from = &self.peers[pi];
+        let Some(state) = from.car_state else { return };
+        let packet = carstate::down(&carstate::Down { state, index: from.index, xuid: from.xuid, position: from.car_pos });
+        for (i, p) in self.peers.iter().enumerate() {
+            if i != pi && p.synced && let Some(to) = p.car_hook {
+                Self::send_raw(&self.sock, to, &packet);
+            }
+        }
     }
 
     fn handle_packet(&mut self, data: &[u8], addr: SocketAddr) {
@@ -1369,6 +1445,9 @@ impl Relay {
                         continue;
                     }
                     self.peers[pi].cars += 1;
+                    if let Some(p) = nerd::car_position(&c.body) {
+                        self.peers[pi].car_pos = Some(p);
+                    }
                     if let Some(delay) = self.settings.mirror {
                         if self.mirror_queue.len() >= MIRROR_QUEUE_MAX {
                             self.mirror_queue.pop_front();
@@ -1635,6 +1714,14 @@ impl Relay {
             let Some((_, addr, m)) = self.mirror_queue.pop_front() else { break };
             if let Some(pi) = self.find(addr) {
                 self.send(pi, vec![m], false);
+            }
+        }
+        if now.duration_since(self.last_car_states) >= CARSTATE_RESEND {
+            self.last_car_states = now;
+            for pi in 0..self.peers.len() {
+                if self.peers[pi].car_state.is_some() {
+                    self.pass_car_state(pi);
+                }
             }
         }
         if now.duration_since(self.last_resend_scan) >= Duration::from_millis(50) {

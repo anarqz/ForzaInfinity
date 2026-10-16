@@ -3,6 +3,7 @@
 //! Turn 10's Xbox Live Compute servers did. std only.
 
 pub mod bits;
+pub mod carstate;
 pub mod config;
 pub mod nerd;
 pub mod nat;

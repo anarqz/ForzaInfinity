@@ -13,6 +13,7 @@ use std::{
 
 use dedicated_server::{
     bits::{Bits, Reader},
+    carstate,
     nerd::{self, Acks, Car, CarEvent, Handle, Header, Msg, ObjectMsg, OpenConnection, OpenResponse},
     relay::{Relay, Settings},
 };
@@ -72,6 +73,8 @@ struct Client {
     bytes_in: usize,
     /// Never ack (a console that stopped acking).
     no_acks: bool,
+    /// The car states the relay passed to this client (carstate.rs), as they came.
+    car_states: Vec<carstate::Down>,
 }
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -93,6 +96,7 @@ impl Client {
             bytes_out: 0,
             bytes_in: 0,
             no_acks: false,
+            car_states: Vec::new(),
         }
     }
 
@@ -126,6 +130,10 @@ impl Client {
         let (n, _) = self.sock.recv_from(&mut buf).ok()?;
         self.bytes_in += n;
         let data = &buf[..n];
+        if carstate::is_carstate(data) {
+            self.car_states.push(carstate::parse_down(data).expect("a car state the relay passes on"));
+            return Some((Header::parse(&nerd::packet(&[], nerd::NO_SEQ, 0, 0)).unwrap(), Vec::new()));
+        }
         let h = Header::parse(data).expect("header");
         assert_eq!(h.size as usize, n, "size field");
         let mut r = Reader::at(data, nerd::HEADER_LEN * 8);
@@ -869,3 +877,81 @@ fn history_and_snapshot_are_capped() {
     }
     b.wait_for("delete of A's objects", |m| is_delete(m, 1, Handle::Relay(1, 1)));
 }
+
+/// Reads (and pings) for `d`, for the car states to come in; `other` is kept alive meanwhile.
+fn pump2(c: &mut Client, other: &mut Client, d: Duration) {
+    let end = Instant::now() + d;
+    while Instant::now() < end {
+        c.keepalive();
+        other.keepalive();
+        if let Some((_, msgs)) = c.recv() {
+            c.inbox.extend(msgs);
+        }
+    }
+}
+
+#[test]
+fn car_states_reach_the_hooks_that_speak_them() {
+    let server = Server::start(settings());
+    let mut a = Client::new(&server, 0x0009_0191_ae81_7001);
+    let mut b = Client::new(&server, 0x0009_0191_ae81_7002);
+    a.join();
+    b.join();
+    // A drives: the relay keeps its car's position
+    a.send_unsequenced(&[Msg::Car(Car { handle: Handle::Own(3), body: car_body(10) })]);
+    b.wait_for("A's car", |m| matches!(m, Msg::Car(_)));
+    // A switches its headlights off; B has not spoken yet, so it hears nothing
+    let off = carstate::State { lights: carstate::LIGHTS_OFF, roof: 0, seq: 1 };
+    a.raw(&carstate::up(off, a.xuid));
+    pump2(&mut b, &mut a, Duration::from_millis(300));
+    assert!(b.car_states.is_empty(), "a peer whose hook never spoke gets nothing");
+    // B's hook speaks (the game's own lights): from then on it hears A
+    b.raw(&carstate::up(carstate::State::default(), b.xuid));
+    pump2(&mut b, &mut a, Duration::from_millis(1300));
+    let from_a = b.car_states.iter().find(|d| d.xuid == a.xuid).expect("A's state, resent within a second");
+    assert_eq!((from_a.state.lights, from_a.state.roof), (carstate::LIGHTS_OFF, 0));
+    assert_eq!(from_a.position, Some([1510.0, 30.0, -2200.0]), "with A's car position");
+    // a change goes at once; one in the same 50 ms is dropped
+    b.car_states.clear();
+    std::thread::sleep(Duration::from_millis(60));
+    a.raw(&carstate::up(carstate::State { lights: carstate::LIGHTS_ON, roof: 1, seq: 2 }, a.xuid));
+    a.raw(&carstate::up(carstate::State { lights: carstate::LIGHTS_GAME, roof: 0, seq: 3 }, a.xuid));
+    pump2(&mut b, &mut a, Duration::from_millis(200));
+    assert_eq!(b.car_states.first().map(|d| (d.state.lights, d.state.roof, d.state.seq)), Some((carstate::LIGHTS_ON, 1, 2)));
+    // someone else's XUID from A's address is not taken (a sender that is no peer's address is
+    // taken only from loopback, as the host's hook: the_hosts_hook_speaks_from_its_own_loopback_socket)
+    b.car_states.clear();
+    std::thread::sleep(Duration::from_millis(60));
+    a.raw(&carstate::up(off, 0x0009_0000_0000_0042));
+    pump2(&mut b, &mut a, Duration::from_millis(200));
+    assert!(b.car_states.iter().all(|d| d.state.lights == carstate::LIGHTS_ON), "{:?}", b.car_states);
+}
+
+#[test]
+fn the_hosts_hook_speaks_from_its_own_loopback_socket() {
+    let server = Server::start(settings());
+    // the host's game is the loopback peer A; its hook has a socket of its own
+    let mut a = Client::new(&server, 0x0009_0191_ae81_7003);
+    let mut b = Client::new(&server, 0x0009_0191_ae81_7004);
+    a.join();
+    b.join();
+    let hook = UdpSocket::bind("127.0.0.1:0").unwrap();
+    hook.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+    hook.send_to(&carstate::up(carstate::State::default(), a.xuid), server.addr).unwrap();
+    // B speaks and switches its lights on: the host's hook socket hears it, A's game socket does not
+    b.raw(&carstate::up(carstate::State { lights: carstate::LIGHTS_ON, roof: 0, seq: 1 }, b.xuid));
+    let mut heard = None;
+    let end = Instant::now() + Duration::from_secs(2);
+    let mut buf = [0u8; 256];
+    while heard.is_none() && Instant::now() < end {
+        a.keepalive();
+        if let Ok((n, _)) = hook.recv_from(&mut buf) {
+            heard = carstate::parse_down(&buf[..n]);
+        }
+    }
+    let d = heard.expect("the host's hook hears B");
+    assert_eq!((d.xuid, d.state.lights), (b.xuid, carstate::LIGHTS_ON));
+    pump2(&mut a, &mut b, Duration::from_millis(300));
+    assert!(a.car_states.is_empty(), "the host's game socket never gets one");
+}
+

@@ -514,6 +514,19 @@ pub fn car_event_ok(id: u8, body: &Bits) -> bool {
     (0..n).all(|_| r.bits(32).is_ok_and(|v| float_ok(v as u32, FLOAT_MAX)))
 }
 
+/// The position of a car (CarPredictionFull's first field), when its body is one.
+pub fn car_position(body: &Bits) -> Option<[f32; 3]> {
+    if !car_ok(body) {
+        return None;
+    }
+    let mut r = Reader::new(body.as_bytes());
+    let mut p = [0f32; 3];
+    for c in &mut p {
+        *c = f32::from_bits(r.bits(32).ok()? as u32);
+    }
+    Some(p)
+}
+
 /// A CarPredictionFull body: its first field is the position, a vec3 (14181FFA0, from
 /// 141822100), whose coordinates must be finite and within POSITION_MAX. The rest are quantized
 /// fixed-width fields (u16s and u64s), any value of which is in range.
