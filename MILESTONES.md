@@ -91,7 +91,7 @@ Só depois da V1. Levantamento de 2026-10-14 (ONLINE ROAD TRIP mostra "UNABLE TO
   - ✅ **F0 (15/10/2026):** PC e Deck (Azimuth 0.9.9) no mesmo mundo, na rede local, dirigindo juntos, inclusive com pintura em camadas. Branch `freeroam` (hook `azimuth_freeroam.c` e `azimuth_livery.c`, `server/src/freeroam.rs` com SmartMatch, `dedicated/`).
   - ✅ **F1 (15/10/2026):** hospedar pelo jogo: HOSPEDAR MUNDO (INFINITY, mundo público) e a SESSÃO ONLINE PARTICULAR do próprio jogo (mundo fora da lista), com o `dedicated_server.exe` num Job Object; `server.cfg`; `/infinity/v1/worlds`; HORIZON SOLO encerra o mundo.
   - ⬜ **F2:** JOIN WORLD nas ações do jogador, senha, só amigos.
-  - ⬜ **F3:** conexão direta pela internet (STUN, punching, UPnP), diagnóstico e guia.
+  - ✅ **F3:** conexão direta pela internet (STUN, punching, UPnP), diagnóstico e guia. **Provado em 16/10/2026:** o SDECK no 5G entrou no mundo do Windows atrás do NAT de casa (sem UPnP), sem abrir porta. Relay `dedicated/src/{stun,nat,upnp}.rs`, servidor `worlds/punch`, hook `azimuth_proxy.c` (proxy local, que também é o filtro de origem), TESTAR CONEXÃO com o NAT e o guia `docs/FREEROAM.md`.
   - ⬜ **F4:** corridas entre jogadores e clima compartilhado (engenharia reversa nova).
 
 ---
