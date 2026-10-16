@@ -17,7 +17,7 @@ $out = Join-Path $desktop 'ForzaInfinity-Report.txt'
 
 function Clean([string]$path, [int]$last = 0) {
     if (-not (Test-Path $path)) { return @('(missing)') }
-    $lines = Get-Content $path -ErrorAction SilentlyContinue | ForEach-Object { $_ -replace '(?i)^(\s*(Token|Key|WebKey)\s*=).*', '$1 (removed)' }
+    $lines = Get-Content $path -ErrorAction SilentlyContinue | ForEach-Object { $_ -replace '(?i)^(\s*(Token|Key|WebKey|Password)\s*=).*', '$1 (removed)' }
     if ($last -gt 0) { $lines | Select-Object -Last $last } else { $lines }
 }
 function Stamp([string]$path) { if (Test-Path $path) { (Get-Item $path).LastWriteTime.ToString('yyyy-MM-dd HH:mm') } else { '' } }
@@ -52,6 +52,12 @@ $report.Add(''); $report.Add('===== FH2_ExtraOptions.ini =====')
 Clean (Join-Path $bin 'FH2_ExtraOptions.ini') | ForEach-Object { $report.Add($_) }
 $report.Add(''); $report.Add('===== FH2Online_Accounts.ini =====')
 Clean (Join-Path $bin 'FH2Online_Accounts.ini') | ForEach-Object { $report.Add($_) }
+$report.Add(''); $report.Add('===== Free roam world: dedicated_server.net (what the last hosted world found about the network) =====')
+Clean (Join-Path $bin 'dedicated_server.net') | ForEach-Object { $report.Add($_) }
+$report.Add(''); $report.Add('===== Free roam world: server.cfg =====')
+Clean (Join-Path $bin 'server.cfg') | ForEach-Object { $report.Add($_) }
+$report.Add(''); $report.Add('===== Free roam world: dedicated_server.log (last 300 lines) =====')
+Clean (Join-Path $bin 'dedicated_server.log') 300 | ForEach-Object { $report.Add($_) }
 $report.Add(''); $report.Add('===== Last requests (FH2_Network.jsonl: method, address, result) =====')
 $network = Join-Path $bin 'FH2_Network.jsonl'
 if (Test-Path $network) {
