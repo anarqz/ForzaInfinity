@@ -957,7 +957,23 @@ pub const MSG_REQUEST_RACE: u8 = 38;
 pub const MSG_STARTING_GRID: u8 = 39;
 pub const MSG_START_RACE: u8 = 40;
 pub const MSG_READY_REQUEST: u8 = 41;
+pub const MSG_IN_PROGRESS_SCORE: u8 = 43;
+pub const MSG_LAP_SCORE: u8 = 44;
 pub const MSG_SCORE_KEYFRAME: u8 = 45;
+
+/// A race score message (43 InProgressScoreUpdate, 44 LapScore, 45 ScoreKeyframe: the sender's
+/// car handle (7-bit id) and the score) with the car's handle in the relay's form, for the other
+/// participants (their HUD's positions and results come from these, as the server passed them).
+/// None if the handle is not the sender's own.
+pub fn score_for_others(body: &Bits, sender: u8) -> Option<Bits> {
+    let mut r = Reader::new(body.as_bytes());
+    let Handle::Own(id) = Handle::read(&mut r, 7).ok()? else { return None };
+    let rest = r.take(body.len().checked_sub(r.pos())?).ok()?;
+    let mut out = Bits::new();
+    Handle::Relay(id, sender).write(&mut out, 7);
+    out.append(&rest);
+    Some(out)
+}
 
 /// MsgStartingGrid (39; the lobby router 141809420 reads the SessionHost handle with 1418092B0,
 /// then 141824040): u4 count and the participants' handles (7-bit ids) in grid order. The
@@ -1008,6 +1024,11 @@ fn read_bytes(r: &mut Reader, n: usize) -> BitResult<Vec<u8>> {
 /// less than 128.
 pub fn seq_next(s: u8) -> u8 {
     ((s as u16 + 1) % 255) as u8
+}
+
+/// `s` plus `n` in seq space (mod 255).
+pub fn seq_add(s: u8, n: u8) -> u8 {
+    ((s as u16 + n as u16) % 255) as u8
 }
 
 pub fn seq_newer(a: u8, b: u8) -> bool {
