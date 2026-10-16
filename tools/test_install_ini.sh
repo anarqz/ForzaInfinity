@@ -21,9 +21,9 @@ install_into() { # <azimuth folder>
     if [ -n "$PS" ]; then "$PS" -NoProfile -File "$STAGE/install.ps1" -Folder "$1" -Server "$SERVER" -Quiet >/dev/null
     else "$STAGE/install.sh" "$1" "$SERVER" >/dev/null; fi
 }
-fake_azimuth() { # <name> -> folder, with azimuth.exe saying 0.9.9
+fake_azimuth() { # <name> -> folder, with azimuth.exe saying 0.9.10 (UTF-16, two digits)
     local dir="$WORK/$1"; mkdir -p "$dir/data/bin"
-    printf '0\0.\0009\0.\0009\0' > "$dir/azimuth.exe"; printf 'stock' > "$dir/data/bin/azimuth-tls.dll"
+    printf '0\x00.\x009\x00.\x001\x000\x00' > "$dir/azimuth.exe"; printf 'stock' > "$dir/data/bin/azimuth-tls.dll"
     echo "$dir"
 }
 value() { # <ini> <section> <key>: the key's values in that section, one per line
@@ -58,7 +58,7 @@ cp "$ini" "$WORK/player.orig"
 install_into "$dir"
 expect "$ini" General Enabled 1; expect "$ini" Frontend SkipIntro 0; expect "$ini" Frontend GetInCarFromPauseMenu 1
 expect "$ini" Autodrive Enabled 0; expect "$ini" Livery IntermediateMSAA 2; expect "$ini" Livery Enable4K 0
-expect "$ini" Autodrive InEvents 1; expect "$ini" Frontend EnableClubs 1; expect "$ini" Compatibility DisableAzimuthSaveChecksums 0
+expect "$ini" Autodrive InEvents 0; expect "$ini" Frontend EnableClubs 1; expect "$ini" Compatibility DisableAzimuthSaveChecksums 0
 expect "$ini" Network Mode Proxy; expect "$ini" Network Server "$SERVER"
 [ -z "$(value "$ini" Global Enabled)" ] || { echo "FAIL player: [Global] added beside [General]" >&2; exit 1; }
 cmp -s "$ini.pre-infinity" "$WORK/player.orig" || { echo "FAIL player: backup differs" >&2; exit 1; }

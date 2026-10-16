@@ -1,13 +1,13 @@
 # Installing ForzaInfinity
 
 ForzaInfinity brings Forza Horizon 2's online services back for the PC version that runs on
-**Azimuth 0.9.9 or 0.9.7**: friends, car clubs, rivals and ghost races, leaderboards, shared liveries
+**Azimuth 0.9.10, 0.9.9 or 0.9.7**: friends, car clubs, rivals and ghost races, leaderboards, shared liveries
 and tunes, and a cloud save. It installs one file into Azimuth (`data/bin/azimuth-tls.dll`)
 and keeps the original as a backup; the game is never modified on disk.
 
 ## Before you start
 
-- Your own copy of Forza Horizon 2 running on **Azimuth 0.9.9** (the latest) or **0.9.7**, on
+- Your own copy of Forza Horizon 2 running on **Azimuth 0.9.10** (the latest), **0.9.9** or **0.9.7**, on
   Windows or on Linux / Steam Deck through Proton. **0.9.8 is not supported**: the hook only goes
   online on the Azimuth builds it was made for, so on another one the game plays offline. The
   installers read the version from `azimuth.exe` and stop on another one (`FORCE=1 ./install.sh`
@@ -16,7 +16,8 @@ and keeps the original as a backup; the game is never modified on disk.
   `azimuth-tls.dll` back (the game then plays offline); the installer keeps that new original as
   the backup and puts ForzaInfinity back, with your server and settings as they were. Azimuth
   0.9.9 also moves the saves to `data/titles/1A96545B/saves` on its first start (keeping a copy
-  in `data/saves-backup-…`); the cloud save follows them there.
+  in `data/saves-backup-…`); the cloud save follows them there. 0.9.10 keeps them where 0.9.9
+  put them.
 - A ForzaInfinity server. The installer suggests the public one, `https://infinity.anarqz.dev`
   (150 players at a time, then a waiting line). For another server, use the address its owner
   gives you (`https://host` or `host:port`); to run one yourself, see [SERVER.md](SERVER.md).
@@ -105,7 +106,7 @@ Azimuth keeps the saves in a folder under `<Azimuth>/data`, which depends on its
 
 | Azimuth | Saves folder |
 |---|---|
-| 0.9.9 | `data/titles/1A96545B/saves/player-1` |
+| 0.9.9 and 0.9.10 | `data/titles/1A96545B/saves/player-1` |
 | 0.9.7 | `data/saves/player-1` |
 
 On 0.9.9, `data/saves` and `data/saves-backup-…` are the copies left from before 0.9.9 moved

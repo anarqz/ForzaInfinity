@@ -9,8 +9,8 @@
 # another one anyway (the game then plays offline). Updating Azimuth puts its own
 # azimuth-tls.dll back: run the installer again after each update.
 set -euo pipefail
-SUPPORTED_AZIMUTH='0.9.7 0.9.9'
-SUPPORTED_TEXT='0.9.9 (the latest) or 0.9.7'
+SUPPORTED_AZIMUTH='0.9.7 0.9.9 0.9.10'
+SUPPORTED_TEXT='0.9.10 (the latest), 0.9.9 or 0.9.7'
 DEFAULT_SERVER='__DEFAULT_SERVER__'
 RELEASE='https://github.com/anarqz/ForzaInfinity/releases/latest/download'
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || pwd)"
@@ -50,7 +50,7 @@ if ps -eo args | grep -qi '[a]zimuth\.exe'; then fail "Close Forza Horizon 2 (Az
 # the Azimuth version: the UTF-16 "0.x.y" string in azimuth.exe (grep -P, else python3)
 azimuth_version() {
     local exe="$1/azimuth.exe" found
-    found="$(LC_ALL=C grep -aoP '(?<![0-9.]\x00)0\x00\.\x00[0-9]+\x00\.\x00[0-9]+\x00(?!\.)' "$exe" 2>/dev/null | tr -d '\0' | sort | uniq -c | sort -rn | awk 'NR == 1 { print $2 }')" || true
+    found="$(LC_ALL=C grep -aoP '(?<![0-9.]\x00)0\x00\.\x00(?:[0-9]\x00)+\.\x00(?:[0-9]\x00)+(?![0-9.]\x00)' "$exe" 2>/dev/null | tr -d '\0' | sort | uniq -c | sort -rn | awk 'NR == 1 { print $2 }')" || true
     if [ -z "$found" ] && command -v python3 >/dev/null 2>&1; then
         found="$(python3 -c 'import re, sys, collections; t = open(sys.argv[1], "rb").read().decode("utf-16-le", "ignore"); c = collections.Counter(re.findall(r"(?<![0-9.])0\.[0-9]+\.[0-9]+(?![0-9.])", t)); print(c.most_common(1)[0][0] if c else "")' "$exe" 2>/dev/null)" || true
     fi

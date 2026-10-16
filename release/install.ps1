@@ -7,8 +7,8 @@
 # another one anyway (the game then plays offline). Updating Azimuth puts its own
 # azimuth-tls.dll back: run the installer again after each update.
 param([string]$Folder = '', [string]$Server = '', [switch]$Quiet, [switch]$Force)
-$SupportedAzimuth = @('0.9.7', '0.9.9')
-$SupportedText = '0.9.9 (the latest) or 0.9.7'
+$SupportedAzimuth = @('0.9.7', '0.9.9', '0.9.10')
+$SupportedText = '0.9.10 (the latest), 0.9.9 or 0.9.7'
 $ErrorActionPreference = 'Stop'
 $DefaultServer = '__DEFAULT_SERVER__'
 $Release = 'https://github.com/anarqz/ForzaInfinity/releases/latest/download'

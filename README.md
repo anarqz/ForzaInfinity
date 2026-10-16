@@ -1,9 +1,9 @@
 # ForzaInfinity
 
-Forza Horizon 2's online services, back for the PC version running on **Azimuth 0.9.9 or 0.9.7**
+Forza Horizon 2's online services, back for the PC version running on **Azimuth 0.9.10, 0.9.9 or 0.9.7**
 (Windows, or Linux and the Steam Deck through Proton).
 
-> **Requires Azimuth 0.9.9 (the latest) or 0.9.7.** 0.9.8 is not supported: on it the game plays
+> **Requires Azimuth 0.9.10 (the latest), 0.9.9 or 0.9.7.** 0.9.8 is not supported: on it the game plays
 > offline. The installers check the version. Updating Azimuth puts its own `azimuth-tls.dll`
 > back, so run the installer again after each update.
 
