@@ -41,6 +41,8 @@ pub const PENDING_MODERATION: i64 = 1;
 pub const PENDING_SEASON: i64 = 2;
 /// A new profile's first save (no notice: it is how every profile starts).
 pub const PENDING_NEW: i64 = 3;
+/// An upload refused by the save gates (check_upload): the server's save wins again.
+pub const PENDING_REFUSED: i64 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResetKind {
@@ -334,6 +336,52 @@ pub fn reset_save(bundle: &[u8], revision: u64) -> Result<(Vec<u8>, String, Kept
     Ok((packed, crate::sha256::hex(&commit), kept))
 }
 
+/// What the save gates look at: ProfileData's credits, XP (WristbandLevel) and level, and the
+/// cars in Career_Garage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveProgress {
+    pub credits: i64,
+    pub xp: i64,
+    pub level: i64,
+    pub cars: i64,
+}
+
+pub fn save_progress(bundle: &[u8]) -> Option<SaveProgress> {
+    let profile = bundle_file(bundle, "data/ProfileData")?;
+    let db = bundle_file(bundle, "data/PlayerDatabase")?;
+    let sqlite = container_sqlite(&db)?;
+    let path = temp_path("progress");
+    std::fs::write(&path, sqlite).ok()?;
+    let cars = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .ok()
+        .and_then(|c| c.query_row("SELECT COUNT(*) FROM Career_Garage", [], |r| r.get::<_, i64>(0)).ok());
+    let _ = std::fs::remove_file(&path);
+    Some(SaveProgress {
+        credits: profile_int(&profile, "Credits")? as i64,
+        xp: profile_int(&profile, "WristbandLevel")? as i64,
+        level: profile_int(&profile, "Level")? as i64,
+        cars: cars?,
+    })
+}
+
+/// The save gates: an upload's progress against the last save the server took (`previous`, saved
+/// at `then`), with forza/gates.rs's allowances per hour. Err: why it is refused.
+pub fn check_upload(previous: &SaveProgress, then: i64, new: &SaveProgress, now: i64) -> Result<(), String> {
+    use crate::forza::gates;
+    if new.credits < 0 || new.credits > gates::MAX_CREDITS || new.xp < 0 || new.xp > gates::MAX_XP || new.level < 0 || new.level > gates::MAX_LEVEL {
+        return Err("numbers beyond the game's limits".into());
+    }
+    let baseline = super::integrity::Baseline { credits: previous.credits, xp: previous.xp, level: previous.level, winnings: 0, synced: then };
+    let p = gates::Progress { credits: new.credits, xp: new.xp, level: new.level, winnings: 0, top_speed: 0.0 };
+    gates::check_growth(Some(&baseline), &p, now, false)?;
+    let hours = ((now - then).max(0) as f64 / 3_600_000.0).min(24.0 * 30.0);
+    let allowed = gates::CARS_BASE + (gates::CARS_PER_HOUR as f64 * hours) as i64;
+    if new.cars - previous.cars > allowed {
+        return Err(format!("{} -> {} cars in {hours:.1} h", previous.cars, new.cars));
+    }
+    Ok(())
+}
+
 impl Store {
     /// Resets one account (see above). Returns what was done, as JSON.
     pub fn reset_account(&self, xuid: u64, kind: ResetKind, note: &str) -> Result<Value, String> {
@@ -422,6 +470,15 @@ impl Store {
         match reset_save(bundle, revision) {
             Ok((b, c, kept)) => {
                 println!("  save: a new profile ({xuid}) starts from its offline career, car {} kept", kept.car);
+                // the gates start from the season's 0 like everyone's
+                self.with(|db| {
+                    db.execute(
+                        "INSERT INTO integrity (xuid, credits, xp, level, winnings, synced, cars, tables_synced)
+                         VALUES (?1, 0, 0, 0, 0, ?2, 1, ?2)
+                         ON CONFLICT (xuid) DO UPDATE SET credits = 0, xp = 0, level = 0, winnings = 0, synced = ?2, cars = 1, tables_synced = ?2",
+                        params![xuid as i64, unix_ms()],
+                    )
+                });
                 Some((b, c))
             }
             Err(e) => {
@@ -574,6 +631,26 @@ mod tests {
         let (again, _, k2) = reset_save(&bundle, 7).unwrap();
         assert_eq!(k2.cars_removed, 0);
         assert_eq!(query(&get(&unpack(&again).unwrap(), "data/PlayerDatabase"), "SELECT CarId FROM Career_Garage"), vec![461]);
+    }
+
+    #[test]
+    fn save_gates() {
+        let reset = reset_save(&rich_save(), 6).unwrap().0;
+        let start = save_progress(&reset).unwrap();
+        assert_eq!(start, SaveProgress { credits: 0, xp: 0, level: 0, cars: 1 });
+        let rich = save_progress(&rich_save()).unwrap();
+        assert_eq!((rich.credits, rich.xp, rich.level, rich.cars), (987_654, 250_000, 12, 4));
+        let hour = 3_600_000;
+        // the old (or an edited) progress right after a reset: refused
+        assert!(check_upload(&start, 0, &rich, 60_000).is_err());
+        // a session of play: fine
+        let played = SaveProgress { credits: 40_000, xp: 30_000, level: 2, cars: 2 };
+        assert!(check_upload(&start, 0, &played, hour).is_ok());
+        // too many cars at once
+        assert!(check_upload(&start, 0, &SaveProgress { cars: 40, ..played }, hour).is_err());
+        // days of play add up
+        assert!(check_upload(&start, 0, &SaveProgress { credits: 900_000, xp: 250_000, level: 12, cars: 4 }, 3 * 24 * hour).is_ok());
+        assert!(check_upload(&start, 0, &SaveProgress { credits: -1, ..played }, hour).is_err());
     }
 
     #[test]

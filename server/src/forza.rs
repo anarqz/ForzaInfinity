@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use crate::{db::Store, gamedb::Catalog};
 
 mod clubs;
-mod gates;
+pub mod gates;
 mod notifications;
 mod storefront;
 pub use notifications::challenge_target;

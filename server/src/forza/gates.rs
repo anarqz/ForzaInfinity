@@ -25,17 +25,17 @@ pub const XP_REPORTED_PER_HOUR: f64 = 400_000.0;
 pub const SPEED_MARGIN: f64 = 1.3;
 pub const CARS_BASE: i64 = 10;
 pub const CARS_PER_HOUR: i64 = 20;
-/// Hours after an account is made in which its offline progress arrives as it is: the profile
-/// and the whole garage (DLC cars included, sent in parts) of the save the player brings. The
-/// hard limits still hold; growth is measured from what was taken by then.
-pub const ARRIVAL_HOURS: i64 = 3;
+/// Hours after an account is made in which its offline progress would arrive as it is. None since
+/// the season resets (db/reset.rs): every profile starts from 0 like everyone, so even its first
+/// syncs are measured from there.
+pub const ARRIVAL_HOURS: i64 = 0;
 /// Highest car id the game uses (base cars go to 2501; car packs add their own in between and
 /// above, which the base database the server reads does not list).
 const MAX_CAR_ID: i64 = 4095;
 /// Hard limits whatever the history.
-const MAX_CREDITS: i64 = 999_999_999;
-const MAX_XP: i64 = 200_000_000;
-const MAX_LEVEL: i64 = 999;
+pub const MAX_CREDITS: i64 = 999_999_999;
+pub const MAX_XP: i64 = 200_000_000;
+pub const MAX_LEVEL: i64 = 999;
 
 /// The numbers of an UpdateAll that the gates look at.
 #[derive(Debug, Clone, Copy)]
@@ -85,13 +85,13 @@ fn hours_since(then: i64, now: i64) -> f64 {
 }
 
 /// Growth since the last accepted sync, within the allowances. While the account is arriving
-/// anything within the limits is taken; a first sync after that (no baseline) is checked
-/// against a new profile's start: the starter save's credits.
+/// anything within the limits is taken; a first sync with no baseline is checked against a new
+/// season's start: 0 credits, XP and level.
 pub fn check_growth(previous: Option<&Baseline>, new: &Progress, now: i64, arriving: bool) -> Result<(), String> {
     if arriving {
         return Ok(());
     }
-    let start = Baseline { credits: 50_000, xp: new.xp.min(XP_BASE * 20), level: new.level.min(30), winnings: 0, synced: now };
+    let start = Baseline { credits: 0, xp: 0, level: 0, winnings: 0, synced: now };
     let b = previous.unwrap_or(&start);
     let hours = hours_since(b.synced, now);
     let allowed = |base: i64, per_hour: i64| base + (per_hour as f64 * hours) as i64;
@@ -195,12 +195,12 @@ mod tests {
         // a day later much more is fine
         let later = Baseline { synced: now - 24 * 3_600_000, ..base };
         assert!(check_growth(Some(&later), &p(5_000_000, 3_000_000, 30), now, false).is_ok());
-        // first sync of a new profile: near the starter save
-        assert!(check_growth(None, &p(60_000, 100_717, 6), now, false).is_ok());
-        assert!(check_growth(None, &p(5_000_000, 100_717, 6), now, false).is_err());
-        // an account bringing its offline save
-        assert!(check_growth(None, &p(5_000_000, 4_000_000, 40), now, true).is_ok());
-        assert!(arriving(Some(now - 3_600_000), now) && !arriving(Some(now - 4 * 3_600_000), now) && !arriving(None, now));
+        // a first sync with no baseline: measured from a season's start (0)
+        assert!(check_growth(None, &p(60_000, 100_717, 2), now, false).is_ok());
+        assert!(check_growth(None, &p(5_000_000, 100_717, 2), now, false).is_err());
+        assert!(check_growth(None, &p(60_000, 100_717, 6), now, false).is_err());
+        // no arrival window any more: a new account brings nothing as it is
+        assert!(!arriving(Some(now - 1), now) && !arriving(None, now));
     }
 
     #[test]
