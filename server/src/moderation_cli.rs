@@ -12,6 +12,8 @@
 //!   fh2-server moderation ... season-reset [--yes] [--only XUID] [NOTE]   the same for every account (or one: --only; no drivatar
 //!                                                       deleted); without --yes it only counts. It backs
 //!                                                       the database up first (<db>.before-season-<ms>)
+//!   fh2-server moderation ... check-saves               every account's cloud save against the save
+//!                                                       checks (db/saves.rs), read only
 //!   fh2-server moderation ... files                     shared files off the storefront after 3 reports
 //!   fh2-server moderation ... file ID [--preview-only]  one file: details, reports (--preview-only: its
 //!                                                       preview image, base64, and nothing else)
@@ -33,6 +35,7 @@ fh2-server moderation [--db FILE] [--root DIR] show XUID
 fh2-server moderation [--db FILE] [--root DIR] clear XUID [NOTE]
 fh2-server moderation [--db FILE] [--root DIR] reset XUID [NOTE]
 fh2-server moderation [--db FILE] [--root DIR] season-reset [--yes] [--only XUID] [NOTE]
+fh2-server moderation [--db FILE] [--root DIR] check-saves
 fh2-server moderation [--db FILE] [--root DIR] files
 fh2-server moderation [--db FILE] [--root DIR] file ID [--preview-only]
 fh2-server moderation [--db FILE] [--root DIR] file-keep ID [NOTE]
@@ -127,6 +130,17 @@ pub fn run(args: Vec<String>) {
                 }
             }
             print(json!({ "reset": done, "failed": failed, "backup": backup.display().to_string() }));
+        }
+        Some("check-saves") => {
+            let (mut good, mut bad) = (0, Vec::new());
+            for x in store.all_accounts() {
+                let Some(save) = store.save_data(x) else { continue };
+                match crate::db::saves::check_bundle(&save).and_then(|_| crate::db::saves::check_contents(&save)) {
+                    Ok(()) => good += 1,
+                    Err(e) => bad.push(json!({ "xuid": x.to_string(), "error": e, "bytes": save.len() })),
+                }
+            }
+            print(json!({ "pass": good, "fail": bad }));
         }
         Some("files") => print(json!({ "underReview": store.files_under_review() })),
         Some("file") => {
