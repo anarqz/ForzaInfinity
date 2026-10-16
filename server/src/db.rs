@@ -22,6 +22,8 @@ use crate::{gamedb::Catalog, unix_ms};
 pub mod accounts;
 pub mod clubs;
 pub mod integrity;
+pub mod moderation;
+pub mod reset;
 pub mod news;
 pub mod notifications;
 pub mod save_bests;
@@ -112,6 +114,8 @@ impl Store {
         db.execute_batch(news::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(integrity::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(storefront::SCHEMA).map_err(|e| e.to_string())?;
+        db.execute_batch(moderation::SCHEMA).map_err(|e| e.to_string())?;
+        moderation::migrate(&db).map_err(|e| e.to_string())?;
         Ok(Store { db: Mutex::new(db) })
     }
 

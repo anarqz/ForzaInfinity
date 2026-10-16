@@ -40,18 +40,22 @@ pub const SCHEMA: &str = "
         xuid INTEGER NOT NULL, car_id INTEGER NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL,
         updated INTEGER NOT NULL, PRIMARY KEY (xuid, car_id, name));";
 
-/// Reports from different players that take a file off the storefront.
+/// Reports from different players that take a file off the storefront, for moderation to look at
+/// (db/moderation.rs: `fh2-server moderation files`).
 pub const STRIKES_TO_REMOVE: i64 = 3;
 /// Reports a player may make in an hour.
 pub const REPORTS_PER_HOUR: i64 = 20;
-/// `removed`: 0 = shared, 1 = removed by its owner (may be shared again), 2 = removed after
-/// STRIKES_TO_REMOVE reports (never shared again).
-const REMOVED_BY_REPORTS: i64 = 2;
+/// `removed`: 0 = shared, 1 = removed by its owner (may be shared again), 2 = removed by
+/// moderation (never shared again; before moderation existed: after STRIKES_TO_REMOVE reports),
+/// 3 = off the storefront after STRIKES_TO_REMOVE reports, waiting for moderation (it either
+/// comes back, 0, or goes for good, 2).
+pub const REMOVED_BY_REPORTS: i64 = 2;
+pub const UNDER_REVIEW: i64 = 3;
 
 pub enum Report {
     /// counted: the file now has this many strikes
     Counted(i64),
-    /// the third strike: the file is gone
+    /// the third strike: the file is off the storefront until moderation decides
     Removed,
     /// already reported by this player, or too many reports this hour
     Ignored,
@@ -135,8 +139,8 @@ impl Store {
                 .optional()?;
             let banned: Option<i64> = db
                 .query_row(
-                    "SELECT id FROM storefront_files WHERE xuid = ?1 AND kind = ?2 AND versioned_id = ?3 AND removed = ?4",
-                    params![xuid as i64, f.kind, f.versioned_id, REMOVED_BY_REPORTS],
+                    "SELECT id FROM storefront_files WHERE xuid = ?1 AND kind = ?2 AND versioned_id = ?3 AND removed IN (?4, ?5)",
+                    params![xuid as i64, f.kind, f.versioned_id, REMOVED_BY_REPORTS, UNDER_REVIEW],
                     |r| r.get(0),
                 )
                 .optional()?;
@@ -265,10 +269,14 @@ impl Store {
         });
     }
 
-    /// A player's report of a file (the caller checked they can see it and do not own it).
+    /// A player's report of a file (the caller checked they can see it and do not own it). Only a
+    /// real player's counts (db/moderation.rs: a day-old account that has played online).
     pub fn report_file(&self, file: i64, reporter: u64) -> Report {
         let now = unix_ms();
         self.with(|db| {
+            if !super::moderation::real_reporter(db, reporter, now)? {
+                return Ok(Report::Ignored);
+            }
             let recent: i64 = db.query_row(
                 "SELECT COUNT(*) FROM storefront_reports WHERE xuid = ?1 AND time >= ?2",
                 params![reporter as i64, now - 3_600_000],
@@ -284,8 +292,10 @@ impl Store {
             }
             let strikes: i64 = db.query_row("SELECT COUNT(*) FROM storefront_reports WHERE file_id = ?1", [file], |r| r.get(0))?;
             if strikes >= STRIKES_TO_REMOVE {
-                db.execute("UPDATE storefront_files SET removed = ?2 WHERE id = ?1", params![file, REMOVED_BY_REPORTS])?;
-                return Ok(Report::Removed);
+                let n = db.execute("UPDATE storefront_files SET removed = ?2 WHERE id = ?1 AND removed = 0", params![file, UNDER_REVIEW])?;
+                if n > 0 {
+                    return Ok(Report::Removed);
+                }
             }
             Ok(Report::Counted(strikes))
         })
@@ -436,13 +446,39 @@ mod tests {
             meta: &meta,
             preview: "",
         };
+        // real players (a day-old account that has played online) and one that is not (9)
+        store.with(|db| {
+            for x in [2i64, 3, 4, 9] {
+                let created = if x == 9 { unix_ms() } else { unix_ms() - 2 * 24 * 3600 * 1000 };
+                db.execute(
+                    "INSERT INTO accounts (xuid, name, discriminator, device, created) VALUES (?1, 'P', ?2, ?3, ?4)",
+                    params![x, format!("{x:05}"), format!("d{x}"), created],
+                )?;
+                db.execute("INSERT INTO profile (xuid, data, updated) VALUES (?1, '{}', 0)", params![x])?;
+            }
+            Ok(())
+        });
         let id = store.share_file(1, &new(6));
         assert!(id > 0);
+        assert!(matches!(store.report_file(id, 9), Report::Ignored)); // a new account does not count
         assert!(matches!(store.report_file(id, 2), Report::Counted(1)));
         assert!(matches!(store.report_file(id, 2), Report::Ignored)); // once per player
         assert!(matches!(store.report_file(id, 3), Report::Counted(2)));
         assert!(matches!(store.report_file(id, 4), Report::Removed));
+        assert!(store.shared_file(id).is_none()); // off the storefront, under review
+        assert_eq!(store.share_file(1, &new(6)), -1); // not shared again while it waits
+        let queue = store.files_under_review();
+        assert_eq!((queue.len(), queue[0]["reports"].as_i64()), (1, Some(3)));
+        let (detail, _) = store.file_detail(id).unwrap();
+        assert_eq!(detail["state"], "under review");
+        // moderation keeps it: back on the storefront, the reports go
+        assert!(store.moderate_file(id, true, "fine"));
+        assert!(store.shared_file(id).is_some() && store.files_under_review().is_empty());
+        // or deletes it: never shared again
+        assert!(store.moderate_file(id, false, "offensive"));
         assert!(store.shared_file(id).is_none());
+        assert_eq!(store.file_detail(id).unwrap().0["state"], "removed by moderation");
+        assert!(!store.moderate_file(99999, false, ""));
         assert_eq!(store.share_file(1, &new(6)), -1); // never shared again
         assert!(!store.edit_shared_file(1, id, "remove", "")); // and the owner cannot reset it
         assert_eq!(store.share_file(1, &new(6)), -1);

@@ -4,6 +4,7 @@
 # there is no HTTP route for news, and no key in this repository. What lets you in is your own
 # gcloud login with SSH/IAP access to the project (the same as deploy.sh).
 #   ./news.sh send "Text" [--to Name#12345]   shows the text and the player count, asks, sends
+#                                              (--yes: no question, for an agent Alex already told to send)
 #   ./news.sh send -f message.txt [--to ...]   the text from a file (line breaks kept)
 #   ./news.sh list                             past sends
 #   ./news.sh delete ID                        takes a send back from every Message Center
@@ -22,11 +23,12 @@ remote() {
 case "${1:-}" in
     send)
         shift
-        TEXT=""; TO=""
+        TEXT=""; TO=""; YES=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 -f) TEXT="$(cat "$2")"; shift 2 ;;
                 --to) TO="$2"; shift 2 ;;
+                --yes) YES=1; shift ;;
                 *) TEXT="$1"; shift ;;
             esac
         done
@@ -38,8 +40,10 @@ case "${1:-}" in
         B64="$(printf '%s' "$TEXT" | base64 -w0)"
         ARGS="send --text-base64 $B64${TO:+ --to $TO}"
         remote "$NEWS $ARGS --dry-run"
-        read -r -p "Send it? [y/N] " answer </dev/tty
-        [ "$answer" = y ] || [ "$answer" = Y ] || { echo "not sent"; exit 1; }
+        if [ -z "$YES" ]; then
+            read -r -p "Send it? [y/N] " answer </dev/tty
+            [ "$answer" = y ] || [ "$answer" = Y ] || { echo "not sent"; exit 1; }
+        fi
         remote "$NEWS $ARGS"
         ;;
     list)
@@ -50,7 +54,7 @@ case "${1:-}" in
         remote "$NEWS delete $2"
         ;;
     *)
-        sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
         exit 2
         ;;
 esac
