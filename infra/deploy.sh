@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the server here and installs it on the VM through IAP (no open ports needed):
-# bin/fh2-server, responses/, templates/ (the starting saves a moderation reset uses) and, when found, the game's car database (gamedbRC.slt, for car
+# bin/fh2-server, responses/ and, when found, the game's car database (gamedbRC.slt, for car
 # and route names and the integrity checks). The database on the VM is left alone.
 #   ./deploy.sh [--gamedb PATH]
 set -euo pipefail
@@ -17,7 +17,7 @@ if [ "${1:-}" = "--gamedb" ]; then GAMEDB=$2; fi
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 cp "$ROOT/server/target/release/fh2-server" "$STAGE/"
-tar -C "$ROOT/server" -czf "$STAGE/responses.tgz" responses templates
+tar -C "$ROOT/server" -czf "$STAGE/responses.tgz" responses
 [ -f "$GAMEDB" ] && cp "$GAMEDB" "$STAGE/gamedbRC.slt"
 
 gcloud compute ssh "$VM" --project "$PROJECT" --zone "$ZONE" --tunnel-through-iap --command 'rm -rf /tmp/infinity-deploy && mkdir -p /tmp/infinity-deploy'

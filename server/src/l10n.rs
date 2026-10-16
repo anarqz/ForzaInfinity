@@ -6,6 +6,7 @@
 /// (English, Portuguese); `{}` marks the same values in both.
 const TEXTS: &[(&str, &str)] = &[
     ("Account suspended on this server.", "Conta suspensa neste servidor."),
+    ("A new season started: XP, level, credits, records and the garage (all but your first car) start again; your career, liveries and creations stay. Restart the game to get it.", "Uma nova temporada começou: XP, nível, créditos, recordes e a garagem (menos o seu primeiro carro) começam de novo; sua carreira, pinturas e criações continuam. Reinicie o jogo para recebê-la."),
     ("Moderation reset this profile's progress. Restart the game to get it; your liveries were kept.", "A moderação zerou o progresso deste perfil. Reinicie o jogo para recebê-lo; suas pinturas foram mantidas."),
     (
         "This game's car database is not the original one: only the game's own cars play online on this server. Put the original gamedbRC.slt back (or reinstall the game) and restart.",

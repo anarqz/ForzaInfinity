@@ -458,12 +458,14 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
             Some(a) if a.banned => json_reply(403, &json!({ "error": "Account suspended on this server." })),
             Some(a) => {
                 let mut me = json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag(), "expansions": app.store.expansions(a.xuid) });
-                // a moderation reset the game has not downloaded yet (db/reset.rs): the hook shows it
-                if app.store.reset_pending(a.xuid) {
-                    me["notice"] = Value::from("Moderation reset this profile's progress. Restart the game to get it; your liveries were kept.");
-                    if REPLY_PORTUGUESE.with(|p| p.get()) {
-                        me["notice"] = Value::from(crate::l10n::tr(true, "Moderation reset this profile's progress. Restart the game to get it; your liveries were kept."));
-                    }
+                // a reset the game has not downloaded yet (db/reset.rs): the hook shows why
+                let notice = match app.store.reset_pending(a.xuid) {
+                    crate::db::reset::PENDING_MODERATION => Some("Moderation reset this profile's progress. Restart the game to get it; your liveries were kept."),
+                    crate::db::reset::PENDING_SEASON => Some("A new season started: XP, level, credits, records and the garage (all but your first car) start again; your career, liveries and creations stay. Restart the game to get it."),
+                    _ => None,
+                };
+                if let Some(text) = notice {
+                    me["notice"] = Value::from(crate::l10n::tr(REPLY_PORTUGUESE.with(|p| p.get()), text));
                 }
                 json_reply(200, &me)
             }
@@ -496,8 +498,8 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
             None => json_reply(404, &json!({ "error": "No cloud save yet." })),
         },
         ("PUT", "save") => {
-            // a game still running with the progress from before a moderation reset
-            if app.store.reset_pending(xuid) {
+            // a game still running with the progress from before a reset (db/reset.rs)
+            if app.store.reset_pending(xuid) != 0 {
                 return json_reply(409, &json!({ "error": "Moderation reset this profile's progress. Restart the game to get it; your liveries were kept." }));
             }
             if request.body.len() > saves::MAX_BUNDLE {
@@ -506,6 +508,19 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
             let commit = request.header("x-fh2-save-commit").unwrap_or("");
             if !saves::valid_commit(commit) {
                 return json_reply(400, &json!({ "error": "invalid commit" }));
+            }
+            // a new profile's first save (its offline progress) starts the season like everyone's:
+            // its career stays, XP, credits, records and all cars but the first start again
+            let fresh = saves::check_bundle(&request.body)
+                .ok()
+                .and_then(|revision| app.store.new_profile_save(xuid, &request.body, revision).map(|(b, c)| (revision, b, c)));
+            if let Some((revision, bundle, reset_commit)) = fresh {
+                if !app.store.put_save(xuid, revision, &reset_commit, &bundle) {
+                    return json_reply(500, &json!({ "error": "Could not store the save." }));
+                }
+                app.store.set_reset_pending(xuid, crate::db::reset::PENDING_NEW);
+                app.store.add_event(xuid, "save", "Perfil novo: save na nuvem a partir da carreira offline, temporada do zero", json!({}));
+                return json_reply(200, &json!({ "revision": revision.to_string(), "commit": reset_commit }));
             }
             match saves::check_bundle(&request.body) {
                 Ok(revision) if app.store.put_save(xuid, revision, commit, &request.body) => {
