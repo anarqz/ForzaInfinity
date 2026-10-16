@@ -119,6 +119,24 @@ O host se identifica pela conta (token do `FH2Online_Accounts.ini`), então o mu
 
 O relay identifica cada jogador pelo XUID do OpenConnection, além do endereço, para sobreviver a uma troca de porta do NAT.
 
+### F3: como foi implementado (iniciado em 16/10/2026)
+
+O passo 1 acima mudou do lado do cliente: em vez de filtrar o `WSARecvFrom` sobreposto do jogo, o **hook põe um proxy UDP local entre o jogo e o mundo**. A `Association` devolve ao jogo `[::1]:<porta do proxy>`, e o socket do proxy é do hook. Ele faz o STUN, o punching e o repasse, e só repassa ao jogo pacotes vindos do endereço do mundo que respondeu. Isso também é o filtro de origem: pacotes de qualquer outro endereço nunca chegam ao parser do NerdCore.
+
+Partes, nesta ordem:
+1. **Relay (`dedicated/src/nat.rs`):**
+   - STUN (RFC 5389) no próprio socket 5101, para dois servidores públicos: endereço público e tipo de NAT (a mesma porta para os dois servidores = cone; portas diferentes = simétrico). Repete a cada 25 s, o que também mantém o mapeamento aberto.
+   - UPnP IGD: SSDP, `AddPortMapping` UDP 5101 com prazo de 30 min renovado, e `GetExternalIPAddress`.
+   - O comando `punch <ip:porta>` no stdin manda pacotes ao cliente por alguns segundos.
+   - O resultado vai para `dedicated_server.net` (ao lado do exe), que o hook lê.
+2. **Servidor:**
+   - O anúncio leva os candidatos do host: rede local, STUN, UPnP e o tipo de NAT.
+   - `POST worlds/punch {candidates}`: o cliente manda os seus e recebe os do host.
+   - O host busca os punches pendentes com `GET worlds/punches` a cada ~3 s enquanto hospeda.
+3. **Hook (host):** inclui os candidatos de `dedicated_server.net` no anúncio e repassa cada punch ao relay.
+4. **Hook (cliente):** o proxy local descrito acima, que tenta rede local, IPv6 e IPv4 ao mesmo tempo e fica com o primeiro que responde.
+5. **Diagnóstico:** TESTAR CONEXÃO e o HOSPEDAR MUNDO mostram o NAT, o UPnP e a conclusão, com o guia.
+
 ### Compatibilidade de NAT
 
 O tipo é medido com dois servidores STUN: se a porta pública muda conforme o destino, o NAT é **simétrico**.
