@@ -12,6 +12,16 @@
 //!                                 password, canJoin, why}}
 //!   POST   worlds/<id>/join      {password} -> {ok: true}: the caller's next FREE ROAM ONLINE
 //!                                 goes there
+//!   POST   worlds/punch          {candidates} -> {world: [ip:port...]} (F3): a joining player's
+//!                                 proxy sends its public addresses (STUN) and gets the world's
+//!                                 (its LAN, STUN and UPnP addresses); the host is asked to punch
+//!                                 towards the player's
+//!   GET    worlds/punches        -> {punch: [ip:port...]}: the host's pending punches (also in
+//!                                 the heartbeat's reply), polled every few seconds
+//!
+//! POST worlds also takes `public` (the relay's STUN and UPnP addresses, dedicated_server.net)
+//! and `nat` (cone, symmetric or unknown). A public IPv4 address, the host's or a player's, must
+//! be the one this server sees them at: nobody can point the others' punches at someone else.
 //!
 //! Everything is in memory: a world without a heartbeat for 45 s is gone. Passwords are kept
 //! only as a salted SHA-1 and never logged.
@@ -47,6 +57,11 @@ const FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
 /// The game's free roam session holds 12 (gsiSets.maxAllowedPlayers).
 const MAX_PLAYERS: u64 = 12;
 const MAX_LAN: usize = 4;
+/// Public addresses per host or player (STUN IPv4, STUN IPv6, UPnP).
+const MAX_PUBLIC: usize = 3;
+/// Punches waiting for one host, and how long one waits.
+const MAX_PUNCHES: usize = 64;
+const PUNCH_TTL: Duration = Duration::from_secs(30);
 const MAX_BANNED: usize = 100;
 /// Most worlds in one list.
 const MAX_LIST: usize = 100;
@@ -86,6 +101,9 @@ struct World {
     car_db: Option<String>,
     /// The host's address as this server sees it.
     host_ip: IpAddr,
+    /// Its relay's public addresses (STUN, UPnP) and NAT kind (F3).
+    public: Vec<SocketAddr>,
+    nat: String,
     heartbeat: Instant,
     banned: Vec<u64>,
 }
@@ -165,6 +183,8 @@ struct State {
     failures: HashMap<u64, (u32, Instant)>,
     /// host -> players its relay must drop (handed over in the next heartbeat's reply).
     kicks: HashMap<u64, Vec<u64>>,
+    /// host -> (player's address, asked at) its relay should punch towards (F3).
+    punches: HashMap<u64, Vec<(SocketAddr, Instant)>>,
 }
 
 impl State {
@@ -184,6 +204,15 @@ impl State {
         self.failures.retain(|_, (_, at)| now.saturating_duration_since(*at) < FAILURE_WINDOW);
         let worlds = &self.worlds;
         self.kicks.retain(|host, _| worlds.contains_key(host));
+        self.punches.retain(|host, list| {
+            list.retain(|(_, at)| now.saturating_duration_since(*at) < PUNCH_TTL);
+            worlds.contains_key(host) && !list.is_empty()
+        });
+    }
+
+    /// Hands over (and forgets) the host's pending punches.
+    fn take_punches(&mut self, host: u64) -> Vec<String> {
+        self.punches.remove(&host).unwrap_or_default().iter().map(|(a, _)| a.to_string()).collect()
     }
 
     /// The host and the players sent there.
@@ -244,6 +273,42 @@ fn is_lan(ip: &IpAddr) -> bool {
         IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
         IpAddr::V6(v6) => (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
     }
+}
+
+/// The `public` (or `candidates`) addresses of a host or a player: at most MAX_PUBLIC
+/// `ip:port`; IPv4 only at the address this server sees them at (`seen`), IPv6 only global.
+/// A caller on loopback or a LAN address (a server on the same network) may send any.
+fn public_addresses(v: &Value, seen: IpAddr) -> Result<Vec<SocketAddr>, String> {
+    let list = match v {
+        Value::Null => return Ok(Vec::new()),
+        Value::Array(a) if a.len() <= MAX_PUBLIC => a,
+        _ => return Err(format!("public: at most {MAX_PUBLIC} addresses")),
+    };
+    let mut out = Vec::new();
+    for item in list {
+        let Some(a) = item.as_str().and_then(|s| s.trim().parse::<SocketAddr>().ok()) else {
+            return Err("public: ip:port addresses".into());
+        };
+        let a = SocketAddr::new(a.ip().to_canonical(), a.port());
+        let ok = a.port() != 0
+            && match a.ip() {
+                IpAddr::V4(v4) => {
+                    seen.is_loopback() || is_lan(&seen) || (IpAddr::V4(v4) == seen && !v4.is_unspecified())
+                }
+                IpAddr::V6(v6) => {
+                    let first = v6.segments()[0];
+                    // 2000::/3, the global unicast range
+                    (first & 0xe000) == 0x2000
+                }
+            };
+        if !ok {
+            return Err("public: an IPv4 address must be the one this server sees you at".into());
+        }
+        if !out.contains(&a) {
+            out.push(a);
+        }
+    }
+    Ok(out)
 }
 
 /// Both the host and the caller sent their car database and the two differ: they cannot
@@ -381,6 +446,15 @@ impl Worlds {
                 Reply { status: 204, body: None }
             }
             ("POST", ["worlds", "left"]) => self.left(&body, caller, now),
+            ("POST", ["worlds", "punch"]) => self.punch(&body, caller, now),
+            ("GET", ["worlds", "punches"]) => {
+                let mut s = self.lock();
+                s.purge(now);
+                if !s.worlds.contains_key(&caller.xuid) {
+                    return Reply::json(404, json!({ "error": "You are not hosting a world." }));
+                }
+                Reply::json(200, json!({ "punch": s.take_punches(caller.xuid) }))
+            }
             ("GET", ["worlds"]) => self.list(caller, now),
             ("GET", ["worlds", "browse", after]) => match after.parse::<u64>() {
                 Ok(after) => self.browse(after, caller, now),
@@ -453,6 +527,15 @@ impl Worlds {
             Ok(v) => v,
             Err(e) => return bad(e),
         };
+        let public = match public_addresses(&body["public"], caller.ip) {
+            Ok(p) => p,
+            Err(e) => return bad(e),
+        };
+        let nat = match body["nat"].as_str() {
+            None => "unknown".to_owned(),
+            Some(k @ ("cone" | "symmetric" | "unknown")) => k.to_owned(),
+            Some(_) => return bad("nat: cone, symmetric or unknown".into()),
+        };
         let banned = match &body["banned"] {
             Value::Null => Vec::new(),
             Value::Array(a) if a.len() <= MAX_BANNED => {
@@ -494,6 +577,8 @@ impl Worlds {
             version,
             car_db: caller.car_db.clone(),
             host_ip: caller.ip,
+            public,
+            nat,
             heartbeat: now,
             banned,
         };
@@ -505,10 +590,12 @@ impl Worlds {
                 || o.port != world.port
                 || o.host_ip != world.host_ip
                 || o.max_players != world.max_players
+                || o.public != world.public
+                || o.nat != world.nat
         });
         if changed {
             println!(
-                "worlds: {host} {} \"{}\" at {} ({}, {} players max, password {}, version {})",
+                "worlds: {host} {} \"{}\" at {} ({}, {} players max, password {}, version {}, nat {}, public [{}])",
                 if old.is_none() { "hosts" } else { "changed" },
                 world.name,
                 SocketAddr::new(world.host_ip, world.port),
@@ -516,6 +603,8 @@ impl Worlds {
                 world.max_players,
                 if world.password.is_some() { "yes" } else { "no" },
                 if world.version.is_empty() { "?" } else { &world.version },
+                world.nat,
+                world.public.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "),
             );
         }
         let address = SocketAddr::new(world.host_ip, world.port);
@@ -524,13 +613,85 @@ impl Worlds {
         s.members.remove(&host);
         s.pending.remove(&host);
         let kicks: Vec<String> = s.kicks.remove(&host).unwrap_or_default().iter().map(|x| x.to_string()).collect();
+        let punch = s.take_punches(host);
         Reply::json(200, json!({
             "id": host.to_string(),
             "address": address.to_string(),
             "players": s.players(host),
             "expiresIn": WORLD_TTL.as_secs(),
             "kick": kicks,
+            "punch": punch,
         }))
+    }
+
+    /// POST worlds/punch {candidates}: the caller's proxy is about to reach the world it was
+    /// sent to (a member, a pending choice, or its own). It gets the world's addresses to try,
+    /// best first; the host's relay is asked to punch towards the caller's.
+    fn punch(&self, body: &Value, caller: &Caller, now: Instant) -> Reply {
+        let candidates = match public_addresses(&body["candidates"], caller.ip) {
+            Ok(c) => c,
+            Err(e) => return bad(e.replace("public", "candidates")),
+        };
+        let mut s = self.lock();
+        s.purge(now);
+        let host = if s.worlds.contains_key(&caller.xuid) {
+            caller.xuid
+        } else if let Some(&(h, _)) = s.members.get(&caller.xuid).or(s.pending.get(&caller.xuid)) {
+            h
+        } else {
+            return Reply::json(404, json!({ "error": "You are not on your way to any world." }));
+        };
+        let Some(w) = s.worlds.get(&host) else {
+            return Reply::json(404, json!({ "error": "There is no such world." }));
+        };
+        if host != caller.xuid && !s.why(host, w, caller).is_empty() {
+            return refused(s.why(host, w, caller));
+        }
+        // the world's addresses, best first: its LAN (same public address), its own port at the
+        // address we see it at, then what STUN and UPnP found
+        let mut world: Vec<SocketAddr> = Vec::new();
+        let mut add = |a: SocketAddr| {
+            if !world.contains(&a) {
+                world.push(a);
+            }
+        };
+        if host == caller.xuid {
+            add(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), w.port));
+        } else {
+            if caller.ip == w.host_ip || w.host_ip.is_loopback() {
+                for ip in &w.lan {
+                    add(SocketAddr::new(*ip, w.port));
+                }
+            }
+            if !w.host_ip.is_loopback() {
+                add(SocketAddr::new(w.host_ip, w.port));
+            }
+            for a in &w.public {
+                add(*a);
+            }
+        }
+        let world: Vec<String> = world.iter().map(|a| a.to_string()).collect();
+        let nat = w.nat.clone();
+        // the host punches towards what the caller sent, and its address as we see it
+        if host != caller.xuid {
+            let mut targets = candidates;
+            if !caller.ip.is_loopback() && !targets.iter().any(|t| t.ip() == caller.ip) {
+                // no STUN answer: at least the player's address, at its game port
+                if let Some(port) = body["port"].as_u64().filter(|p| (1..=65535).contains(p)) {
+                    targets.push(SocketAddr::new(caller.ip, port as u16));
+                }
+            }
+            let list = s.punches.entry(host).or_default();
+            for t in targets {
+                if list.len() >= MAX_PUNCHES {
+                    list.remove(0);
+                }
+                list.retain(|(a, _)| *a != t);
+                list.push((t, now));
+            }
+            println!("worlds: {} punches towards the world of {host}", caller.xuid);
+        }
+        Reply::json(200, json!({ "world": world, "nat": nat }))
     }
 
     /// POST worlds/left {"reason"}: the caller's game left its world on its own (the car
@@ -771,12 +932,77 @@ mod tests {
         r.body.unwrap()
     }
 
+    /// F3: the host announces its STUN/UPnP addresses; a joining player sends its own and gets
+    /// the world's; the host's next poll (or heartbeat) has the punch, once.
+    #[test]
+    fn punch_exchange() {
+        let w = Worlds::new();
+        let t = Instant::now();
+        // a public IPv4 address other than the one we see the host at is refused
+        let r = call(&w, "POST", "worlds", world(json!({"public": ["198.51.100.66:5101"]})), &who(HOST, HOME), t);
+        assert_eq!(r.status, 400);
+        let r = call(&w, "POST", "worlds", world(json!({"nat": "open"})), &who(HOST, HOME), t);
+        assert_eq!(r.status, 400);
+        host_world(&w, HOST, HOME, json!({"public": ["203.0.113.5:40001", "[2001:db8::5]:5101"], "nat": "cone"}), t);
+        // not on the way to the world yet
+        let me = pal(5, AWAY);
+        assert_eq!(call(&w, "POST", "worlds/punch", json!({"candidates": []}), &me, t).status, 404);
+        let c = w.choose(&me, t).unwrap();
+        w.assign(5, Some(&c), t);
+        // someone else's IPv4 address as a candidate: refused
+        let r = call(&w, "POST", "worlds/punch", json!({"candidates": ["203.0.113.99:5100"]}), &me, t);
+        assert_eq!(r.status, 400);
+        let r = call(&w, "POST", "worlds/punch", json!({"candidates": ["198.51.100.9:61000", "[2001:db8::9]:5100"]}), &me, t);
+        assert_eq!(r.status, 200);
+        assert_eq!(
+            r.body.unwrap(),
+            json!({"world": ["203.0.113.5:5101", "203.0.113.5:40001", "[2001:db8::5]:5101"], "nat": "cone"})
+        );
+        // the host gets the punches once
+        let p = call(&w, "GET", "worlds/punches", Value::Null, &who(HOST, HOME), t).body.unwrap();
+        assert_eq!(p, json!({"punch": ["198.51.100.9:61000", "[2001:db8::9]:5100"]}));
+        assert_eq!(call(&w, "GET", "worlds/punches", Value::Null, &who(HOST, HOME), t).body.unwrap(), json!({"punch": []}));
+        // without STUN: the address we see, at the game's port; it also rides the heartbeat
+        call(&w, "POST", "worlds/punch", json!({"port": 5100}), &me, t);
+        assert_eq!(host_world(&w, HOST, HOME, json!({}), t)["punch"], json!(["198.51.100.9:5100"]));
+        // the same network: the host's LAN address first
+        let neighbour = pal(6, HOME);
+        let c = w.choose(&neighbour, t).unwrap();
+        w.assign(6, Some(&c), t);
+        let r = call(&w, "POST", "worlds/punch", json!({}), &neighbour, t).body.unwrap();
+        assert_eq!(r["world"][0], "192.168.68.40:5101");
+        // punches wait PUNCH_TTL at most; a non-host has none to poll
+        call(&w, "POST", "worlds/punch", json!({"port": 5100}), &me, t);
+        let later = t + PUNCH_TTL + Duration::from_secs(1);
+        host_world(&w, HOST, HOME, json!({}), later - Duration::from_secs(1));
+        assert_eq!(call(&w, "GET", "worlds/punches", Value::Null, &who(HOST, HOME), later).body.unwrap(), json!({"punch": []}));
+        assert_eq!(call(&w, "GET", "worlds/punches", Value::Null, &me, t).status, 404);
+        // bounded
+        for k in 0..(MAX_PUNCHES as u16 + 10) {
+            call(&w, "POST", "worlds/punch", json!({"candidates": [format!("198.51.100.9:{}", 1000 + k)]}), &me, later);
+        }
+        let p = call(&w, "GET", "worlds/punches", Value::Null, &who(HOST, HOME), later).body.unwrap();
+        assert_eq!(p["punch"].as_array().unwrap().len(), MAX_PUNCHES);
+    }
+
+    #[test]
+    fn public_address_rules() {
+        let seen: IpAddr = "203.0.113.5".parse().unwrap();
+        assert!(public_addresses(&json!(["203.0.113.5:1", "[2001:db8::1]:2"]), seen).is_ok());
+        assert!(public_addresses(&json!(["[::ffff:203.0.113.5]:1"]), seen).is_ok());
+        for bad in [json!(["203.0.113.6:1"]), json!(["203.0.113.5:0"]), json!(["[fe80::1]:5"]), json!(["x"]), json!("a"), json!(["203.0.113.5:1", "203.0.113.5:2", "203.0.113.5:3", "203.0.113.5:4"])] {
+            assert!(public_addresses(&bad, seen).is_err(), "{bad}");
+        }
+        // a server on the same LAN (or loopback) sees private addresses: anything goes
+        assert!(public_addresses(&json!(["191.251.57.219:5101"]), "192.168.68.93".parse().unwrap()).is_ok());
+    }
+
     #[test]
     fn host_and_heartbeat() {
         let w = Worlds::new();
         let t0 = Instant::now();
         let b = host_world(&w, HOST, HOME, json!({}), t0);
-        assert_eq!(b, json!({"id": "100", "address": "203.0.113.5:5101", "players": 1, "expiresIn": 45, "kick": []}));
+        assert_eq!(b, json!({"id": "100", "address": "203.0.113.5:5101", "players": 1, "expiresIn": 45, "kick": [], "punch": []}));
         // heartbeat keeps it past 45 s
         host_world(&w, HOST, HOME, json!({}), t0 + Duration::from_secs(30));
         assert!(w.choose(&pal(5, AWAY), t0 + Duration::from_secs(60)).is_some());
