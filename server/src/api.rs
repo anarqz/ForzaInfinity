@@ -69,7 +69,7 @@ pub fn allowed(app: &App, request: &Request) -> bool {
     let path = request.path_and_query.split('?').next().unwrap_or("");
     let bucket = match account_route(path) {
         Some("register") => Bucket::Register,
-        Some("weblogin" | "login") => Bucket::Login,
+        Some("weblogin" | "login" | "device/accounts" | "device/recover" | "accounts/known") => Bucket::Login,
         // uploading a save: the hook sends at most one a minute
         Some("save") if request.method == "PUT" => Bucket::Save,
         // cheap reads every hook makes every few seconds (status line, waiting line)
@@ -127,8 +127,11 @@ fn account_route(path: &str) -> Option<&str> {
     path.strip_prefix(ACCOUNT_PREFIX).or_else(|| path.strip_prefix(LEGACY_ACCOUNT_PREFIX))
 }
 
-/// POST register {name, discriminator, device} -> {xuid, gamertag, token} (one account per
-/// device; `device` = SHA-256 hex of the full fingerprint + this server's host);
+/// POST register {name, discriminator, device} -> {xuid, gamertag, token} (up to three accounts
+/// per device; `device` = SHA-256 hex of the full fingerprint + this server's host);
+/// POST device/accounts {device} -> {accounts: [{xuid, gamertag, suspended}], max};
+/// POST device/recover {device, xuid} -> as login; POST accounts/known {tokens: [SHA-1 hex]}
+/// -> {accounts: [{token, xuid, gamertag}]};
 /// GET me (X-Fh2-Token) -> {xuid, gamertag}; GET info -> what the server is.
 fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
     let lang = request.header("x-fh2-lang").unwrap_or("").to_owned();
@@ -442,6 +445,53 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                 }
                 Err(e) => json_reply(401, &json!({ "error": e })),
             }
+        }
+        // the profiles this PC created (its device id, as at register): SWITCH PROFILE lists
+        // them, for a PC that lost FH2Online_Accounts.ini or had a profile signed in elsewhere
+        ("POST", "device/accounts") => {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let device = body["device"].as_str().unwrap_or("").trim();
+            if !crate::db::accounts::valid_device(device) {
+                return json_reply(400, &json!({ "error": "Invalid device id." }));
+            }
+            let accounts: Vec<Value> = app
+                .store
+                .device_accounts(device)
+                .iter()
+                .map(|a| json!({ "xuid": a.xuid.to_string(), "gamertag": a.gamertag(), "suspended": a.banned }))
+                .collect();
+            json_reply(200, &json!({ "accounts": accounts, "max": crate::db::accounts::MAX_PROFILES_PER_PC }))
+        }
+        // the PC that created a profile plays it again (as a sign-in: other PCs go offline)
+        ("POST", "device/recover") => {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let device = body["device"].as_str().unwrap_or("").trim();
+            let xuid = body["xuid"].as_str().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
+            match app.store.recover_on_device(device, xuid) {
+                Ok((account, token, web_key)) => {
+                    let gamertag = account.gamertag();
+                    app.store.add_event(account.xuid, "account", &format!("{gamertag} voltou ao PC que o criou"), json!({}));
+                    json_reply(
+                        200,
+                        &json!({ "xuid": account.xuid.to_string(), "gamertag": gamertag, "token": token, "webKey": web_key, "expansions": app.store.expansions(account.xuid) }),
+                    )
+                }
+                Err(e) => json_reply(401, &json!({ "error": e })),
+            }
+        }
+        // which of a PC's saved tokens (by SHA-1 hex, never the tokens) are this server's: the
+        // same server reached at another address keeps its profiles
+        ("POST", "accounts/known") => {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let hashes: Vec<String> =
+                body["tokens"].as_array().map(|a| a.iter().take(16).filter_map(|t| t.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+            let accounts: Vec<Value> = app
+                .store
+                .accounts_by_token_hash(&hashes)
+                .iter()
+                .map(|(hash, a)| json!({ "token": hash, "xuid": a.xuid.to_string(), "gamertag": a.gamertag() }))
+                .collect();
+            json_reply(200, &json!({ "accounts": accounts }))
         }
         // site login check: name#12345 + web key
         ("POST", "weblogin") => {

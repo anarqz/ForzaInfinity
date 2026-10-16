@@ -43,6 +43,11 @@ const TEXTS: &[(&str, &str)] = &[
     ("No cloud save yet.", "Ainda não há save na nuvem."),
     ("The name must have 1 to 20 letters or digits and start with a letter.", "O nome precisa ter de 1 a 20 letras ou números e começar com uma letra."),
     ("This PC already has the account {} on this server.", "Este PC já tem a conta {} neste servidor."),
+    (
+        "This PC already has {} profiles on this server ({}). Play one of them with Switch profile, or delete one there first.",
+        "Este PC já tem {} perfis neste servidor ({}). Jogue com um deles em Trocar perfil, ou exclua um lá antes.",
+    ),
+    ("This profile was not created on this PC: sign in with it and its site key.", "Este perfil não foi criado neste PC: entre com ele e a chave do site dele."),
     ("{} already exists on this server.", "{} já existe neste servidor."),
     // player-hosted worlds (worlds.rs)
     ("There is no such world.", "Esse mundo não existe."),
