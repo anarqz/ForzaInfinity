@@ -993,28 +993,6 @@ impl Relay {
         }
     }
 
-    /// Cars (and their unreliable events): during a race (from the grid on) the participants'
-    /// cars go only to participants and the others' only to the others, as in the game's own
-    /// universes (racers are in the race's, NetworkSetOverrideUniverse; free roam does not see
-    /// them, and they do not see free roam). Less traffic for the racers too.
-    fn forward_cars(&mut self, from: usize, msgs: &[Bits]) {
-        let racing: Option<Vec<u8>> = self
-            .race
-            .as_ref()
-            .filter(|r| r.stage != RaceStage::Gathering)
-            .map(|r| r.participants.clone());
-        let Some(racing) = racing else {
-            self.forward(from, msgs, false);
-            return;
-        };
-        let side = racing.contains(&self.peers[from].index);
-        for j in 0..self.peers.len() {
-            if j != from && self.peers[j].synced && racing.contains(&self.peers[j].index) == side {
-                self.send(j, msgs.to_vec(), false);
-            }
-        }
-    }
-
     /// An answer to an address that is not a peer (a refusal), acking its packet: only if it is
     /// no bigger than what came from there.
     fn send_to_stranger(&self, addr: SocketAddr, pid: u16, msg: Msg, request_len: usize) {
@@ -1638,8 +1616,10 @@ impl Relay {
         if !ghost.is_empty() {
             self.send_seq(pi, ghost);
         }
+        // cars go to everyone, races too: free roam watches the racers drive by (Alex's call;
+        // the game's race universe does not hide them from the free roam consoles)
         if !cars.is_empty() {
-            self.forward_cars(pi, &cars);
+            self.forward(pi, &cars, false);
         }
         // the ConsoleSynced Create may have come after FinaliseSessionEntry
         if let Some(m) = self.finalise(pi) {
