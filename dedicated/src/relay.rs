@@ -73,8 +73,9 @@
 //!   - Limits per peer: token buckets on packets, messages and bytes (sustained excess drops the
 //!     peer), its history (`history_max_bits`), what waits to be sent to it (snapshot cap, paced).
 //!   - Access: commands on stdin (main.rs; never the network): `kick <xuid> [reason]` drops the
-//!     player and refuses its XUID (or, for Azimuth's shared XUID, its IP) for `kick_ban`;
-//!     `allow <ip>` and `allowonly 1|0` restrict who may connect (loopback always may).
+//!     player, who may come back at once (a player whose car database changed is kept out by
+//!     the server, which no longer sends them to a world); `allow <ip>` and `allowonly 1|0`
+//!     restrict who may connect (loopback always may).
 //!   - A packet that panics the handling is dropped and logged once per address; log lines are
 //!     stripped of control characters, and refusals are logged at most once per IP per minute.
 
@@ -176,8 +177,7 @@ pub struct Settings {
     /// What may wait to be sent to one peer (the snapshot for a late joiner, and what comes
     /// while it goes out), in bits.
     pub queue_max_bits: usize,
-    /// How long `kick` refuses the player, and how long a peer dropped for abuse is refused.
-    pub kick_ban: Duration,
+    /// How long a peer dropped for abuse (its IP) is refused.
     pub abuse_ban: Duration,
 }
 
@@ -202,7 +202,6 @@ impl Default for Settings {
             abuse_secs: 5,
             history_max_bits: 2 * 1024 * 1024,
             queue_max_bits: 8 * 1024 * 1024,
-            kick_ban: Duration::from_secs(600),
             abuse_ban: Duration::from_secs(60),
         }
     }
@@ -513,7 +512,6 @@ fn shared_xuid(xuid: u64) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BanKey {
-    Xuid(u64),
     Ip(IpAddr),
 }
 
@@ -753,36 +751,22 @@ impl Relay {
         self.bans.push((key, until));
     }
 
-    fn banned(&self, xuid: u64, ip: IpAddr, now: Instant) -> bool {
-        self.bans.iter().any(|(k, until)| {
-            *until > now
-                && match k {
-                    BanKey::Xuid(x) => *x == xuid && !shared_xuid(xuid),
-                    BanKey::Ip(i) => *i == ip,
-                }
-        })
+    fn banned(&self, ip: IpAddr, now: Instant) -> bool {
+        self.bans.iter().any(|(BanKey::Ip(i), until)| *until > now && *i == ip)
     }
 
-    /// Drops every peer with `xuid` and refuses it for `kick_ban` (Azimuth's shared XUID: their
-    /// IPs instead, so other players without an account are not refused).
+    /// Drops every peer with `xuid` (the others delete its objects). It is not refused: leaving
+    /// and coming back is fine, and a player whose car database changed is kept out by the
+    /// server, which sends them to no world.
     fn kick(&mut self, xuid: u64, reason: &str) {
-        let shared = shared_xuid(xuid);
         let mut n = 0;
         while let Some(i) = self.peers.iter().position(|p| p.xuid == xuid) {
-            let (index, ip) = (self.peers[i].index, self.peers[i].ip());
+            let index = self.peers[i].index;
             self.drop_peer(i, &format!("expulso: {reason}"));
             self.log(&format!("jogador {index} expulso ({reason})"));
-            if shared {
-                self.ban(BanKey::Ip(ip), self.settings.kick_ban);
-            }
             n += 1;
         }
-        if !shared {
-            self.ban(BanKey::Xuid(xuid), self.settings.kick_ban);
-            if n == 0 {
-                self.log(&format!("xuid {xuid} recusado por {} min (não estava conectado)", self.settings.kick_ban.as_secs() / 60));
-            }
-        } else if n == 0 {
+        if n == 0 {
             self.log("kick: ninguém com esse XUID");
         }
     }
@@ -1026,8 +1010,8 @@ impl Relay {
             refuse(self, nerd::REASON_REFUSED, "IP não liberado");
             return None;
         }
-        if self.banned(oc.user, ip, now) {
-            refuse(self, nerd::REASON_BANNED, "expulso há pouco");
+        if self.banned(ip, now) {
+            refuse(self, nerd::REASON_BANNED, "desconectado há pouco por excesso de tráfego");
             return None;
         }
         if oc.version != nerd::VERSION {
@@ -1897,24 +1881,21 @@ mod tests {
     }
 
     #[test]
-    fn bans_by_xuid_or_ip() {
+    fn kick_does_not_ban_abuse_does() {
         let mut r = relay();
         let now = Instant::now();
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
         r.command("kick 2535412345678901 griefing");
-        assert!(r.banned(2535412345678901, ip, now));
-        assert!(!r.banned(2535412345678902, ip, now));
-        assert!(!r.banned(2535412345678901, ip, now + r.settings.kick_ban + Duration::from_secs(1)));
         r.command("kick 0x10");
-        assert!(r.banned(16, ip, now));
-        // the shared XUID is never banned as a XUID (nobody connected: nothing at all)
         r.command(&format!("kick {AZIMUTH_XUID}"));
-        assert!(!r.banned(AZIMUTH_XUID, ip, now));
+        assert!(r.bans.is_empty() && !r.banned(ip, now));
         r.ban(BanKey::Ip(ip), Duration::from_secs(5));
-        assert!(r.banned(AZIMUTH_XUID, ip, now));
+        assert!(r.banned(ip, now));
+        assert!(!r.banned("10.0.0.2".parse().unwrap(), now));
+        assert!(!r.banned(ip, now + Duration::from_secs(6)));
         // bounded
-        for x in 0..(BANS_MAX as u64 + 20) {
-            r.command(&format!("kick {}", 1000 + x));
+        for x in 0..(BANS_MAX as u32 + 20) {
+            r.ban(BanKey::Ip(IpAddr::from((0x0a00_0000 + x).to_be_bytes())), Duration::from_secs(60));
         }
         assert_eq!(r.bans.len(), BANS_MAX);
         r.command("kick");

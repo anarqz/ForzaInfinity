@@ -604,10 +604,10 @@ fn group_sat_nav_is_answered_and_does_not_lose_the_car() {
     }
 }
 
-/// `kick <xuid>` on stdin: the player goes at once (the others delete its objects) and is
-/// refused for a while. Unknown and over-long lines do nothing.
+/// `kick <xuid>` on stdin: the player goes at once (the others delete its objects) and may
+/// come back right away. Unknown and over-long lines do nothing.
 #[test]
-fn kick_drops_and_refuses() {
+fn kick_drops_and_may_come_back() {
     let server = Server::start(settings());
     let mut a = Client::new(&server, 2535412345678901);
     let mut b = Client::new(&server, 2);
@@ -623,9 +623,9 @@ fn kick_drops_and_refuses() {
     a.inbox.clear();
     a.send(&[Msg::Ping(5)]);
     a.expect_none(Duration::from_millis(300), "an answer after the kick", |m| matches!(m, Msg::Pong { .. }));
-    // and it cannot come back for now
+    // joining again is not refused
     let mut a2 = Client::new(&server, 2535412345678901);
-    assert_eq!(a2.open().reason, nerd::REASON_BANNED);
+    assert_eq!(a2.open().reason, nerd::REASON_OK);
     // B is fine
     b.send(&[Msg::Ping(6)]);
     b.wait_for("B's pong", |m| matches!(m, Msg::Pong { echo: 6, .. }));
