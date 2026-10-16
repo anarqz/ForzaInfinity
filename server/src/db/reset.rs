@@ -4,8 +4,8 @@
 //!
 //! The player's own cloud save is edited, so its career stays: the story, championships, events,
 //! unlocks, tutorials and introductions, roads, barn finds, bucket list. What starts again:
-//! - XP and level (ProfileData WristbandLevel, which is the XP the game syncs, and Level), level
-//!   rewards, skill points and perks (PerkUnlock), credits;
+//! - XP and level (ProfileData XP, the XP the game syncs and shows the level from, its copy in
+//!   WristbandLevel, and Level), level rewards, skill points and perks (PerkUnlock), credits;
 //! - the garage: only the first starter car the player got (by garage Id: 289 Camaro, 461 Supra,
 //!   1218 Z4; else the oldest car), with its own parts; the career car and the last used car
 //!   become it;
@@ -284,8 +284,9 @@ pub fn reset_player_database(container: &[u8]) -> Result<(Vec<u8>, Kept), String
 /// point at the kept car. Fields a save lacks (or has twice) are left alone.
 pub fn reset_profile(profile: &[u8], kept: &Kept) -> Vec<u8> {
     let mut p = profile.to_vec();
-    let fields: [(&str, i32); 12] = [
+    let fields: [(&str, i32); 13] = [
         ("Credits", 0),
+        ("XP", 0),
         ("Level", 0),
         ("WristbandLevel", 0),
         ("LastRewardedLevel", 0),
@@ -336,8 +337,8 @@ pub fn reset_save(bundle: &[u8], revision: u64) -> Result<(Vec<u8>, String, Kept
     Ok((packed, crate::sha256::hex(&commit), kept))
 }
 
-/// What the save gates look at: ProfileData's credits, XP (WristbandLevel) and level, and the
-/// cars in Career_Garage.
+/// What the save gates look at: ProfileData's credits, XP and level, and the cars in
+/// Career_Garage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SaveProgress {
     pub credits: i64,
@@ -358,7 +359,7 @@ pub fn save_progress(bundle: &[u8]) -> Option<SaveProgress> {
     let _ = std::fs::remove_file(&path);
     Some(SaveProgress {
         credits: profile_int(&profile, "Credits")? as i64,
-        xp: profile_int(&profile, "WristbandLevel")? as i64,
+        xp: profile_int(&profile, "XP")? as i64,
         level: profile_int(&profile, "Level")? as i64,
         cars: cars?,
     })
@@ -566,7 +567,7 @@ mod tests {
                     *data = c;
                 }
                 "data/ProfileData" => {
-                    for (f, v) in [("Credits", 987_654), ("Level", 12), ("WristbandLevel", 250_000), ("NumSkillTokens", 7), ("CareerCar", 99)] {
+                    for (f, v) in [("Credits", 987_654), ("XP", 250_000), ("Level", 12), ("WristbandLevel", 250_000), ("NumSkillTokens", 7), ("CareerCar", 99)] {
                         *data = set_profile_int(data, f, v).unwrap_or_else(|| panic!("{f}"));
                     }
                 }
@@ -612,7 +613,7 @@ mod tests {
             assert_eq!(query(&db, &sql), query(&get(&before, "data/PlayerDatabase"), &sql), "{table}");
         }
         let p = get(&after, "data/ProfileData");
-        for (f, v) in [("Credits", 0), ("Level", 0), ("WristbandLevel", 0), ("NumSkillTokens", 0), ("CarsInGarage", 1)] {
+        for (f, v) in [("Credits", 0), ("XP", 0), ("Level", 0), ("WristbandLevel", 0), ("NumSkillTokens", 0), ("CarsInGarage", 1)] {
             assert_eq!(profile_int(&p, f), Some(v), "{f}");
         }
         assert_eq!(profile_int(&p, "CareerCar"), Some(kept.garage_id as i32));
