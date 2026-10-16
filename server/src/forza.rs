@@ -562,6 +562,12 @@ fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
         Ok(p) => p,
         Err(reason) => {
             gates::refuse(ctx, "Profile sync", &reason);
+            // the refused progress must leave the player's save too, or the game keeps sending it
+            // (and its save and profile drift apart): the server's save comes back at the next
+            // start, as for a refused save upload (db/reset.rs PENDING_REFUSED; the hook tells why)
+            if ctx.store.save_info(ctx.xuid).is_some() && ctx.store.reset_pending(ctx.xuid) == 0 {
+                ctx.store.set_reset_pending(ctx.xuid, crate::db::reset::PENDING_REFUSED);
+            }
             return json!({});
         }
     };
