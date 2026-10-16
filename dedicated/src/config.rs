@@ -50,6 +50,9 @@ pub struct Config {
     /// Gamertags; empty = everyone.
     pub allow: Vec<String>,
     pub ban: Vec<String>,
+    /// [Log] Verbose: every protocol message in the log, as --verbose (the hook starts the
+    /// relay with --config only, so a test turns it on here).
+    pub verbose: bool,
 }
 
 impl Default for Config {
@@ -65,6 +68,7 @@ impl Default for Config {
             announce: DEFAULT_ANNOUNCE.to_string(),
             allow: Vec::new(),
             ban: Vec::new(),
+            verbose: false,
         }
     }
 }
@@ -82,6 +86,7 @@ impl fmt::Debug for Config {
             .field("announce", &self.announce)
             .field("allow", &self.allow)
             .field("ban", &self.ban)
+            .field("verbose", &self.verbose)
             .finish()
     }
 }
@@ -167,6 +172,10 @@ impl Config {
                 ("network", "announce") => c.announce = value.to_string(),
                 ("access", "allow") => c.allow = parse_list(value),
                 ("access", "ban") => c.ban = parse_list(value),
+                ("log", "verbose") => match parse_bool(value) {
+                    Some(b) => c.verbose = b,
+                    None => bad(&mut warnings, "0 ou 1"),
+                },
                 _ => warnings.push(format!("linha {at}: chave desconhecida [{section}] {key}")),
             }
         }
@@ -186,6 +195,13 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verbose_from_the_file() {
+        let (c, w) = Config::parse("[Log]\nVerbose=1\n");
+        assert!(c.verbose && w.is_empty());
+        assert!(!Config::default().verbose);
+    }
 
     #[test]
     fn defaults_when_empty() {

@@ -141,6 +141,7 @@ fn main() {
     println!("Comandos (uma linha cada): kick <xuid> [motivo], allow <ip>, allowonly 1|0, punch <ip:porta>");
     println!("Pronto. Ctrl+C para fechar.");
 
+    let verbose = verbose || cfg.verbose;
     let settings = relay::Settings { max_players: cfg.max_players, mirror, verbose, ..Default::default() };
     let mut r = relay::Relay::new(sock, settings);
     r.set_commands(stdin_commands());
