@@ -1,7 +1,6 @@
 # Desenvolvimento
 
-Como o ForzaInfinity funciona por dentro e como trabalhar nele. Estado atual, endereços e
-pendências: `HANDOFF.md`. Planejamento: `MILESTONES.md`.
+Como o ForzaInfinity funciona por dentro e como trabalhar nele.
 
 ```
 jogo ──IXMLHTTPRequest2──▶ azimuth-tls.dll (hook) ──HTTP──▶ fh2-server (Rust)
@@ -38,7 +37,7 @@ A seção `[Network]` do `FH2_ExtraOptions.ini`:
 
 ## Servidor
 
-O hook reescreve `https://host/caminho` para `http://<Server>/host/caminho` e manda `X-Fh2-Original-Url` e `X-Fh2-Request-Id`. As chamadas Forza (`bin/xtsw`) são decodificadas pelo esquema extraído do exe (`server/schema.json`, `tools/extract_schema.py`; formato em `notes/xtsw-format.md`) e respondidas pelos handlers em `server/src/forza*.rs`. Sem handler, a resposta sai de `server/responses/`, relido a cada requisição:
+O hook reescreve `https://host/caminho` para `http://<Server>/host/caminho` e manda `X-Fh2-Original-Url` e `X-Fh2-Request-Id`. As chamadas Forza (`bin/xtsw`) são decodificadas pelo esquema extraído do exe (`server/schema.json`, `tools/extract_schema.py`) e respondidas pelos handlers em `server/src/forza*.rs`. Sem handler, a resposta sai de `server/responses/`, relido a cada requisição:
 
 1. a primeira regra que casar em `responses/routes.json` (`host`, `method`, `path`, `class`, `xmethod`, glob `*`);
 2. `responses/forza/<Classe>/<Metodo>.json`, depois `forza/<Classe>/_default.json`;
@@ -50,10 +49,6 @@ O hook reescreve `https://host/caminho` para `http://<Server>/host/caminho` e ma
 ```
 
 `tools/xtsw.py --replay <captura> <servidor>` reenvia as requisições Forza de uma captura e decodifica requisição e resposta.
-
-## Engenharia reversa
-
-Ghidra 12.1.4 headless. `notes/ghidra-scripts/Decomp.java` decompila uma lista de endereços (cria a função se preciso); o início de uma função sai do `.pdata` do exe. As decompilações (`notes/decomp*/`) ficam fora do git.
 
 ## Release dos jogadores
 

@@ -1,4 +1,4 @@
-//! Player-hosted worlds (PLANO_FREEROAM.md, phase F1). A player clicks HOSPEDAR MUNDO; the hook
+//! Player-hosted worlds. A player clicks HOSPEDAR MUNDO; the hook
 //! starts dedicated_server (the relay) on their PC and announces it here every 15 s. This
 //! server then sends players to the right world (freeroam.rs: `Freeroam::world_for`).
 //!

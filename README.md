@@ -27,8 +27,8 @@ Forza Horizon 2's online services, back for the PC version running on **Azimuth 
 
 **Online free roam** is back: players host worlds on their own PC (Settings › INFINITY › HOST WORLD)
 and reach each other directly, through routers, with no port to open; see
-[docs/FREEROAM.md](docs/FREEROAM.md). Online Road Trip and online races are planned for a later
-version ([MILESTONES.md](MILESTONES.md), M7).
+[docs/FREEROAM.md](docs/FREEROAM.md). Online Road Trip and online races are planned
+for a later version.
 
 ## Play
 
