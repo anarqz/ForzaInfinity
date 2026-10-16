@@ -6,6 +6,7 @@
 /// (English, Portuguese); `{}` marks the same values in both.
 const TEXTS: &[(&str, &str)] = &[
     ("Account suspended on this server.", "Conta suspensa neste servidor."),
+    ("The server's save comes first: restart the game to get it, then play on.", "O save do servidor vem primeiro: reinicie o jogo para recebê-lo e continue jogando."),
     ("New season! Your XP, level, credits, records and garage (all but your first car) started again. Your career, liveries and creations are kept. See you on the leaderboards!", "Nova temporada! Seu XP, nível, créditos, recordes e garagem (menos o seu primeiro carro) começaram de novo. Sua carreira, pinturas e criações continuam. Nos vemos nos placares!"),
     ("Moderation found progress on this profile that could not be real and reset it: XP, level, credits, records and the garage (all but your first car). Your career and liveries are kept.", "A moderação encontrou neste perfil um progresso que não poderia ser real e o zerou: XP, nível, créditos, recordes e a garagem (menos o seu primeiro carro). Sua carreira e suas pinturas continuam."),
     ("Your save had progress this server could not accept, so the server's save was restored. Restart the game to get it.", "Seu save tinha um progresso que este servidor não pôde aceitar, então o save do servidor foi restaurado. Reinicie o jogo para recebê-lo."),

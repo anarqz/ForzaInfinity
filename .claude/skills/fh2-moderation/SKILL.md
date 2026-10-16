@@ -16,11 +16,13 @@ Talk to Alex in Portuguese (CLAUDE.md).
 
 ## There is no ban
 
-The only punishment is a **reset**: the account goes back to a new profile's progress.
-- Its cloud save becomes the starting save of the starter car it chose at the beginning, with 0
-  credits (garage: that one car).
+The only punishment is a **reset**: the account's season starts again, its career stays.
+- Its own cloud save is edited: XP, level, skill points, perks and credits to 0; the garage keeps
+  only the first starter car it got (with its parts); track records, speed trap bests and extra
+  badges go. Championships, unlocks, tutorials stay, so nobody replays the story.
 - Its scores (leaderboards, speed traps), ghosts, drivatar, XP, transactions and synced
   profile/garage on the server are deleted.
+- The player is told in their Message Center and in INFINITY.
 - Its liveries, designs and shared files are **kept** (they have their own reports).
 - The flag and its reports go; new reports start from zero.
 - The game downloads the reset save at its next start and INFINITY tells the player; until then
@@ -49,9 +51,13 @@ server/target/release/fh2-server moderation --root server clear XUID --note-base
 server/target/release/fh2-server moderation --root server reset XUID --note-base64 "$(printf '%s' 'why' | base64 -w0)"
 ```
 
-(`--root` is the server folder: its `templates/` has the starting saves and its
-`data/fh2online.sqlite` is the database; `--db FILE` names another database. To try a reset
-without touching real players, copy the database and pass the copy with `--db`.)
+(`--root` is the server folder: its `data/fh2online.sqlite` is the database; `--db FILE` names
+another database. To try a reset without touching real players, copy the database and pass the
+copy with `--db`.)
+
+`season-reset` (every account) is not a moderation tool: never run it unless Alex asks for a new
+season, and then dry-run it first (without `--yes`) and show him the count. `check-saves` is read
+only: use it to see whether the save checks would refuse anyone's real save.
 
 ## A moderation round
 
