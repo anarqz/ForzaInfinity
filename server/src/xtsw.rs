@@ -1,7 +1,6 @@
 //! `bin/xtsw` codec for the Xls web services (Forza.WebServices / Xls.WebServices).
 //!
-//! The wire format was read from the game's own reader (forza_durango_release_final.exe,
-//! see notes/xtsw-format.md):
+//! The wire format was read from the game's own reader (forza_durango_release_final.exe):
 //! - everything is big-endian and positional: fields follow the type descriptor order, no tags;
 //! - `string` / `datetime`: u32 byte length (<= 0x2000) + UTF-8;
 //! - `blob`: u32 length (<= 0x80000) + bytes; `array`: u32 count (<= 0x2000) + elements;

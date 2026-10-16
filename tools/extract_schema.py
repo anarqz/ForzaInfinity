@@ -3,7 +3,7 @@
 Uso: python extract_schema.py <forza_durango_release_final.exe> <saida.json>
 Requer: pefile.
 
-Como funciona (detalhes em notes/xtsw-format.md):
+Como funciona:
 - Cada tipo e registrado por um inicializador estatico de 4 instrucoes:
       lea rdx, [descritores] ; lea rcx, [celula .data] ; mov r8d, n ; jmp REG
   REG (0x140ee4a00) so grava {descritores, n} na celula.
