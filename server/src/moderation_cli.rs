@@ -6,16 +6,21 @@
 //!   fh2-server moderation [--db FILE] [--root DIR] list              flagged accounts, oldest first
 //!   fh2-server moderation [--db FILE] [--root DIR] show XUID         reports, records, profile, gates, log
 //!   fh2-server moderation [--db FILE] [--root DIR] clear XUID [NOTE] nothing wrong: flag and reports go
-//!   fh2-server moderation [--db FILE] [--root DIR] reset XUID [NOTE] cheating: progress back to a new
-//!                                                                     profile's (db/reset.rs); liveries stay
+//!   fh2-server moderation [--db FILE] [--root DIR] reset XUID [NOTE] cheating: XP, credits, records and
+//!                                                                     cars but the first start again
+//!                                                                     (db/reset.rs); career and liveries stay
+//!   fh2-server moderation ... season-reset [--yes] [--only XUID] [NOTE]   the same for every account (or one: --only; no drivatar
+//!                                                       deleted); without --yes it only counts. It backs
+//!                                                       the database up first (<db>.before-season-<ms>)
+//!   fh2-server moderation ... check-saves               every account's cloud save against the save
+//!                                                       checks (db/saves.rs), read only
 //!   fh2-server moderation ... files                     shared files off the storefront after 3 reports
 //!   fh2-server moderation ... file ID [--preview-only]  one file: details, reports (--preview-only: its
 //!                                                       preview image, base64, and nothing else)
 //!   fh2-server moderation ... file-keep ID [NOTE]       nothing wrong: back on the storefront
 //!   fh2-server moderation ... file-delete ID [NOTE]     offensive or stolen: gone for good
 //!
-//! --root is the server's folder (its templates/ has the starting saves); the default database
-//! is <root>/data/fh2online.sqlite. --note-base64 B64 gives the NOTE as base64 UTF-8 (no quoting
+//! --root is the server's folder; the default database is <root>/data/fh2online.sqlite. --note-base64 B64 gives the NOTE as base64 UTF-8 (no quoting
 //! through ssh: infra/moderation.sh).
 
 use std::path::PathBuf;
@@ -29,6 +34,8 @@ const USAGE: &str = "fh2-server moderation [--db FILE] [--root DIR] list
 fh2-server moderation [--db FILE] [--root DIR] show XUID
 fh2-server moderation [--db FILE] [--root DIR] clear XUID [NOTE]
 fh2-server moderation [--db FILE] [--root DIR] reset XUID [NOTE]
+fh2-server moderation [--db FILE] [--root DIR] season-reset [--yes] [--only XUID] [NOTE]
+fh2-server moderation [--db FILE] [--root DIR] check-saves
 fh2-server moderation [--db FILE] [--root DIR] files
 fh2-server moderation [--db FILE] [--root DIR] file ID [--preview-only]
 fh2-server moderation [--db FILE] [--root DIR] file-keep ID [NOTE]
@@ -48,6 +55,8 @@ pub fn run(args: Vec<String>) {
     let mut db = None::<PathBuf>;
     let mut note_given = None::<String>;
     let mut preview_only = false;
+    let mut yes = false;
+    let mut only = None::<u64>;
     let mut words = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -60,6 +69,8 @@ pub fn run(args: Vec<String>) {
                 note_given = Some(String::from_utf8(bytes).unwrap_or_else(|_| fail("the note is not UTF-8")));
             }
             "--preview-only" => preview_only = true,
+            "--yes" => yes = true,
+            "--only" => only = Some(value("--only").parse().unwrap_or_else(|_| fail("--only XUID"))),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return;
@@ -93,10 +104,43 @@ pub fn run(args: Vec<String>) {
         }
         Some("reset") => {
             let x = xuid(words.get(1));
-            match store.moderation_reset(x, &root.join("templates"), &note(2)) {
+            match store.reset_account(x, crate::db::reset::ResetKind::Moderation, &note(2)) {
                 Ok(done) => print(done),
                 Err(e) => fail(&e),
             }
+        }
+        Some("season-reset") => {
+            let accounts: Vec<u64> = store.all_accounts().into_iter().filter(|x| only.is_none_or(|o| o == *x)).collect();
+            let with_save = accounts.iter().filter(|x| store.save_info(**x).is_some()).count();
+            if !yes {
+                print(json!({ "dryRun": true, "accounts": accounts.len(), "withCloudSave": with_save,
+                              "next": "run again with --yes (the database is backed up first)" }));
+                return;
+            }
+            let backup = db.with_extension(format!("before-season-{}", crate::unix_ms()));
+            if let Err(e) = store.backup_to(&backup) {
+                fail(&format!("backup failed ({e}); nothing was reset"));
+            }
+            let note = note(1);
+            let (mut done, mut failed) = (0, Vec::new());
+            for x in &accounts {
+                match store.reset_account(*x, crate::db::reset::ResetKind::Season, &note) {
+                    Ok(_) => done += 1,
+                    Err(e) => failed.push(json!({ "xuid": x.to_string(), "error": e })),
+                }
+            }
+            print(json!({ "reset": done, "failed": failed, "backup": backup.display().to_string() }));
+        }
+        Some("check-saves") => {
+            let (mut good, mut bad) = (0, Vec::new());
+            for x in store.all_accounts() {
+                let Some(save) = store.save_data(x) else { continue };
+                match crate::db::saves::check_bundle(&save).and_then(|_| crate::db::saves::check_contents(&save)) {
+                    Ok(()) => good += 1,
+                    Err(e) => bad.push(json!({ "xuid": x.to_string(), "error": e, "bytes": save.len() })),
+                }
+            }
+            print(json!({ "pass": good, "fail": bad }));
         }
         Some("files") => print(json!({ "underReview": store.files_under_review() })),
         Some("file") => {
