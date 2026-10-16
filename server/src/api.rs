@@ -512,6 +512,14 @@ fn save_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
             if !saves::valid_commit(commit) {
                 return json_reply(400, &json!({ "error": "invalid commit" }));
             }
+            // a real save's shape and sizes, every file as its commit lists it (db/saves.rs): anything
+            // else is not what the game writes, and counts as a strike
+            if let Err(why) = saves::check_bundle(&request.body).and_then(|_| saves::check_contents(&request.body)) {
+                let strikes = app.store.strike(xuid, &format!("save: {why}"));
+                app.store.add_event(xuid, "integrity", &format!("Save recusado: {why}"), json!({ "strikes": strikes }));
+                eprintln!("integrity: {xuid} save refused ({why}), strike {strikes}");
+                return json_reply(400, &json!({ "error": "That is not a save of the game.", "why": "save" }));
+            }
             // a new profile's first save (its offline progress) starts the season like everyone's:
             // its career stays, XP, credits, records and all cars but the first start again
             let fresh = saves::check_bundle(&request.body)
