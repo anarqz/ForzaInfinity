@@ -52,6 +52,16 @@ pub struct Progress {
 }
 
 pub fn progress(params: &Value) -> Result<Progress, String> {
+    let p = progress_numbers(params)?;
+    if p.credits > MAX_CREDITS || p.winnings > MAX_CREDITS || p.xp > MAX_XP || p.level > MAX_LEVEL {
+        return Err("numbers beyond the game's limits".into());
+    }
+    Ok(p)
+}
+
+/// The numbers alone, technically checked (none negative, a real top speed), with no limit: what
+/// a Noob profile's sync is held to.
+pub fn progress_numbers(params: &Value) -> Result<Progress, String> {
     let history = &params["playerHistory"][0];
     let race = &params["playerRaceHistory"][0];
     let int = |v: &Value, name: &str| -> Result<i64, String> {
@@ -72,9 +82,6 @@ pub fn progress(params: &Value) -> Result<Progress, String> {
         winnings: int(&race["totalWinnings"], "winnings")?,
         top_speed,
     };
-    if p.credits > MAX_CREDITS || p.winnings > MAX_CREDITS || p.xp > MAX_XP || p.level > MAX_LEVEL {
-        return Err("numbers beyond the game's limits".into());
-    }
     Ok(p)
 }
 
@@ -168,6 +175,12 @@ pub fn check_garage(
 
 /// Records a refused report: event for the manager, strike for the player.
 pub fn refuse(ctx: &Ctx, what: &str, reason: &str) {
+    // a Noob profile has no strikes: what is not technically sound is only left out
+    if ctx.noob() {
+        eprintln!("integrity: {} (Noob) {what} left out ({reason})", ctx.xuid);
+        ctx.event("integrity", format!("{what} ignorado (Noob): {reason}"), serde_json::json!({ "what": what, "reason": reason }));
+        return;
+    }
     let strikes = ctx.store.strike(ctx.xuid, &format!("{what}: {reason}"));
     eprintln!("integrity: {} {what} refused ({reason}), strike {strikes}", ctx.xuid);
     ctx.event(

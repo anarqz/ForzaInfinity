@@ -39,7 +39,7 @@ pub struct Ctx<'a> {
 
 impl Ctx<'_> {
     /// A Noob profile (db/accounts.rs MODE_NOOB): no progress gates, only the technical checks.
-    fn noob(&self) -> bool {
+    pub(crate) fn noob(&self) -> bool {
         self.store.account_mode(self.xuid) == crate::db::accounts::MODE_NOOB
     }
 
@@ -574,8 +574,10 @@ fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
     // integrity: credits / XP / level growth and top speed within reason (gates.rs)
     let now = crate::unix_ms();
     let noob = ctx.noob();
-    let checked = gates::progress(params).and_then(|p| {
-        // a Noob profile: only the game's limits (gates::progress), no growth or speed gate
+    // a Noob profile: only technically sound numbers (none negative, a real top speed); no limit,
+    // growth or speed gate
+    let numbers = if noob { gates::progress_numbers(params) } else { gates::progress(params) };
+    let checked = numbers.and_then(|p| {
         if noob {
             return Ok(p);
         }
@@ -595,7 +597,8 @@ fn profile_update_all(ctx: &Ctx, params: &Value) -> Value {
             // the refused progress must leave the player's save too, or the game keeps sending it
             // (and its save and profile drift apart): the server's save comes back at the next
             // start, as for a refused save upload (db/reset.rs PENDING_REFUSED; the hook tells why)
-            if ctx.store.save_info(ctx.xuid).is_some() && ctx.store.reset_pending(ctx.xuid) == 0 {
+            // (never for a Noob profile: it is not refused progress, only data the game would not send)
+            if !noob && ctx.store.save_info(ctx.xuid).is_some() && ctx.store.reset_pending(ctx.xuid) == 0 {
                 ctx.store.set_reset_pending(ctx.xuid, crate::db::reset::PENDING_REFUSED);
             }
             return json!({});
@@ -1274,6 +1277,39 @@ mod tests {
 
     /// Players who are not friends see each other's times, ghosts and drivatars; a banned
     /// player is left out; friends come first in the grid and as rivals.
+    #[test]
+    fn noob_profile_takes_any_numbers_without_strikes() {
+        use crate::db::accounts::{MODE_HARDCORE, MODE_NOOB};
+        let dir = std::env::temp_dir().join(format!("fh2-noob-{}", crate::db::accounts::new_token()));
+        let store = Store::open(&dir.join("t.sqlite")).unwrap();
+        let catalog = Catalog::default();
+        let pc = |n: u8| format!("{n:02x}").repeat(32);
+        let noob = store.register_account("N1", "00001", &pc(1), MODE_NOOB).unwrap().0.xuid;
+        let hard = store.register_account("H1", "00001", &pc(2), MODE_HARDCORE).unwrap().0.xuid;
+        let ctx = |xuid| Ctx { store: &store, catalog: &catalog, xuid, events: RefCell::new(Vec::new()), mode: Default::default() };
+        let sync = json!({
+            "playerHistory": [{ "credits": 5_000_000_000i64 }],
+            "playerRaceHistory": [{ "xp": 900_000_000, "level": 5000, "totalWinnings": 0, "topSpeed": 90.0 }],
+        });
+        for x in [noob, hard] {
+            store.put_save(x, 1, &"a".repeat(64), b"save");
+            handle(&ctx(x), "OnlineProfile", "UpdateAll", &sync).unwrap();
+        }
+        // Noob: kept as sent, no strike, no restore asked
+        assert_eq!(store.profile_data(noob)["playerHistory"][0]["credits"], 5_000_000_000i64);
+        assert_eq!(store.strikes(noob).0, 0);
+        assert_eq!(store.reset_pending(noob), 0);
+        // Hardcore: refused, a strike, the server's save back at the next start
+        assert_eq!(store.strikes(hard).0, 1);
+        assert_eq!(store.reset_pending(hard), crate::db::reset::PENDING_REFUSED);
+        // a Noob's technically broken sync is left out, still without a strike
+        let broken = json!({ "playerHistory": [{ "credits": -5 }], "playerRaceHistory": [{}] });
+        handle(&ctx(noob), "OnlineProfile", "UpdateAll", &broken).unwrap();
+        assert_eq!(store.strikes(noob).0, 0);
+        assert_eq!(store.profile_data(noob)["playerHistory"][0]["credits"], 5_000_000_000i64);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn hardcore_and_noob_never_see_each_other() {
         use crate::db::accounts::{MODE_HARDCORE, MODE_NOOB};
