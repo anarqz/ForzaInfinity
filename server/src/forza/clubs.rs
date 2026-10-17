@@ -53,7 +53,7 @@ pub fn member_data(ctx: &Ctx, xuid: u64) -> Value {
 pub fn club_data(ctx: &Ctx, club: &Club, viewer: u64) -> Value {
     let members = ctx.store.club_members(club.id);
     let leader = members.iter().find(|m| m.1 == ROLE_LEADER).map(|m| m.0);
-    let friends: Vec<u64> = ctx.store.friends(viewer).into_iter().map(|f| f.0).collect();
+    let friends: Vec<u64> = ctx.store.friends(viewer).into_iter().filter(|f| ctx.same_mode(f.0)).map(|f| f.0).collect();
     let friend = members.iter().find(|m| friends.contains(&m.0)).map(|m| m.0);
     // The member with the highest career level stands in for the club champion.
     let champion = members.iter().map(|m| m.0).max_by_key(|&x| ctx.store.login(x)["currentCareerLevel"].as_u64().unwrap_or(0));
@@ -84,6 +84,11 @@ pub fn club_data(ctx: &Ctx, club: &Club, viewer: u64) -> Value {
 /// Every club is visible to everyone, except private ones: those only to their
 /// members and the members' friends.
 fn visible(ctx: &Ctx, club: &Club) -> bool {
+    // a club is of its leader's profile mode: HARDCORE and NOOB clubs are apart
+    let leader = ctx.store.club_members(club.id).into_iter().find(|m| m.1 == ROLE_LEADER).map(|m| m.0);
+    if leader.is_some_and(|l| !ctx.same_mode(l)) {
+        return false;
+    }
     if club.privacy != PRIVACY_PRIVATE {
         return true;
     }
@@ -336,7 +341,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         }
         (true, "Club", "GetClubStatus") => {
             let who = match param_xuid(params, "xuid") {
-                x if x != 0 && ctx.can_see(x) => x,
+                x if x != 0 && ctx.meets(x) => x,
                 _ => me,
             };
             json!({ "clubStatus": {
@@ -346,7 +351,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
         }
         (true, "Club", "GetClubHistory") => {
             let who = match param_xuid(params, "userXuid") {
-                x if x != 0 && ctx.can_see(x) => x,
+                x if x != 0 && ctx.meets(x) => x,
                 _ => me,
             };
             let entries: Vec<Value> = ctx
@@ -405,7 +410,7 @@ pub fn handle(ctx: &Ctx, xls: bool, class: &str, method: &str, params: &Value) -
                     None => param_xuid(params, "userToInvite"),
                 };
                 // anyone on the server can be invited (acceptsClubInvites still says no for them)
-                if who == 0 || who == me || !ctx.can_see(who) {
+                if who == 0 || who == me || !ctx.meets(who) {
                     return Some(error(1, "unknown player"));
                 }
                 match ctx.store.invite_to_club(club.id, me, who) {

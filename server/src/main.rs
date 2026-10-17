@@ -615,6 +615,7 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
         catalog: &app.catalog,
         xuid,
         events: Default::default(),
+        mode: Default::default(),
     };
 
     // Online free roam (freeroam.rs): only for an account, and not over a routes.json rule.
@@ -1113,7 +1114,8 @@ fn unix_ms() -> i64 {
 
 /// The players `xuid` is friends with (both added each other).
 fn mutual_friends(store: &db::Store, xuid: u64) -> Vec<u64> {
-    store.friends(xuid).into_iter().filter(|f| f.2).map(|f| f.0).collect()
+    let mode = store.account_mode(xuid);
+    store.friends(xuid).into_iter().filter(|f| f.2 && store.account_mode(f.0) == mode).map(|f| f.0).collect()
 }
 
 /// Who is playing: the account of X-Fh2-Token (sent by the hook once the player has an

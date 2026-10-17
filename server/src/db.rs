@@ -368,6 +368,19 @@ impl Store {
     }
 
     pub fn leaderboard(&self, scoreboard_type: i64, score_type: i64, track_id: Option<i64>, game_scoreboard_id: Option<i64>) -> Vec<ScoreRow> {
+        self.leaderboard_of(scoreboard_type, score_type, track_id, game_scoreboard_id, None)
+    }
+
+    /// The board among the players of one profile mode (db/accounts.rs MODE_*; None: everyone):
+    /// HARDCORE and NOOB players never see each other's times.
+    pub fn leaderboard_of(
+        &self,
+        scoreboard_type: i64,
+        score_type: i64,
+        track_id: Option<i64>,
+        game_scoreboard_id: Option<i64>,
+        mode: Option<i64>,
+    ) -> Vec<ScoreRow> {
         let lower = lower_is_better(score_type);
         let mut rows: Vec<ScoreRow> = self
             .with(|db| {
@@ -375,10 +388,11 @@ impl Store {
                     "SELECT xuid, score, time, data FROM scores
                      WHERE scoreboard_type = ?1 AND score_type = ?2
                        AND (?3 IS NULL OR track_id = ?3) AND (?4 IS NULL OR game_scoreboard_id = ?4)
-                       AND xuid NOT IN (SELECT xuid FROM accounts WHERE banned = 1)",
+                       AND xuid NOT IN (SELECT xuid FROM accounts WHERE banned = 1)
+                       AND (?5 IS NULL OR COALESCE((SELECT mode FROM accounts WHERE accounts.xuid = scores.xuid), 0) = ?5)",
                 )?;
                 let found = stmt
-                    .query_map(params![scoreboard_type, score_type, track_id, game_scoreboard_id], |r| {
+                    .query_map(params![scoreboard_type, score_type, track_id, game_scoreboard_id, mode], |r| {
                         Ok(ScoreRow {
                             xuid: r.get::<_, i64>(0)? as u64,
                             score: r.get(1)?,
@@ -502,13 +516,16 @@ impl Store {
     /// The ghost of one of `owners` on a route (event ignored) whose score is closest to
     /// `score`: (ghost id, its score, its car).
     /// The ghost closest to `score` on a route: among `owners`, or (None) everyone not banned.
-    pub fn nearest_ghost(&self, owners: Option<&[u64]>, scoreboard_type: i64, score_type: i64, track_id: i64, score: f64) -> Option<(i64, f64, i64)> {
+    /// `mode`: only ghosts of players of that profile mode (db/accounts.rs MODE_*).
+    pub fn nearest_ghost(&self, owners: Option<&[u64]>, mode: i64, scoreboard_type: i64, score_type: i64, track_id: i64, score: f64) -> Option<(i64, f64, i64)> {
         let whose = match owners {
             Some([]) => return None,
             // integers only: safe to inline
             Some(owners) => format!("xuid IN ({})", owners.iter().map(|x| (*x as i64).to_string()).collect::<Vec<_>>().join(",")),
             None => "xuid NOT IN (SELECT xuid FROM accounts WHERE banned = 1)".to_owned(),
         };
+        // integers only: safe to inline
+        let whose = format!("{whose} AND COALESCE((SELECT mode FROM accounts WHERE accounts.xuid = ghosts.xuid), 0) = {}", mode);
         self.with(|db| {
             db.query_row(
                 &format!(
@@ -562,13 +579,14 @@ impl Store {
     }
 
     /// The players with a drivatar (accounts not banned), the most recently trained first.
-    pub fn drivatar_owners(&self, limit: usize) -> Vec<u64> {
+    /// The latest trained drivatars of the players of one profile mode (db/accounts.rs MODE_*).
+    pub fn drivatar_owners(&self, limit: usize, mode: i64) -> Vec<u64> {
         self.with(|db| {
             let mut stmt = db.prepare(
                 "SELECT d.xuid FROM drivatars d JOIN accounts a ON a.xuid = d.xuid
-                 WHERE a.banned = 0 ORDER BY d.updated DESC LIMIT ?1",
+                 WHERE a.banned = 0 AND a.mode = ?2 ORDER BY d.updated DESC LIMIT ?1",
             )?;
-            let found = stmt.query_map([limit as i64], |r| r.get::<_, i64>(0))?.flatten().map(|x| x as u64).collect::<Vec<_>>();
+            let found = stmt.query_map(params![limit as i64, mode], |r| r.get::<_, i64>(0))?.flatten().map(|x| x as u64).collect::<Vec<_>>();
             Ok(found)
         })
         .unwrap_or_default()

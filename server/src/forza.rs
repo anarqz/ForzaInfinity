@@ -33,6 +33,8 @@ pub struct Ctx<'a> {
     pub xuid: u64,
     /// Feed events created while handling the request, published by the caller.
     pub events: RefCell<Vec<Value>>,
+    /// The requesting player's profile mode, read once (Ctx::mode).
+    pub mode: std::cell::OnceCell<i64>,
 }
 
 impl Ctx<'_> {
@@ -54,7 +56,24 @@ impl Ctx<'_> {
     /// friends list, presence, messages, Meus Rivais and challenges) and come first in drivatar
     /// grids and rival picks; everything else is open to the whole server.
     fn friend_ids(&self) -> Vec<u64> {
-        self.store.friends(self.xuid).into_iter().filter(|f| f.2).map(|f| f.0).collect()
+        self.store.friends(self.xuid).into_iter().filter(|f| f.2 && self.same_mode(f.0)).map(|f| f.0).collect()
+    }
+
+    /// The player's profile mode (db/accounts.rs MODE_*).
+    fn mode(&self) -> i64 {
+        *self.mode.get_or_init(|| self.store.account_mode(self.xuid))
+    }
+
+    /// Whether `xuid` plays in the player's profile mode: HARDCORE and NOOB players never see each
+    /// other (times, ghosts, rivals, drivatars, friends, clubs, worlds); only the storefront is
+    /// shared.
+    fn same_mode(&self, xuid: u64) -> bool {
+        xuid == self.xuid || self.store.account_mode(xuid) == self.mode()
+    }
+
+    /// `can_see` within the player's profile mode: everything but the storefront.
+    fn meets(&self, xuid: u64) -> bool {
+        self.can_see(xuid) && self.same_mode(xuid)
     }
 
     /// Whether the player sees `xuid`'s times, ghosts, drivatar, liveries and shared files:
@@ -68,7 +87,7 @@ impl Ctx<'_> {
     fn drivatar_candidates(&self) -> Vec<u64> {
         let friends: Vec<u64> = self.friend_ids().into_iter().filter(|x| self.store.is_public_player(*x)).collect();
         let mut others: Vec<u64> =
-            self.store.drivatar_owners(400).into_iter().filter(|x| *x != self.xuid && !friends.contains(x)).collect();
+            self.store.drivatar_owners(400, self.mode()).into_iter().filter(|x| *x != self.xuid && !friends.contains(x)).collect();
         let mut seed = (crate::unix_ms() as u64) ^ self.xuid.rotate_left(17) | 1;
         for i in (1..others.len()).rev() {
             seed ^= seed << 13;
@@ -221,7 +240,7 @@ pub fn handle(ctx: &Ctx, class: &str, method: &str, params: &Value) -> Option<Va
             let max = params["numUsers"].as_i64().filter(|&n| n > 0).unwrap_or(10).min(100) as usize;
             let stats: Vec<Value> = xuids
                 .into_iter()
-                .filter(|&x| ctx.can_see(x))
+                .filter(|&x| ctx.meets(x))
                 .take(max)
                 .map(|x| {
                     let tables = ctx.store.tables(x);
@@ -318,6 +337,7 @@ pub fn live_service(ctx: &Ctx, req: &LiveRequest) -> Option<Value> {
             .store
             .friends(subject)
             .iter()
+            .filter(|f| ctx.same_mode(f.0))
             .filter(|f| f.2)
             .map(|&(friend, favorite, mutual)| {
                 json!({
@@ -369,7 +389,7 @@ pub fn live_service(ctx: &Ctx, req: &LiveRequest) -> Option<Value> {
     // One player's presence (anyone on the server: a leaderboard or a grid opens their card).
     if host == "userpresence.xboxlive.com" && req.method == "GET" && path.ends_with(')') {
         if let Some(x) = path_xuid(path) {
-            if ctx.can_see(x) {
+            if ctx.meets(x) {
                 return Some(presence_record(ctx, x));
             }
             return Some(json!({ "xuid": x.to_string(), "state": "Offline" }));
@@ -715,7 +735,7 @@ const MAX_GHOST: usize = 256_000;
 fn download_file(ctx: &Ctx, params: &Value) -> Value {
     let id = params["id"].as_i64().unwrap_or(0);
     let max = params["maxSize"].as_i64().unwrap_or(i64::MAX).max(0) as usize;
-    match ctx.store.ghost(id).filter(|g| ctx.can_see(g.0)).map(|g| g.1) {
+    match ctx.store.ghost(id).filter(|g| ctx.meets(g.0)).map(|g| g.1) {
         Some(data) if data.len() <= max && data.len() <= MAX_GHOST => {
             ctx.event("ghost", format!("Fantasma #{id} enviado ao jogo ({} KB)", (data.len() + 1023) / 1024), json!({ "ghostId": id }));
             let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
@@ -743,11 +763,12 @@ fn best_score(ctx: &Ctx, params: &Value) -> Value {
     let int = |k: &str| params[k].as_i64().unwrap_or(-1);
     // asked before every race: remember the real events (rival challenges point at them)
     ctx.store.record_race_event(int("scoreboardType"), int("scoreType"), int("gameScoreboardId"), int("trackId"), int("carClassId"));
-    let rows = ctx.store.leaderboard(
+    let rows = ctx.store.leaderboard_of(
         int("scoreboardType"),
         int("scoreType"),
         Some(int("trackId")),
         Some(int("gameScoreboardId")),
+        Some(ctx.mode()),
     );
     match rows.iter().find(|r| r.xuid == ctx.xuid) {
         Some(r) => json!({
@@ -799,6 +820,10 @@ fn club_xp_rows(ctx: &Ctx, params: &Value) -> Value {
             .filter(|c| c.privacy != crate::db::clubs::PRIVACY_PRIVATE || Some(c.id) == mine)
             .filter_map(|c| {
                 let leader = ctx.store.club_members(c.id).into_iter().find(|m| m.1 == ROLE_LEADER).map(|m| m.0)?;
+                // clubs of the player's profile mode only (a club is its leader's)
+                if !ctx.same_mode(leader) {
+                    return None;
+                }
                 Some((leader, ctx.store.club_xp(c.id) as f64, Some(c.id) == mine, c.id))
             })
             .collect();
@@ -836,11 +861,12 @@ fn score_rows(ctx: &Ctx, params: &Value) -> Value {
     }
     let track = params["trackId"].as_i64().filter(|t| *t >= 0);
     let event = if track.is_none() { params["pivotId"].as_i64() } else { None };
-    let rows = ctx.store.leaderboard(
+    let rows = ctx.store.leaderboard_of(
         params["scoreboardType"].as_i64().unwrap_or(-1),
         params["scoreType"].as_i64().unwrap_or(-1),
         track,
         event,
+        Some(ctx.mode()),
     );
     let view = params["view"].as_i64().unwrap_or(0);
     let club_members = || -> Vec<u64> {
@@ -1094,7 +1120,7 @@ pub fn generated_gamertag(xuid: u64) -> String {
 fn pick_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
     let int = |k: &str| params[k].as_i64().unwrap_or(-1);
     let (board, score_type, track, class) = (int("scoreboardType"), int("scoreType"), int("trackId"), int("pivotId"));
-    let rows = ctx.store.leaderboard(board, score_type, Some(track), None);
+    let rows = ctx.store.leaderboard_of(board, score_type, Some(track), None, Some(ctx.mode()));
     let mine = rows.iter().find(|r| r.xuid == ctx.xuid).map(|r| r.score);
     let friends = ctx.friend_ids();
     let in_class = |r: &crate::db::ScoreRow| {
@@ -1119,7 +1145,7 @@ fn challenge_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
     let int = |k: &str| params[k].as_i64().unwrap_or(-1);
     let (board, score_type, track) = (int("scoreboardType"), int("scoreType"), int("trackId"));
     let rival_xuid = params["rivalXuid"].as_u64().unwrap_or(0);
-    let best = |x: u64| ctx.store.leaderboard(board, score_type, Some(track), None).into_iter().find(|r| r.xuid == x);
+    let best = |x: u64| ctx.store.leaderboard_of(board, score_type, Some(track), None, Some(ctx.mode())).into_iter().find(|r| r.xuid == x);
     let sender = (rival_xuid != 0).then_some(rival_xuid);
     let (xuid, score, car, class) = if let Some(p) = ctx.store.pending_challenge(ctx.xuid, track, Some(int("rivalEventId")), sender) {
         let from = p["senderXuid"].as_u64().unwrap_or(0);
@@ -1131,7 +1157,7 @@ fn challenge_rival(ctx: &Ctx, params: &Value) -> Option<Value> {
         return None;
     };
     // challenges come from friends; a time asked by xuid can be anyone's on the server
-    if xuid == ctx.xuid || !ctx.can_see(xuid) {
+    if xuid == ctx.xuid || !ctx.meets(xuid) {
         return None;
     }
     ctx.store.record_race_event(board, score_type, int("rivalEventId"), track, int("pivotId"));
@@ -1146,11 +1172,11 @@ fn rival_ghost(ctx: &Ctx, params: &Value, rival: u64, score: f64) -> i64 {
     let (board, score_type, track) = (int("scoreboardType"), int("scoreType"), int("trackId"));
     let own = ctx
         .store
-        .leaderboard(board, score_type, Some(track), None)
+        .leaderboard_of(board, score_type, Some(track), None, Some(ctx.mode()))
         .into_iter()
         .find(|r| r.xuid == rival)
         .and_then(|r| ctx.store.ghost_id(rival, board, score_type, r.data["gameScoreboardId"].as_i64().unwrap_or(-1), track));
-    own.or_else(|| ctx.store.nearest_ghost(None, board, score_type, track, score).map(|g| g.0))
+    own.or_else(|| ctx.store.nearest_ghost(None, ctx.mode(), board, score_type, track, score).map(|g| g.0))
     .unwrap_or(0)
 }
 
@@ -1249,13 +1275,59 @@ mod tests {
     /// Players who are not friends see each other's times, ghosts and drivatars; a banned
     /// player is left out; friends come first in the grid and as rivals.
     #[test]
+    fn hardcore_and_noob_never_see_each_other() {
+        use crate::db::accounts::{MODE_HARDCORE, MODE_NOOB};
+        let dir = std::env::temp_dir().join(format!("fh2-modes-{}", crate::db::accounts::new_token()));
+        let store = Store::open(&dir.join("t.sqlite")).unwrap();
+        let catalog = Catalog::default();
+        let pc = |n: u8| format!("{n:02x}").repeat(32);
+        let reg = |n: u8, mode| store.register_account(&format!("M{n}"), "00001", &pc(n), mode).unwrap().0.xuid;
+        let (h1, h2, n1) = (reg(1, MODE_HARDCORE), reg(2, MODE_HARDCORE), reg(3, MODE_NOOB));
+        let ctx = |xuid| Ctx { store: &store, catalog: &catalog, xuid, events: RefCell::new(Vec::new()), mode: Default::default() };
+        let call = |xuid, method: &str, params: Value| handle(&ctx(xuid), "Scoreboard", method, &params).unwrap();
+        let route = json!({ "scoreboardType": 0, "scoreType": 1, "trackId": 7, "gameScoreboardId": 70, "carId": 461 });
+        for (x, time) in [(h1, 100.0), (n1, 50.0)] {
+            let mut data = route.clone();
+            data["score"] = json!(time);
+            let id = store.add_score(x, 1, &data);
+            assert!(store.save_ghost(x, &id, b"ghost").is_some());
+            store.save_drivatar(x, &json!({ "info": {}, "curveTypes": [], "segmentInformation": [] }));
+            store.apply_tables(x, &json!({ "garageCars": [{ "id": 1, "carId": 461, "numRaces": 3 }] }));
+        }
+        // even as friends (made before the modes)
+        store.add_friend(h2, n1);
+        store.add_friend(n1, h2);
+        let rows = |x| call(x, "GetRows", json!({ "scoreboardType": 0, "scoreType": 1, "view": 0, "trackId": 7, "startAt": 1, "maxResults": 50 }))["rows"]
+            .as_array().unwrap().iter().map(|r| r["user"]["qwXuid"].as_u64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(rows(h2), vec![h1]);
+        assert_eq!(rows(n1), vec![n1]);
+        // the NOOB's ghost is not downloadable by a HARDCORE player
+        let ghost = store.ghost_id(n1, 0, 1, 70, 7).unwrap();
+        assert!(call(h2, "DownloadFile", json!({ "id": ghost, "maxSize": 1000 }))["__xtsw_error"].is_object());
+        // rival: the HARDCORE one, though the NOOB friend's time exists
+        let mut mine = route.clone();
+        mine["score"] = json!(60.0);
+        store.add_score(h2, 1, &mine);
+        let rival = call(h2, "GetRival", json!({ "scoreboardType": 0, "scoreType": 1, "trackId": 7, "pivotId": -1 }));
+        assert_eq!(rival["rival"]["scoreData"]["score"], 100.0);
+        // drivatars of the same mode only
+        let cache = |x| handle(&ctx(x), "Drivatar", "GetDrivatarsForCache", &json!({ "numberOfDrivatars": 10 })).unwrap()["drivatarInfos"]
+            .as_array().unwrap().iter().map(|i| i["Xuid"].as_u64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(cache(h2), vec![h1]);
+        assert!(cache(h1).is_empty());
+        // no friend across the modes
+        assert!(ctx(h2).friend_ids().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn open_to_the_whole_server() {
         let dir = std::env::temp_dir().join(format!("fh2-open-{}", crate::db::accounts::new_token()));
         let store = Store::open(&dir.join("t.sqlite")).unwrap();
         let catalog = Catalog::default();
         let pc = |n: u8| format!("{n:02x}").repeat(32);
         let [a, b, c, d] = [1u8, 2, 3, 4].map(|n| store.register_account(&format!("P{n}"), "00001", &pc(n), crate::db::accounts::MODE_HARDCORE).unwrap().0.xuid);
-        let ctx = |xuid| Ctx { store: &store, catalog: &catalog, xuid, events: RefCell::new(Vec::new()) };
+        let ctx = |xuid| Ctx { store: &store, catalog: &catalog, xuid, events: RefCell::new(Vec::new()), mode: Default::default() };
         let call = |xuid, method: &str, params: Value| handle(&ctx(xuid), "Scoreboard", method, &params).unwrap();
         let route = json!({ "scoreboardType": 0, "scoreType": 1, "trackId": 7, "gameScoreboardId": 70, "carId": 461 });
         for (x, time) in [(a, 100.0), (b, 90.0), (c, 80.0)] {
@@ -1321,7 +1393,7 @@ mod tests {
         };
         let open = store.create_club(a, &fields("OPN", PRIVACY_OPEN)).unwrap();
         let friends = store.create_club(b, &fields("FRN", PRIVACY_FRIENDS)).unwrap();
-        let ctx = |xuid| Ctx { store: &store, catalog: &catalog, xuid, events: RefCell::new(Vec::new()) };
+        let ctx = |xuid| Ctx { store: &store, catalog: &catalog, xuid, events: RefCell::new(Vec::new()), mode: Default::default() };
         let join = |xuid, club: i64| clubs::handle(&ctx(xuid), true, "Club", "RequestJoiningClub", &json!({ "clubId": club })).unwrap();
         assert_eq!(join(c, open)["requestApproved"], true);
         assert_eq!(join(d, friends)["requestApproved"], false);
@@ -1351,7 +1423,7 @@ mod tests {
         store.add_xp(a, 100.0);
         store.add_xp(b, 300.0);
         store.add_xp(c, 50.0);
-        let ctx = Ctx { store: &store, catalog: &catalog, xuid: b, events: RefCell::new(Vec::new()) };
+        let ctx = Ctx { store: &store, catalog: &catalog, xuid: b, events: RefCell::new(Vec::new()), mode: Default::default() };
         let board = |view: i64| handle(&ctx, "Scoreboard", "GetRows", &json!({
             "scoreboardType": 8, "scoreType": 4, "view": view, "trackId": -1, "pivotId": 0, "isClubBoard": true, "startAt": 1, "maxResults": 50,
         })).unwrap();

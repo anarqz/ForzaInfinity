@@ -437,6 +437,11 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                     }
                     None => json_reply(404, &json!({ "error": format!("There is no profile {} on this server.", clip(tag, 15)) })),
                     Some(t) if t.xuid == me.xuid => json_reply(400, &json!({ "error": "That is your own profile." })),
+                    // HARDCORE and NOOB players never meet, friends included
+                    Some(t) if app.store.account_mode(t.xuid) != app.store.account_mode(me.xuid) => json_reply(
+                        403,
+                        &json!({ "error": "That player has the other profile type (HARDCORE / NOOB): you cannot be friends." }),
+                    ),
                     Some(t) if app.store.friends(me.xuid).iter().any(|f| f.0 == t.xuid && f.2) => {
                         json_reply(200, &json!({ "message": format!("You and {} are already friends and rivals.", t.gamertag()) }))
                     }

@@ -63,6 +63,7 @@ const TEXTS: &[(&str, &str)] = &[
     ("You cannot join this world.", "Você não pode entrar neste mundo."),
     ("Only the host's friends can join this world.", "Só os amigos do anfitrião podem entrar neste mundo."),
     ("This world is full.", "Este mundo está cheio."),
+    ("That player has the other profile type (HARDCORE / NOOB): you cannot be friends.", "Esse jogador tem o outro tipo de perfil (HARDCORE / NOOB): vocês não podem ser amigos."),
     ("This world is for players of the other profile type (HARDCORE / NOOB).", "Este mundo é para jogadores do outro tipo de perfil (HARDCORE / NOOB)."),
     ("This world's cars are not the same as yours.", "Os carros deste mundo não são os mesmos que os seus."),
     ("Too many wrong passwords. Try again later.", "Senhas erradas demais. Tente de novo mais tarde."),
