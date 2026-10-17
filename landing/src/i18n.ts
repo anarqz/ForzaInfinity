@@ -9,10 +9,10 @@ const en = {
     kicker: "Forza Horizon 2 · on PC",
     title: ["Back on", "the road."],
     body:
-      "ForzaInfinity brings Forza Horizon 2's online side back to the PC version on Azimuth. One open server: leaderboards, ghosts, drivatars and liveries of every player, plus friends, car clubs and a cloud save that follows you from your PC to the Steam Deck.",
+      "ForzaInfinity brings Forza Horizon 2's online side back to the PC version on Azimuth: online free roam and races, leaderboards, ghosts, drivatars and shared liveries, friends, car clubs and a cloud save that follows you from your PC to the Steam Deck.",
     cta: "Get ForzaInfinity",
     cta2: "See what's back",
-    platforms: "Windows · Steam Deck · Linux · Azimuth 0.9.9",
+    platforms: "Windows · Steam Deck · Linux · Azimuth 0.9.10",
   },
   toast: {
     label: "Festival milestone",
@@ -75,37 +75,37 @@ const en = {
       tag: "Cloud save",
       title: "Your progress, wherever you play.",
       body:
-        "Your profile starts from your offline save and lives on the server. Pick it up on another PC or on the Steam Deck.",
+        "Your profile lives on the server: career, garage, designs, vinyl groups and tunes. Pick it up on another PC or on the Steam Deck.",
       card: { synced: "Save synced", from: "PC", to: "Steam Deck" },
     },
     more: [
       { title: "Leaderboards", body: "Speed traps, zones and skill chains against every player on the server." },
       { title: "Drivatars", body: "Every player's drivatar races you and fills the roads and car meets, friends first." },
-      { title: "Fair play", body: "Impossible profile jumps are refused; reports take files down." },
-      { title: "One open world", body: "Everyone sees everyone's times, ghosts and shared designs; rivals are your friends." },
+      { title: "HARDCORE or NOOB", body: "HARDCORE starts a new career, checked by the server; NOOB brings your offline save as it is. The two never meet." },
+      { title: "Online free roam & races", body: "Players host worlds on their own PC; start an event and everyone in the world can join the race." },
     ],
   },
   install: {
     title: "Up and running in a minute",
     note: "The installer keeps Azimuth's original file as a backup and only touches its data/bin folder.",
     requires:
-      "Requires Azimuth 0.9.9 (the latest) or 0.9.7; 0.9.8 is not supported (the game would play offline). The installer checks the version for you. Updating Azimuth puts its own file back: run the installer again after each update.",
+      "Requires Azimuth 0.9.10 (recommended) or 0.9.9. The installer checks the version for you. Updating Azimuth puts its own file back: run the installer again after each update.",
     tabs: { windows: "Windows", deck: "Steam Deck", linux: "Linux" } as Record<Platform, string>,
     steps: {
       windows: [
         "Download ForzaInfinity.zip and unzip it.",
         "Double click Install.cmd. It finds Azimuth and asks for the server address.",
-        "Start the game: Settings › INFINITY › Create profile.",
+        "Start the game: Settings › INFINITY › CREATE PROFILE, then pick HARDCORE or NOOB.",
       ],
       deck: [
         "Add azimuth.exe to Steam as a non-Steam game and force Proton 11.",
         "In desktop mode, open Konsole and run the command below.",
-        "Back in game mode: Settings › INFINITY › Create profile.",
+        "Back in game mode: Settings › INFINITY › CREATE PROFILE, then pick HARDCORE or NOOB.",
       ],
       linux: [
         "Run Azimuth through Steam with Proton 11 (Vulkan driver with VK_KHR_maintenance5).",
         "Run the command below, or ./install.sh from the zip.",
-        "Start the game: Settings › INFINITY › Create profile.",
+        "Start the game: Settings › INFINITY › CREATE PROFILE, then pick HARDCORE or NOOB.",
       ],
     } as Record<Platform, string[]>,
     download: "Download .zip",
@@ -122,15 +122,15 @@ const en = {
       },
       {
         q: "What do I need?",
-        a: "Your own copy of Forza Horizon 2 on Azimuth 0.9.9 or 0.9.7 (not 0.9.8), a server to connect to, and an offline save: play until the game saves once before creating your profile.",
+        a: "Your own copy of Forza Horizon 2 on Azimuth 0.9.10 (recommended) or 0.9.9, and an offline save: play until the game saves once before creating your profile.",
       },
       {
-        q: "Will I lose my progress?",
-        a: "No. Your online profile starts from your newest offline save, and the offline save stays untouched on your PC.",
+        q: "HARDCORE or NOOB?",
+        a: "You choose when you create your profile. HARDCORE starts a new career with your first car, and the server checks that progress comes from play. NOOB brings your newest offline save as it is (cars, credits, level, progress), with no progress checks. HARDCORE and NOOB players never meet: leaderboards, rivals, ghosts, drivatars, friends, clubs, worlds and races are kept within each type; the storefront is shared. A HARDCORE profile can become NOOB later, never the other way round. Your offline save always stays untouched on your PC.",
       },
       {
         q: "Where is my save?",
-        a: "In data/titles/1A96545B/saves/player-1 on Azimuth 0.9.9 (data/saves/player-1 on 0.9.7). User_9000000000000 is your offline profile; the other User_ folder, named after your profile's number in hexadecimal and not your name, is your online one. Leaving Infinity or uninstalling never deletes them.",
+        a: "In data/titles/1A96545B/saves/player-1 (Azimuth 0.9.10 and 0.9.9). User_9000000000000 is your offline profile; the other User_ folder, named after your profile's number in hexadecimal and not your name, is your online one. Your designs, vinyl groups and tunes sit next to them, in their own folders, and are kept on the server too. Leaving Infinity or uninstalling never deletes them.",
       },
       {
         q: "Can I run my own server?",
@@ -138,11 +138,11 @@ const en = {
       },
       {
         q: "What about my privacy?",
-        a: "Your gamertag, times, ghosts, drivatar, car club and shared designs are seen by every player on the server. Messages, challenges and Meus Rivais are only between friends. This page only shows server totals. Delete profile removes everything you have on the server.",
+        a: "Your gamertag, times, ghosts, drivatar and car club are seen by every player of your profile type (HARDCORE or NOOB), and shared designs by everyone. Messages, challenges and Meus Rivais are only between friends. This page only shows server totals. Delete profile removes everything you have on the server.",
       },
       {
         q: "Is live multiplayer back?",
-        a: "Online free roam is: up to 8 drivers in a world that a player hosts on their own PC (Settings › INFINITY › HOST WORLD). Players connect to each other directly, through their routers, with no port to open, and no ForzaInfinity server carries the game. Online Road Trip and online races come later.",
+        a: "Yes. Online free roam: 8 drivers (up to 12) in a world that a player hosts on their own PC (Settings › INFINITY › HOST WORLD). Players connect to each other directly, through their routers, with no port to open, and no ForzaInfinity server carries the game. Start an event there and everyone in the world gets an invite: the race counts for the leaderboards, XP and credits. Online Road Trip comes later.",
       },
       {
         q: "How do I uninstall?",
@@ -165,10 +165,10 @@ const pt: Texts = {
     kicker: "Forza Horizon 2 · no PC",
     title: ["De volta", "à estrada."],
     body:
-      "O ForzaInfinity traz de volta o lado online do Forza Horizon 2 para a versão de PC no Azimuth. Um servidor aberto: placares, fantasmas, drivatars e pinturas de todos os jogadores, além de amigos, clubes de carros e um save na nuvem que vai do seu PC ao Steam Deck.",
+      "O ForzaInfinity traz de volta o lado online do Forza Horizon 2 para a versão de PC no Azimuth: passeio livre e corridas online, placares, fantasmas, drivatars e pinturas compartilhadas, amigos, clubes de carros e um save na nuvem que vai do seu PC ao Steam Deck.",
     cta: "Baixar o ForzaInfinity",
     cta2: "Ver o que voltou",
-    platforms: "Windows · Steam Deck · Linux · Azimuth 0.9.9",
+    platforms: "Windows · Steam Deck · Linux · Azimuth 0.9.10",
   },
   toast: {
     label: "Marco do festival",
@@ -230,37 +230,37 @@ const pt: Texts = {
     cloud: {
       tag: "Save na nuvem",
       title: "Seu progresso, onde você jogar.",
-      body: "Seu perfil nasce do seu save offline e mora no servidor. Continue em outro PC ou no Steam Deck.",
+      body: "Seu perfil mora no servidor: carreira, garagem, designs, grupos de vinil e ajustes. Continue em outro PC ou no Steam Deck.",
       card: { synced: "Save sincronizado", from: "PC", to: "Steam Deck" },
     },
     more: [
       { title: "Placares", body: "Radares, zonas e combos de habilidade contra todos os jogadores do servidor." },
       { title: "Drivatars", body: "Os drivatars de todos os jogadores correm contra você e enchem as estradas e os encontros, amigos primeiro." },
-      { title: "Jogo limpo", body: "Saltos impossíveis no perfil são barrados; denúncias derrubam arquivos." },
-      { title: "Um mundo aberto", body: "Todos veem os tempos, fantasmas e criações de todos; os rivais são os seus amigos." },
+      { title: "HARDCORE ou NOOB", body: "HARDCORE começa uma carreira nova, conferida pelo servidor; NOOB traz o seu save offline como está. Os dois nunca se encontram." },
+      { title: "Passeio livre e corridas online", body: "Os jogadores hospedam mundos no próprio PC; comece um evento e todos no mundo podem entrar na corrida." },
     ],
   },
   install: {
     title: "Rodando em um minuto",
     note: "O instalador guarda o arquivo original do Azimuth como backup e só mexe na pasta data/bin dele.",
     requires:
-      "Requer o Azimuth 0.9.9 (o mais recente) ou o 0.9.7; o 0.9.8 não é suportado (o jogo ficaria offline). O instalador confere a versão para você. Atualizar o Azimuth devolve o arquivo original dele: rode o instalador de novo depois de cada atualização.",
+      "Requer o Azimuth 0.9.10 (recomendado) ou o 0.9.9. O instalador confere a versão para você. Atualizar o Azimuth devolve o arquivo original dele: rode o instalador de novo depois de cada atualização.",
     tabs: { windows: "Windows", deck: "Steam Deck", linux: "Linux" },
     steps: {
       windows: [
         "Baixe o ForzaInfinity.zip e descompacte.",
         "Dê dois cliques em Install.cmd. Ele acha o Azimuth e pergunta o endereço do servidor.",
-        "Abra o jogo: Configurações › INFINITY › Create profile.",
+        "Abra o jogo: Configurações › INFINITY › CRIAR PERFIL e escolha HARDCORE ou NOOB.",
       ],
       deck: [
         "Adicione o azimuth.exe à Steam como jogo não-Steam e force o Proton 11.",
         "No modo desktop, abra o Konsole e rode o comando abaixo.",
-        "De volta ao modo de jogo: Configurações › INFINITY › Create profile.",
+        "De volta ao modo de jogo: Configurações › INFINITY › CRIAR PERFIL e escolha HARDCORE ou NOOB.",
       ],
       linux: [
         "Rode o Azimuth pela Steam com Proton 11 (driver Vulkan com VK_KHR_maintenance5).",
         "Rode o comando abaixo, ou o ./install.sh do zip.",
-        "Abra o jogo: Configurações › INFINITY › Create profile.",
+        "Abra o jogo: Configurações › INFINITY › CRIAR PERFIL e escolha HARDCORE ou NOOB.",
       ],
     },
     download: "Baixar .zip",
@@ -278,15 +278,15 @@ const pt: Texts = {
       },
       {
         q: "Do que eu preciso?",
-        a: "Sua própria cópia do Forza Horizon 2 no Azimuth 0.9.9 ou 0.9.7 (não no 0.9.8), um servidor para se conectar e um save offline: jogue até o jogo salvar uma vez antes de criar o perfil.",
+        a: "Sua própria cópia do Forza Horizon 2 no Azimuth 0.9.10 (recomendado) ou 0.9.9 e um save offline: jogue até o jogo salvar uma vez antes de criar o perfil.",
       },
       {
-        q: "Vou perder meu progresso?",
-        a: "Não. Seu perfil online começa do seu save offline mais recente, e o save offline continua intacto no seu PC.",
+        q: "HARDCORE ou NOOB?",
+        a: "Você escolhe ao criar o perfil. HARDCORE começa uma carreira nova com o seu primeiro carro, e o servidor confere que o progresso vem do jogo. NOOB traz o seu save offline mais recente como está (carros, créditos, nível, progresso), sem conferência de progresso. Jogadores HARDCORE e NOOB nunca se encontram: placares, rivais, fantasmas, drivatars, amigos, clubes, mundos e corridas ficam dentro de cada tipo; o storefront é de todos. Um perfil HARDCORE pode virar NOOB depois, nunca o contrário. O seu save offline continua sempre intacto no seu PC.",
       },
       {
         q: "Onde fica meu save?",
-        a: "Em data/titles/1A96545B/saves/player-1 no Azimuth 0.9.9 (data/saves/player-1 no 0.9.7). User_9000000000000 é o seu perfil offline; a outra pasta User_, com o número do seu perfil em hexadecimal e não o seu nome, é a do perfil online. Sair do Infinity ou desinstalar nunca apaga essas pastas.",
+        a: "Em data/titles/1A96545B/saves/player-1 (Azimuth 0.9.10 e 0.9.9). User_9000000000000 é o seu perfil offline; a outra pasta User_, com o número do seu perfil em hexadecimal e não o seu nome, é a do perfil online. Seus designs, grupos de vinil e ajustes ficam ao lado, em pastas próprias, e também são guardados no servidor. Sair do Infinity ou desinstalar nunca apaga essas pastas.",
       },
       {
         q: "Posso rodar meu próprio servidor?",
@@ -294,11 +294,11 @@ const pt: Texts = {
       },
       {
         q: "E a minha privacidade?",
-        a: "Seu gamertag, tempos, fantasmas, drivatar, clube e criações compartilhadas ficam visíveis para todos os jogadores do servidor. Mensagens, desafios e Meus Rivais são só entre amigos. Esta página só mostra totais do servidor. Excluir o perfil apaga tudo o que você tem no servidor.",
+        a: "Seu gamertag, tempos, fantasmas, drivatar e clube ficam visíveis para todos os jogadores do seu tipo de perfil (HARDCORE ou NOOB), e as criações compartilhadas para todos. Mensagens, desafios e Meus Rivais são só entre amigos. Esta página só mostra totais do servidor. Excluir o perfil apaga tudo o que você tem no servidor.",
       },
       {
         q: "O multiplayer ao vivo voltou?",
-        a: "O passeio livre online voltou: até 8 pilotos num mundo que um jogador hospeda no próprio PC (Configurações › INFINITY › HOSPEDAR MUNDO). Os jogadores se conectam diretamente, pelos roteadores, sem abrir porta nenhuma, e nenhum servidor do ForzaInfinity carrega o jogo. O Online Road Trip e as corridas online vêm depois.",
+        a: "Voltou. Passeio livre online: 8 pilotos (até 12) num mundo que um jogador hospeda no próprio PC (Configurações › INFINITY › HOSPEDAR MUNDO). Os jogadores se conectam diretamente, pelos roteadores, sem abrir porta nenhuma, e nenhum servidor do ForzaInfinity carrega o jogo. Comece um evento ali e todos no mundo recebem o convite: a corrida conta para os placares, XP e créditos. O Online Road Trip vem depois.",
       },
       {
         q: "Como desinstalo?",

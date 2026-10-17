@@ -1,11 +1,16 @@
 # ForzaInfinity
 
-Forza Horizon 2's online services, back for the PC version running on **Azimuth 0.9.10, 0.9.9 or 0.9.7**
-(Windows, or Linux and the Steam Deck through Proton).
+Forza Horizon 2's online services, back for the PC version running on **Azimuth 0.9.10**
+(recommended) or **0.9.9** (Windows, or Linux and the Steam Deck through Proton).
 
-> **Requires Azimuth 0.9.10 (the latest), 0.9.9 or 0.9.7.** 0.9.8 is not supported: on it the game plays
-> offline. The installers check the version. Updating Azimuth puts its own `azimuth-tls.dll`
-> back, so run the installer again after each update.
+> **Requires Azimuth 0.9.10 or 0.9.9.** The installers check the version. Updating Azimuth puts
+> its own `azimuth-tls.dll` back, so run the installer again after each update.
+
+**Two profile types.** When you create your profile you choose **HARDCORE** (a new career with
+your first car, progress checked by the server) or **NOOB** (your offline save as it is, no
+progress checks). HARDCORE and NOOB players never meet: everything below is kept within each
+type, except the storefront, which everyone shares. A HARDCORE profile can become NOOB later,
+never the other way round.
 
 - **Friends**: add each other by `Name#12345` from the game, or with ADD FRIEND in any player's
   PLAYER ACTIONS (leaderboards, club members); see who is online.
@@ -19,16 +24,21 @@ Forza Horizon 2's online services, back for the PC version running on **Azimuth 
   cars' colours; friends first.
 - **Storefront**: share designs, vinyl groups and tunes; browse, download, like; three
   strikes from different players take a file down.
-- **Cloud save**: your profile starts a new career with your first car (every event, road, barn
-  find and treasure there to win, as for every player) and follows you to another PC or the Deck.
+- **Cloud save**: your whole career (garage, road trips, bucket lists, barn finds, perks,
+  stats, boards, championships) and your designs, vinyl groups and tunes live on the server and
+  follow you to another PC or the Deck.
 - **In Portuguese** when the game runs in Portuguese (Brazil); English otherwise.
 - **Updates itself**: a new release installs on its own (from this repository's GitHub
   releases, checked against their SHA-256) and the game asks you to restart.
 
-**Online free roam** is back: players host worlds on their own PC (Settings › INFINITY › HOST WORLD)
-and reach each other directly, through routers, with no port to open; see
-[docs/FREEROAM.md](docs/FREEROAM.md). Online Road Trip and online races are planned
-for a later version.
+**Online free roam and races** are back: players host worlds on their own PC (Settings › INFINITY ›
+HOST WORLD) and reach each other directly, through routers, with no port to open. Start an event
+in a world and everyone there gets an invite; the race counts for the leaderboards, XP and
+credits. See [docs/FREEROAM.md](docs/FREEROAM.md). Online Road Trip is planned for a later
+version.
+
+The public server, `https://infinity.anarqz.dev`, takes 50 players at once; the others wait in
+line for a free place.
 
 ## Play
 
@@ -42,7 +52,7 @@ curl -fsSL https://github.com/anarqz/ForzaInfinity/releases/latest/download/inst
 irm https://github.com/anarqz/ForzaInfinity/releases/latest/download/install.ps1 | iex          # Windows
 ```
 
-Then start the game and open **Settings › INFINITY › Create profile**. Full guide:
+Then start the game, open **Settings › INFINITY › CREATE PROFILE** and pick HARDCORE or NOOB. Full guide:
 [docs/INSTALL.md](docs/INSTALL.md), which also says [where your save is](docs/INSTALL.md#where-your-save-is). Something wrong? Run **ForzaInfinity-Report** next to
 `azimuth.exe` and send the `ForzaInfinity-Report.txt` it writes on your Desktop.
 

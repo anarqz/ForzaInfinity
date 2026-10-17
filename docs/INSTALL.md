@@ -1,15 +1,15 @@
 # Installing ForzaInfinity
 
 ForzaInfinity brings Forza Horizon 2's online services back for the PC version that runs on
-**Azimuth 0.9.10, 0.9.9 or 0.9.7**: friends, car clubs, rivals and ghost races, leaderboards, shared liveries
-and tunes, and a cloud save. It installs one file into Azimuth (`data/bin/azimuth-tls.dll`)
+**Azimuth 0.9.10** (recommended) or **0.9.9**: online free roam and races, friends, car clubs,
+rivals and ghost races, leaderboards, shared liveries and tunes, and a cloud save. It installs one file into Azimuth (`data/bin/azimuth-tls.dll`)
 and keeps the original as a backup; the game is never modified on disk.
 
 ## Before you start
 
-- Your own copy of Forza Horizon 2 running on **Azimuth 0.9.10** (the latest), **0.9.9** or **0.9.7**, on
-  Windows or on Linux / Steam Deck through Proton. **0.9.8 is not supported**: the hook only goes
-  online on the Azimuth builds it was made for, so on another one the game plays offline. The
+- Your own copy of Forza Horizon 2 running on **Azimuth 0.9.10** (recommended) or **0.9.9**, on
+  Windows or on Linux / Steam Deck through Proton. The hook only goes online on the Azimuth
+  builds it was made for, so on another one the game plays offline. The
   installers read the version from `azimuth.exe` and stop on another one (`FORCE=1 ./install.sh`
   or `install.ps1 -Force` installs anyway).
 - **After updating Azimuth, run the installer again.** An Azimuth update puts its own
@@ -19,12 +19,12 @@ and keeps the original as a backup; the game is never modified on disk.
   in `data/saves-backup-…`); the cloud save follows them there. 0.9.10 keeps them where 0.9.9
   put them.
 - A ForzaInfinity server. The installer suggests the public one, `https://infinity.anarqz.dev`
-  (150 players at a time, then a waiting line). For another server, use the address its owner
+  (50 players at a time, then a waiting line). For another server, use the address its owner
   gives you (`https://host` or `host:port`); to run one yourself, see [SERVER.md](SERVER.md).
 - An **offline save**: play until the game has saved at least once (past the opening drive, with
-  your first car chosen). Your online profile starts a new career with that first car: every
-  championship, event, road, barn find and treasure is there to win again, with the XP and credits
-  they give. Your offline save is not touched.
+  your first car chosen). A HARDCORE profile starts a new career with that first car; a NOOB
+  profile brings the whole save as it is (see [Your profile](#your-profile)). Your offline save is
+  not touched.
 - The game closed while you install.
 
 ## Windows
@@ -89,10 +89,25 @@ installs the latest release and keeps your server and settings.
 ## Your profile
 
 1. Start the game and open **Settings › INFINITY**.
-2. **Create profile** and type a name (1 to 20 letters or digits). It reads `Name#12345`, the
-   number being this PC's. In the game, names longer than 15 characters with the number show
-   as the name alone (the game's gamertags hold 15 characters).
-3. The game restarts on your online profile: a new career with the first car of your offline save.
+2. **Create profile** and choose its type:
+   - **HARDCORE**: a new career with the first car of your offline save. Every championship,
+     event, road, barn find and treasure is there to win again, and the server checks that
+     progress comes from play.
+   - **NOOB**: your offline save comes with you as it is (cars, credits, level, progress), with
+     no progress checks.
+
+   HARDCORE and NOOB players never meet: leaderboards, rivals, ghosts, drivatars, friends,
+   clubs, free roam worlds and races are kept within each type; the storefront is shared. A
+   HARDCORE profile can become NOOB later, never the other way round.
+3. Type a name (1 to 20 letters or digits). It reads `Name#12345`, the number being this PC's.
+   In the game, names longer than 15 characters with the number show as the name alone (the
+   game's gamertags hold 15 characters).
+4. The game restarts on your online profile.
+
+The pause menu shows the profile at the top: `INFINITY | CONNECTED | HC | Name#12345` (HC
+HARDCORE, NB NOOB), or DISCONNECTED when the server cannot be reached. If the server does not
+accept some progress, the game pauses and says so in red: nothing more is saved online until you
+restart, and the next start brings back your cloud save. The game is never closed for you.
 
 From the same screen: **Add friend** (`Name#12345`; you become friends once both added each
 other), **Site key** (to sign in on another PC with *Switch profile*), **Test connection** and
@@ -108,10 +123,9 @@ Azimuth keeps the saves in a folder under `<Azimuth>/data`, which depends on its
 
 | Azimuth | Saves folder |
 |---|---|
-| 0.9.9 and 0.9.10 | `data/titles/1A96545B/saves/player-1` |
-| 0.9.7 | `data/saves/player-1` |
+| 0.9.10 and 0.9.9 | `data/titles/1A96545B/saves/player-1` |
 
-On 0.9.9, `data/saves` and `data/saves-backup-…` are the copies left from before 0.9.9 moved
+`data/saves` and `data/saves-backup-…` are the copies left from before 0.9.9 moved
 the saves; the game no longer reads them.
 
 In that folder each profile has its own folder:
@@ -121,7 +135,12 @@ In that folder each profile has its own folder:
   (not your name), so look for the `User_` folder that is not `User_9000000000000`. It appears
   the first time the game starts on the online profile.
 
-Next to them, `fh2online-backup` holds a local save the server's replaced (when you played the
+Next to them, `Livery_*`, `BaseLivery_*`, `GarageThumbnail_*`, `LayerGroup_*` and the tune
+folders are your designs, vinyl groups and tunes. Azimuth keeps them for the whole PC, and the
+hook also keeps them on the server with your profile: on another PC they come back by
+themselves, and one you delete in the game is deleted there too.
+
+`fh2online-backup` holds a local save the server's replaced (when you played the
 same profile on two PCs without syncing in between).
 
 The online profile is an ordinary Azimuth save that the hook also keeps on the server.
@@ -151,5 +170,5 @@ sends nothing by itself.
 | The game stops at start on Linux | `data/logs/azimuth.log`. `CreateDXGIFactory2` means the Vulkan driver is too old for Proton 11. |
 | A controller does nothing on Linux | Azimuth reads the first controller only. Check that it shows up as a gamepad (`/dev/input/js0`). |
 
-**Online free roam** (worlds the players host, up to 8 drivers): see [FREEROAM.md](FREEROAM.md).
-Not available yet: Online Road Trip and online races.
+**Online free roam and races** (worlds the players host, 8 drivers by default, up to 12): see
+[FREEROAM.md](FREEROAM.md). Not available yet: Online Road Trip.

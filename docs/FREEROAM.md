@@ -1,7 +1,8 @@
 # Free roam online
 
-ForzaInfinity brings back Forza Horizon 2's online free roam: up to 8 drivers in the same
-festival, on worlds that **players host on their own PC**. No ForzaInfinity server carries
+ForzaInfinity brings back Forza Horizon 2's online free roam and races: 8 drivers by default (up
+to 12, `MaxPlayers` in `server.cfg`) in the same festival, on worlds that **players host on
+their own PC**. HARDCORE and NOOB players have their own worlds: one never sees the other's. No ForzaInfinity server carries
 anyone's game traffic: the players' consoles connect to each other directly, and the server only
 lists the worlds and introduces the players.
 
@@ -25,6 +26,16 @@ time, the firewall asks about it: allow it on **private networks**.
 - **JOIN WORLD** on a player's card joins the world they are in.
 - Everyone in a world needs the same car database (the same game files): a changed one cannot
   join, and is dropped if it changes during the session.
+
+## Races
+
+Start an event in an online world (drive to its marker and accept it) and everyone else in the
+world gets an invite for 15 seconds. Whoever joins lines up on the same grid, sees the others on
+the HUD and in the standings, and gets the results, XP and credits at the end; each player's
+time goes to the route's leaderboard and rivals, as in an offline race. Players who stay in free
+roam can watch the race go by. The world's host runs the race (`[Events] Races=1` in
+`server.cfg`, on by default); a world whose host turned races off sends you back to free roam
+with a notice.
 
 ## How players reach each other
 

@@ -108,6 +108,10 @@ mundo, e nunca vai para o log.
   most one upload every 30 s per address after a burst of 5.
 - Rates per address (token buckets): game traffic, account calls, account creation (3 an
   hour), sign-ins (slow on purpose).
+- Players online at once: 50 by default (`--max-players`, 0 for no limit); the others wait in
+  line, in arrival order.
+- Creations (designs, vinyl groups, tunes: the containers beside the profile's save): 1 MB per
+  container, 300 and 96 MB per player (`/infinity/v1/creations`).
 - Storefront: 100 shared files per player; after reports from 3 different real players a file
   leaves the storefront and waits for moderation (`fh2-server moderation files`).
 - Profile syncs are checked for impossible growth (credits, XP, level, top speed, race times);
@@ -154,7 +158,13 @@ in INFINITY. Everything is in `moderation_log`.
 - `fh2-server moderation season-reset [--yes] [--only XUID] [why]` resets every account like that
   (no drivatar deleted); without `--yes` it only counts; with it, the database is first copied to
   `<db>.before-season-<ms>` (`VACUUM INTO`).
-- **A new profile starts a new career.** Its first save (the hook sends the offline one) is not
+- **Profile types.** `accounts.mode`: 0 HARDCORE, 1 NOOB, chosen at creation (`register`
+  `"mode"`; accounts from before, and hooks that send none, are HARDCORE). `POST mode/noob`
+  turns HARDCORE into NOOB, never back. A NOOB profile keeps its first save (its offline one) as
+  it is and has no progress or save gates, only the technical checks. Every query that shows
+  other players (boards, rivals, ghosts, drivatars, compare stats, presence, friends, clubs,
+  free roam worlds) keeps to the caller's type; the storefront is shared.
+- **A new HARDCORE profile starts a new career.** Its first save (the hook sends the offline one) is not
   kept: the server stores the starting save of the starter car it shows (`server/fixtures/
   starter-<car>.bundle`, built into the binary: the game just past its first championship) with
   XP, level and credits at 0, so every championship, event, road, barn find and treasure is there
@@ -169,7 +179,11 @@ in INFINITY. Everything is in `moderation_log`.
   without the server, or one the server refused) is kept in `saves\fh2online-backup` and the
   server's is downloaded over it. A session that starts without the server forgets `SaveCommit`,
   so nothing it saves is uploaded, not even at the next start.
-- **Save gates** (`PUT /infinity/v1/save`): only a real save's shape (per-file sizes of real
+- **Creations follow the profile.** Every other container in `player-1` (Livery_, BaseLivery_,
+  GarageThumbnail_, LayerGroup_, tunes) is kept per account as an FH2FILE1 bundle
+  (`db/creations.rs`): the hook uploads new and changed ones, downloads the ones a PC lacks, and
+  deletes the ones the player deleted.
+- **Save gates** (`PUT /infinity/v1/save`, HARDCORE only): only a real save's shape (per-file sizes of real
   saves, the files every save has, each file matching its commit line, PlayerDatabase a SQLite
   database, SaveState XML, at most 384 KB packed), and progress since the server's last save
   within the profile gates' allowances per hour (credits, XP, level, cars). A refused upload is a
@@ -190,8 +204,9 @@ fh2-server moderation --root /opt/infinity file-delete ID why          # gone fo
 
 ## Privacy
 
-The server is one open world: every player sees everyone's gamertag, times and positions,
-ghosts, drivatar, car club and shared files (banned accounts are left out). Friends are the
+Within a profile type (HARDCORE or NOOB) the server is one open world: every player sees
+everyone's gamertag, times and positions, ghosts, drivatar and car club (banned accounts are
+left out); shared files are seen by both types. Friends are the
 social side: the friends list and presence, messages, challenges and Meus Rivais, and they come
 first in drivatar grids and as rivals. Hidden clubs (privacy 3) are seen only by their members
 and the members' friends. `/infinity/v1/stats` only gives totals. A player deleting their profile from the game removes
