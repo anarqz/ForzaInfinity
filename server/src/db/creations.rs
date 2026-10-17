@@ -25,6 +25,12 @@ pub const MAX_COUNT: usize = 300;
 pub const MAX_TOTAL: i64 = 96 << 20;
 const MAX_FILES: u32 = 16;
 
+/// Whether the server keeps a container of this name: not the garage thumbnails (one per car,
+/// which the game makes again).
+pub fn kept(name: &str) -> bool {
+    !name.starts_with("GarageThumbnail_")
+}
+
 /// A container's folder name: "<Kind>_<id>", letters, digits and underscores, never the
 /// profile's own save (User_*).
 pub fn valid_name(name: &str) -> bool {
@@ -166,6 +172,7 @@ mod tests {
     #[test]
     fn names_and_bundles() {
         assert!(valid_name("Livery_0461_20261014184334"));
+        assert!(kept("Livery_0461_20261014184334") && !kept("GarageThumbnail_1124_20261016001541"));
         assert!(valid_name("GarageThumbnail_1124_20261016001541"));
         assert!(!valid_name("User_90191AE817005"));
         assert!(!valid_name("Livery_../x"));

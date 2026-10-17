@@ -103,7 +103,9 @@ DB=/opt/infinity/data/fh2online.sqlite
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 NAME="fh2online-$(date -u +%Y%m%d-%H%M%S).sqlite"
-sqlite3 "$DB" ".timeout 30000" ".backup '$OUT/$NAME'"
+# VACUUM INTO reads one snapshot in one transaction: unlike .backup it does not start over
+# whenever the live server writes (on a busy server .backup never finished)
+sqlite3 "$DB" ".timeout 30000" "VACUUM INTO '$OUT/$NAME'"
 gzip -9 "$OUT/$NAME"
 # a plain upload that never overwrites (ifGenerationMatch=0): the VM may create objects only,
 # and gcloud storage cp wants to read them too
