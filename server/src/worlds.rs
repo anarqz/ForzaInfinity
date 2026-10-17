@@ -99,6 +99,8 @@ struct World {
     version: String,
     /// The host's car database (Caller::car_db).
     car_db: Option<String>,
+    /// The host's profile mode (db/accounts.rs MODE_*): only players of the same mode see it.
+    mode: i64,
     /// The host's address as this server sees it.
     host_ip: IpAddr,
     /// Its relay's public addresses (STUN, UPnP) and NAT kind (F3).
@@ -118,12 +120,20 @@ pub struct Caller<'a> {
     /// The SHA-256 of the caller's car database (X-Fh2-CarDb): players only meet with the
     /// same cars installed. None: an older hook, not checked.
     car_db: Option<String>,
+    /// The caller's profile mode (db/accounts.rs MODE_*): HARDCORE and NOOB players never meet.
+    mode: i64,
 }
 
 impl<'a> Caller<'a> {
     /// `friends(x)`: the players x is friends with (both added each other).
     pub fn new(xuid: u64, ip: IpAddr, gamertag: &'a dyn Fn(u64) -> String, friends: &'a dyn Fn(u64) -> Vec<u64>) -> Self {
-        Caller { xuid, ip: ip.to_canonical(), gamertag, friends, friend_list: OnceCell::new(), car_db: None }
+        Caller { xuid, ip: ip.to_canonical(), gamertag, friends, friend_list: OnceCell::new(), car_db: None, mode: 0 }
+    }
+
+    /// The caller's profile mode (db/accounts.rs MODE_*).
+    pub fn with_mode(mut self, mode: i64) -> Self {
+        self.mode = mode;
+        self
     }
 
     /// The X-Fh2-CarDb header (64 hex digits; anything else is ignored).
@@ -231,6 +241,9 @@ impl State {
         }
         if cars_differ(w, caller) {
             return "cars";
+        }
+        if w.mode != caller.mode {
+            return "mode";
         }
         if w.visibility == Visibility::Off {
             return "off";
@@ -368,6 +381,8 @@ fn refused(why: &str) -> Reply {
         "banned" => "You cannot join this world.",
         "friends" => "Only the host's friends can join this world.",
         "full" => "This world is full.",
+        "mode" => "This world is for players of the other profile type (HARDCORE / NOOB).",
+        "cars" => "This world's cars are not the same as yours.",
         _ => "wrong password",
     };
     Reply::json(403, json!({ "error": error, "why": why }))
@@ -581,6 +596,7 @@ impl Worlds {
             lan,
             version,
             car_db: caller.car_db.clone(),
+            mode: caller.mode,
             host_ip: caller.ip,
             public,
             nat,
@@ -747,6 +763,7 @@ impl Worlds {
             .filter(|(host, w)| {
                 w.listed
                     && !cars_differ(w, caller)
+                    && w.mode == caller.mode
                     && w.password.is_none()
                     && w.visibility != Visibility::Off
                     && !w.banned.contains(&caller.xuid)
@@ -782,7 +799,8 @@ impl Worlds {
         // where a player is, only for their friends, or when that world is open to the caller on
         // the list anyway (security review L3)
         let open = w.listed && w.password.is_none() && w.visibility == Visibility::Public;
-        if !(open || caller.xuid == who || caller.is_friend(who)) {
+        // a player of the other mode (HARDCORE / NOOB) is not seen at all
+        if w.mode != caller.mode || !(open || caller.xuid == who || caller.is_friend(who)) {
             return Reply::json(200, json!({ "world": null }));
         }
         let why = s.why(host, w, caller);
@@ -1033,6 +1051,28 @@ mod tests {
         assert_eq!(call(&w, "POST", "worlds/100/join", json!({"password": ""}), &who(5, AWAY), t).status, 403);
         // the host still goes to it
         assert_eq!(w.choose(&pal(HOST, HOME), t).unwrap().via, Via::Hosting);
+    }
+
+    #[test]
+    fn hardcore_and_noob_never_meet() {
+        use crate::db::accounts::{MODE_HARDCORE, MODE_NOOB};
+        let w = Worlds::new();
+        let t = Instant::now();
+        // a NOOB host's world
+        let host = who(HOST, HOME).with_mode(MODE_NOOB);
+        assert_eq!(call(&w, "POST", "worlds", world(json!({})), &host, t).status, 200);
+        // a NOOB friend: listed, seen, joined, picked
+        let noob = pal(1, AWAY).with_mode(MODE_NOOB);
+        assert_eq!(call(&w, "GET", "worlds", Value::Null, &noob, t).body.unwrap()["worlds"].as_array().unwrap().len(), 1);
+        assert_eq!(w.choose(&noob, t).unwrap().host, HOST);
+        // a HARDCORE friend: not listed, the world is not even seen, no join, not picked
+        let hard = pal(2, AWAY).with_mode(MODE_HARDCORE);
+        assert_eq!(call(&w, "GET", "worlds", Value::Null, &hard, t).body.unwrap()["worlds"], json!([]));
+        assert_eq!(call(&w, "GET", "worlds/of/100", Value::Null, &hard, t).body.unwrap()["world"], Value::Null);
+        let r = call(&w, "POST", "worlds/100/join", json!({"password": ""}), &hard, t);
+        assert_eq!((r.status, r.body.unwrap()["why"].clone()), (403, json!("mode")));
+        assert!(w.choose(&hard, t).is_none());
+        assert_eq!(call(&w, "GET", "worlds/browse/0", Value::Null, &hard, t).body.unwrap()["world"], Value::Null);
     }
 
     #[test]

@@ -623,7 +623,8 @@ fn handle(app: &App, request: &Request) -> Vec<u8> {
             let gamertag = |x| app.store.gamertag(x);
             let friends = |x| mutual_friends(&app.store, x);
             let caller = freeroam::Caller::new(ctx.xuid, request.client_ip(), &gamertag, &friends)
-                .with_car_db(request.header("x-fh2-cardb"));
+                .with_car_db(request.header("x-fh2-cardb"))
+                .with_mode(app.store.account_mode(ctx.xuid));
             f.handle(&request.method, &target.host, &target.path, &request.body, &caller)
         }
         _ => None,
