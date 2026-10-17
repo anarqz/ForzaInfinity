@@ -257,7 +257,7 @@ fn main() {
     let mut capture_on = false;
     let mut behind_proxy = false;
     let mut registration_open = true;
-    let mut max_players = 150;
+    let mut max_players = 50;
     let mut freeroam_on = false;
     let mut freeroam_world = None;
     let mut cardb_allow: Vec<String> = Vec::new();
@@ -310,7 +310,7 @@ fn main() {
             "--db" => db_path = Some(PathBuf::from(args.next().expect("--db FILE"))),
             "-h" | "--help" => {
                 println!(
-                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist] [--capture] [--behind-proxy] [--registration open|closed] [--max-players 150 (0: no limit)] [--freeroam] [--freeroam-world HOST:PORT] [--cardb-gate on|off] [--cardb-allow SHA-256]..."
+                    "fh2-server [--listen 127.0.0.1:8081] [--root DIR] [--db FILE] [--gamedb gamedbRC.slt] [--web web/dist] [--capture] [--behind-proxy] [--registration open|closed] [--max-players 50 (0: no limit)] [--freeroam] [--freeroam-world HOST:PORT] [--cardb-gate on|off] [--cardb-allow SHA-256]..."
                 );
                 return;
             }
