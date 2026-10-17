@@ -3,10 +3,24 @@ export type Platform = "windows" | "deck" | "linux";
 
 const en = {
   locale: "en-US",
-  nav: { features: "Features", stats: "Live", install: "Install", faq: "FAQ" },
+  nav: { features: "Features", stats: "Live", install: "Install", faq: "FAQ", support: "Support" },
+  beta: {
+    tag: "PUBLIC BETA",
+    title: "The server is running in beta",
+    body: "ForzaInfinity is open to a limited number of players at a time while we test it in the wild. Bugs are expected, and we fix them fast. New, exciting updates are coming next week.",
+    donate: "Support on Ko-fi",
+    note: "Donations keep the server online and the project alive.",
+  },
+  support: {
+    tag: "Support the project",
+    title: "Keep ForzaInfinity alive.",
+    body: "ForzaInfinity is free and made by fans, but the server behind it costs money every month. If it brought your festival back, buy us a coffee on Ko-fi: every donation keeps the server running and the updates coming.",
+    points: ["Pays for the server and its bandwidth", "Makes room for more players at once", "Funds the next updates"],
+    cta: "Donate on Ko-fi",
+  },
   server: { online: "online now", offline: "server offline", checking: "connecting", full: "Server full", inLine: "in line" },
   hero: {
-    kicker: "Forza Horizon 2 · on PC",
+    kicker: "Public beta · Forza Horizon 2 · on PC",
     title: ["Back on", "the road."],
     body:
       "ForzaInfinity brings Forza Horizon 2's online side back to the PC version on Azimuth: online free roam and races, leaderboards, ghosts, drivatars and shared liveries, friends, car clubs and a cloud save that follows you from your PC to the Steam Deck.",
@@ -151,6 +165,7 @@ const en = {
     ],
     more: "Full documentation on GitHub",
   },
+  finale: { title: "See you at the festival.", body: "It's a beta: thanks for driving with us while we build it." },
   footer:
     "ForzaInfinity is a fan project. It is not affiliated with, endorsed or sponsored by Microsoft, Xbox, Playground Games or Turn 10 Studios. Forza Horizon and Xbox are trademarks of their owners. You need your own copy of the game.",
 };
@@ -159,10 +174,24 @@ export type Texts = typeof en;
 
 const pt: Texts = {
   locale: "pt-BR",
-  nav: { features: "Recursos", stats: "Ao vivo", install: "Instalar", faq: "Dúvidas" },
+  nav: { features: "Recursos", stats: "Ao vivo", install: "Instalar", faq: "Dúvidas", support: "Apoiar" },
+  beta: {
+    tag: "BETA PÚBLICO",
+    title: "O servidor está rodando em beta",
+    body: "O ForzaInfinity está aberto para um número limitado de jogadores por vez enquanto testamos de verdade. Bugs vão aparecer, e a gente corrige rápido. Novidades empolgantes chegam na semana que vem.",
+    donate: "Apoiar no Ko-fi",
+    note: "As doações mantêm o servidor no ar e o projeto vivo.",
+  },
+  support: {
+    tag: "Apoie o projeto",
+    title: "Mantenha o ForzaInfinity vivo.",
+    body: "O ForzaInfinity é gratuito e feito por fãs, mas o servidor por trás dele custa dinheiro todo mês. Se ele trouxe o seu festival de volta, pague um café para a gente no Ko-fi: cada doação mantém o servidor rodando e as atualizações chegando.",
+    points: ["Paga o servidor e a banda", "Abre espaço para mais jogadores ao mesmo tempo", "Financia as próximas atualizações"],
+    cta: "Doar no Ko-fi",
+  },
   server: { online: "online agora", offline: "servidor fora do ar", checking: "conectando", full: "Servidor cheio", inLine: "na fila" },
   hero: {
-    kicker: "Forza Horizon 2 · no PC",
+    kicker: "Beta público · Forza Horizon 2 · no PC",
     title: ["De volta", "à estrada."],
     body:
       "O ForzaInfinity traz de volta o lado online do Forza Horizon 2 para a versão de PC no Azimuth: passeio livre e corridas online, placares, fantasmas, drivatars e pinturas compartilhadas, amigos, clubes de carros e um save na nuvem que vai do seu PC ao Steam Deck.",
@@ -307,6 +336,7 @@ const pt: Texts = {
     ],
     more: "Documentação completa no GitHub",
   },
+  finale: { title: "Te vejo no festival.", body: "É um beta: obrigado por pilotar com a gente enquanto construímos." },
   footer:
     "O ForzaInfinity é um projeto de fãs. Não é afiliado, endossado nem patrocinado pela Microsoft, Xbox, Playground Games ou Turn 10 Studios. Forza Horizon e Xbox são marcas de seus donos. Você precisa da sua própria cópia do jogo.",
 };

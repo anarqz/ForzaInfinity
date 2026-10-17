@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { DOWNLOAD_ZIP, INSTALL_PS1, INSTALL_SH, REPO_URL, SERVER_ADDRESS } from "./config";
+import { DOWNLOAD_ZIP, INSTALL_PS1, INSTALL_SH, KOFI_URL, REPO_URL, SERVER_ADDRESS } from "./config";
 import { initialLang, initialPlatform, TEXTS, type Lang, type Platform, type Texts } from "./i18n";
 import { formatNumber, useStats, type Stats } from "./stats";
 
@@ -34,6 +34,7 @@ export function App() {
           <a href="#live">{t.nav.stats}</a>
           <a href="#install">{t.nav.install}</a>
           <a href="#faq">{t.nav.faq}</a>
+          <a href="#support">{t.nav.support}</a>
         </nav>
         <div className="bar-end">
           <div className="lang" role="group" aria-label="Language">
@@ -43,6 +44,9 @@ export function App() {
               </button>
             ))}
           </div>
+          <a className="pill-button small kofi" href={KOFI_URL} target="_blank" rel="noopener">
+            <IconHeart /> Ko-fi
+          </a>
           <a className="pill-button small" href="#install">
             {t.nav.install}
           </a>
@@ -54,18 +58,29 @@ export function App() {
         <Features t={t} />
         <Live t={t} stats={stats} reachable={reachable} />
         <Install t={t} />
+        <Support t={t} />
         <Faq t={t} />
         <section className="finale" data-reveal>
-          <h2>{lang === "pt" ? "Te vejo no festival." : "See you at the festival."}</h2>
-          <a className="pill-button" href="#install">
-            {t.hero.cta}
-          </a>
+          <span className="beta-tag">{t.beta.tag}</span>
+          <h2>{t.finale.title}</h2>
+          <p className="finale-note">{t.finale.body}</p>
+          <div className="hero-actions center">
+            <a className="pill-button" href="#install">
+              {t.hero.cta}
+            </a>
+            <a className="pill-button kofi" href={KOFI_URL} target="_blank" rel="noopener">
+              <IconHeart /> {t.beta.donate}
+            </a>
+          </div>
         </section>
       </main>
 
       <footer className="footer">
         <p>{t.footer}</p>
-        <a href={REPO_URL}>GitHub</a>
+        <div className="footer-links">
+          <a href={KOFI_URL} target="_blank" rel="noopener">Ko-fi</a>
+          <a href={REPO_URL}>GitHub</a>
+        </div>
       </footer>
     </>
   );
@@ -133,6 +148,7 @@ function Hero({ t, stats, reachable }: { t: Texts; stats: Stats | null; reachabl
     <section className="hero">
       <RoadScene />
       <div className="hero-content">
+        <BetaNotice t={t} />
         <LivePill t={t} stats={stats} reachable={reachable} />
         <p className="kicker">{t.hero.kicker}</p>
         <h1>
@@ -155,6 +171,44 @@ function Hero({ t, stats, reachable }: { t: Texts; stats: Stats | null; reachabl
       <a className="scroll-cue" href="#features" aria-label={t.hero.cta2}>
         <span />
       </a>
+    </section>
+  );
+}
+
+function BetaNotice({ t }: { t: Texts }) {
+  return (
+    <aside className="beta-notice" role="note">
+      <span className="beta-tag">{t.beta.tag}</span>
+      <div className="beta-text">
+        <strong>{t.beta.title}</strong>
+        <p>{t.beta.body}</p>
+      </div>
+      <a className="pill-button small kofi" href={KOFI_URL} target="_blank" rel="noopener">
+        <IconHeart /> {t.beta.donate}
+      </a>
+    </aside>
+  );
+}
+
+function Support({ t }: { t: Texts }) {
+  return (
+    <section id="support" className="section narrow">
+      <div className="support-card" data-reveal>
+        <span className="tag">{t.support.tag}</span>
+        <h2>{t.support.title}</h2>
+        <p>{t.support.body}</p>
+        <ul className="support-points">
+          {t.support.points.map((point) => (
+            <li key={point}>
+              <IconCheck /> {point}
+            </li>
+          ))}
+        </ul>
+        <a className="pill-button kofi" href={KOFI_URL} target="_blank" rel="noopener">
+          <IconHeart /> {t.support.cta}
+        </a>
+        <p className="support-note">{t.beta.note}</p>
+      </div>
     </section>
   );
 }
