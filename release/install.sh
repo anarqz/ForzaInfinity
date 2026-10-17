@@ -88,14 +88,6 @@ if [ -f "$BIN/azimuth-tls.dll" ] && { [ ! -f "$BIN/azimuth-tls.dll.stock" ] || [
     cp "$BIN/azimuth-tls.dll" "$BIN/azimuth-tls.dll.stock"
 fi
 cp "$DLL" "$BIN/azimuth-tls.dll.new" && mv "$BIN/azimuth-tls.dll.new" "$BIN/azimuth-tls.dll"
-# the standalone ExtraOptions (0.2.88 and later: winmm.dll next to azimuth.exe) would run beside
-# ours, which is ExtraOptions already, both patching the game: it is turned off (kept as
-# *.extraoptions-off)
-if [ -f "$AZIMUTH/winmm.dll" ] && grep -q ExtraOptions "$AZIMUTH/winmm.dll"; then
-    mv -f "$AZIMUTH/winmm.dll" "$AZIMUTH/winmm.dll.extraoptions-off"
-    [ -f "$AZIMUTH/FH2_ExtraOptions.ini" ] && mv -f "$AZIMUTH/FH2_ExtraOptions.ini" "$AZIMUTH/FH2_ExtraOptions.ini.extraoptions-off"
-    echo "A separate ExtraOptions (winmm.dll next to azimuth.exe) was turned off: ForzaInfinity already includes ExtraOptions (settings in data/bin/FH2_ExtraOptions.ini)."
-fi
 # the free roam world a player hosts (Settings > INFINITY > HOST WORLD): dedicated_server.exe,
 # next to this script, else the latest release's
 RELAY="$HERE/dedicated_server.exe"

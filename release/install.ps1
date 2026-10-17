@@ -80,16 +80,6 @@ $stock = Join-Path $bin 'azimuth-tls.dll.stock'
 # update put its own back
 if ((Test-Path $target) -and (-not (Test-Path $stock) -or (Get-Item $target).Length -lt 65536)) { Copy-Item $target $stock -Force }
 Copy-Item $dll $target -Force
-# the standalone ExtraOptions (0.2.88 and later: winmm.dll next to azimuth.exe) would run beside
-# ours, which is ExtraOptions already, both patching the game: it is turned off (kept as
-# *.extraoptions-off)
-$winmm = Join-Path $azimuth 'winmm.dll'
-if ((Test-Path $winmm) -and [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($winmm)).Contains('ExtraOptions')) {
-    Move-Item $winmm "$winmm.extraoptions-off" -Force
-    $rootIni = Join-Path $azimuth 'FH2_ExtraOptions.ini'
-    if (Test-Path $rootIni) { Move-Item $rootIni "$rootIni.extraoptions-off" -Force }
-    Write-Host 'A separate ExtraOptions (winmm.dll next to azimuth.exe) was turned off: ForzaInfinity already includes ExtraOptions (settings in data\bin\FH2_ExtraOptions.ini).'
-}
 # the free roam world a player hosts (Settings > INFINITY > HOST WORLD): dedicated_server.exe,
 # next to this script, else the latest release's
 $relay = Join-Path $here 'dedicated_server.exe'

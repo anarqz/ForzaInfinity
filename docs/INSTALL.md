@@ -168,7 +168,6 @@ sends nothing by itself.
 | INFINITY says it cannot reach the server | The address in `FH2_ExtraOptions.ini` `[Network] Server=`, and that the server's port is open to you. |
 | Nothing online happens | `data/bin/FH2_ExtraOptions.log`: it should start with the ForzaInfinity version and show `NETWORK:` and `ACCOUNT:` lines. |
 | The game stops at start on Linux | `data/logs/azimuth.log`. `CreateDXGIFactory2` means the Vulkan driver is too old for Proton 11. |
-| `winmm.dll` and `FH2_ExtraOptions.ini` next to `azimuth.exe` | The standalone ExtraOptions (0.2.88 and later installs there). ForzaInfinity already includes ExtraOptions, so the installer and the game turn that copy off (`*.extraoptions-off`); your settings are in `data/bin/FH2_ExtraOptions.ini`. |
 | A controller does nothing on Linux | Azimuth reads the first controller only. Check that it shows up as a gamepad (`/dev/input/js0`). |
 
 **Online free roam and races** (worlds the players host, 8 drivers by default, up to 12): see
