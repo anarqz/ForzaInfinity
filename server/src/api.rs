@@ -163,7 +163,7 @@ fn account_api(app: &App, request: &Request, path: &str) -> Vec<u8> {
 
 fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
     let route = account_route(path).unwrap_or("");
-    if request.body.len() > MAX_ACCOUNT_BODY && route != "save" {
+    if request.body.len() > MAX_ACCOUNT_BODY && route != "save" && !route.starts_with("creations/") {
         return json_reply(413, &json!({ "error": "too large" }));
     }
     let token_account = || request.header("x-fh2-token").and_then(|t| app.store.account_by_token(t));
@@ -200,6 +200,13 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
                     None => response(reply.status, "application/json; charset=utf-8", "", b""),
                 }
             }
+        };
+    }
+    if route == "creations" || route.starts_with("creations/") {
+        return match token_account() {
+            Some(a) if !a.banned => creations_api(app, request, route, a.xuid),
+            Some(_) => json_reply(403, &json!({ "error": "Account suspended on this server." })),
+            None => json_reply(401, &json!({ "error": "Unknown token." })),
         };
     }
     if route.starts_with("save") {
@@ -569,6 +576,52 @@ fn account_api_inner(app: &App, request: &Request, path: &str) -> Vec<u8> {
             }
             None => json_reply(401, &json!({ "error": "Unknown token." })),
         },
+        _ => json_reply(404, &json!({ "error": "not found" })),
+    }
+}
+
+/// The account's creations (db/creations.rs: designs, vinyl groups, tunes), for the hook:
+///   GET    creations        -> {creations: [{name, commit}]};
+///   GET    creations/<name> -> the bundle (application/octet-stream), 404 when not kept;
+///   PUT    creations/<name> -> stores the bundle; X-Fh2-Commit = SHA-256 of its commit file;
+///   DELETE creations/<name> -> 204 (the player deleted it in the game).
+fn creations_api(app: &App, request: &Request, route: &str, xuid: u64) -> Vec<u8> {
+    use crate::db::creations;
+    let name = route.strip_prefix("creations/").unwrap_or("");
+    if route != "creations" && !creations::valid_name(name) {
+        return json_reply(400, &json!({ "error": "invalid name" }));
+    }
+    match (request.method.as_str(), route) {
+        ("GET", "creations") => {
+            let list: Vec<Value> =
+                app.store.creations(xuid).into_iter().map(|(name, commit)| json!({ "name": name, "commit": commit })).collect();
+            json_reply(200, &json!({ "creations": list }))
+        }
+        ("GET", _) => match app.store.creation(xuid, name) {
+            Some(data) => response(200, "application/octet-stream", "", &data),
+            None => json_reply(404, &json!({ "error": "not kept" })),
+        },
+        ("PUT", _) => {
+            if request.body.len() > creations::MAX_BUNDLE {
+                return json_reply(413, &json!({ "error": "too big" }));
+            }
+            let commit = request.header("x-fh2-commit").unwrap_or("");
+            if !crate::db::saves::valid_commit(commit) {
+                return json_reply(400, &json!({ "error": "invalid commit" }));
+            }
+            if let Err(why) = creations::check_bundle(&request.body) {
+                return json_reply(400, &json!({ "error": why }));
+            }
+            match app.store.put_creation(xuid, name, &commit.to_ascii_lowercase(), &request.body) {
+                Ok(()) => json_reply(200, &json!({ "ok": true })),
+                Err(creations::PutError::TooMany) => json_reply(507, &json!({ "error": "too many creations" })),
+                Err(creations::PutError::TooBig) => json_reply(507, &json!({ "error": "creations too big" })),
+            }
+        }
+        ("DELETE", _) => {
+            app.store.delete_creation(xuid, name);
+            response(204, "application/json; charset=utf-8", "", b"")
+        }
         _ => json_reply(404, &json!({ "error": "not found" })),
     }
 }

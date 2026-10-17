@@ -21,6 +21,7 @@ use crate::{gamedb::Catalog, unix_ms};
 
 pub mod accounts;
 pub mod clubs;
+pub mod creations;
 pub mod integrity;
 pub mod moderation;
 pub mod reset;
@@ -111,6 +112,7 @@ impl Store {
         db.execute_batch(notifications::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(accounts::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(saves::SCHEMA).map_err(|e| e.to_string())?;
+        db.execute_batch(creations::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(news::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(integrity::SCHEMA).map_err(|e| e.to_string())?;
         db.execute_batch(storefront::SCHEMA).map_err(|e| e.to_string())?;
@@ -862,6 +864,7 @@ impl Store {
                 "DELETE FROM devices WHERE xuid = ?1",
                 "DELETE FROM web_keys WHERE xuid = ?1",
                 "DELETE FROM saves WHERE xuid = ?1",
+                "DELETE FROM creations WHERE xuid = ?1",
                 "DELETE FROM integrity WHERE xuid = ?1",
                 "DELETE FROM friend_requests WHERE from_xuid = ?1 OR to_xuid = ?1",
                 "DELETE FROM account_expansions WHERE xuid = ?1",
